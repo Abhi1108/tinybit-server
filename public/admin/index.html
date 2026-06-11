@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>TinyBit Admin</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#F3F4F8;--card:#fff;--text:#111827;--muted:#6B7280;--border:#E5E7EB;
+  --sidebar:#111827;--sidebar-text:#9CA3AF;--sidebar-active:#4F46E5;--sidebar-hover:rgba(255,255,255,.06);
+  --brand:#333372;--accent:#36B0E6;
+  --success:#10B981;--danger:#EF4444;--warning:#F59E0B;--info:#3B82F6;
+  --purple:#8B5CF6;--pink:#EC4899;--orange:#F97316;--teal:#14B8A6;--rose:#F43F5E;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+button{cursor:pointer;font-family:inherit}
+input,select,textarea{font-family:inherit}
+
+/* ── Login ── */
+#login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1A1D3B 0%,#333372 55%,#36B0E6 100%)}
+.lc{background:#fff;border-radius:20px;padding:40px;width:380px;box-shadow:0 24px 64px rgba(0,0,0,.35)}
+.lc-logo{display:flex;align-items:center;gap:12px;margin-bottom:30px}
+.lc-logo-icon{width:44px;height:44px;background:linear-gradient(135deg,#333372,#36B0E6);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.lc-logo h1{font-size:19px;font-weight:800;color:var(--brand)}
+.lc-logo small{font-size:10px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.5px;display:block}
+.lc h2{font-size:22px;font-weight:800;margin-bottom:4px}
+.lc p{color:var(--muted);font-size:13px;margin-bottom:26px}
+.fg{margin-bottom:14px}
+.fg label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.fg input{width:100%;padding:11px 13px;border:1.5px solid var(--border);border-radius:10px;font-size:14px;color:var(--text);outline:none;transition:border-color .2s}
+.fg input:focus{border-color:var(--accent)}
+.login-btn{width:100%;padding:12px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;border:none;border-radius:10px;font-size:15px;font-weight:700;margin-top:6px;transition:opacity .2s}
+.login-btn:hover{opacity:.9}.login-btn:disabled{opacity:.6;cursor:not-allowed}
+.login-err{background:#FEF2F2;color:#DC2626;padding:10px 13px;border-radius:8px;font-size:13px;font-weight:600;margin-top:10px;display:none}
+
+/* ── App layout ── */
+#app{display:none;min-height:100vh}
+
+/* ── Sidebar ── */
+#sidebar{width:240px;min-height:100vh;background:var(--sidebar);position:fixed;top:0;left:0;bottom:0;display:flex;flex-direction:column;z-index:100;overflow-y:auto;overflow-x:hidden}
+.sb-brand{padding:18px 18px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0}
+.sb-brand-icon{width:36px;height:36px;background:linear-gradient(135deg,#333372,#36B0E6);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.sb-brand-text h2{color:#fff;font-size:15px;font-weight:800}
+.sb-brand-text span{color:#6B7280;font-size:10px;font-weight:600}
+.sb-label{padding:14px 20px 4px;color:#4B5563;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.8px}
+.nav-list{list-style:none;padding:0 10px}
+.ni{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:9px;color:var(--sidebar-text);font-size:13px;font-weight:600;cursor:pointer;transition:background .15s,color .15s;margin-bottom:1px;user-select:none}
+.ni:hover{background:var(--sidebar-hover);color:#E5E7EB}
+.ni.active{background:var(--sidebar-active);color:#fff}
+.ni .ico{font-size:16px;width:20px;text-align:center;flex-shrink:0}
+.sb-footer{margin-top:auto;padding:14px 10px;border-top:1px solid rgba(255,255,255,.08);flex-shrink:0}
+.logout-btn{width:100%;display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:9px;background:transparent;border:none;color:#6B7280;font-size:13px;font-weight:600;transition:background .15s,color .15s}
+.logout-btn:hover{background:rgba(239,68,68,.1);color:#EF4444}
+
+/* ── Main ── */
+#main{margin-left:240px;min-height:100vh;display:flex;flex-direction:column}
+
+/* ── Topbar ── */
+#topbar{background:#fff;border-bottom:1px solid var(--border);padding:13px 26px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;gap:12px}
+#tb-title{font-size:17px;font-weight:800}
+.tb-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#last-updated{font-size:11px;color:var(--muted)}
+.refresh-btn{padding:7px 13px;border:1.5px solid var(--border);border-radius:8px;background:#fff;font-size:13px;font-weight:600;transition:border-color .15s,color .15s}
+.refresh-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* ── Sections ── */
+.sec{display:none;padding:22px 26px}
+.sec.active{display:block}
+
+/* ── Stat cards ── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(185px,1fr));gap:14px;margin-bottom:22px}
+.sc{background:#fff;border-radius:13px;padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.06);display:flex;align-items:flex-start;justify-content:space-between}
+.sc .num{font-size:28px;font-weight:900;line-height:1;margin-bottom:5px}
+.sc .lbl{font-size:11px;color:var(--muted);font-weight:600}
+.sc .sc-icon{font-size:26px;opacity:.65}
+
+/* ── Charts ── */
+.charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:18px;margin-bottom:22px}
+.cc{background:#fff;border-radius:13px;padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
+.cc h3{font-size:13px;font-weight:700;margin-bottom:14px;color:var(--text)}
+.cc h3 span{color:var(--muted);font-weight:500;font-size:11px;margin-left:6px}
+.ch-wrap{position:relative;height:200px}
+
+/* ── Data card ── */
+.dc{background:#fff;border-radius:13px;box-shadow:0 1px 4px rgba(0,0,0,.06);overflow:hidden;margin-bottom:22px}
+.dc-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px}
+.dc-head h2{font-size:14px;font-weight:800}
+.filters{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+.fs,.fi{padding:7px 9px;border:1.5px solid var(--border);border-radius:8px;font-size:12px;color:var(--text);outline:none;transition:border-color .2s;background:#fff}
+.fi{min-width:180px}
+.fs:focus,.fi:focus{border-color:var(--accent)}
+.tb-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+thead th{text-align:left;padding:10px 14px;background:#F9FAFB;color:var(--muted);font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{padding:10px 14px;border-bottom:1px solid #F3F4F6;vertical-align:middle}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover td{background:#FAFBFF}
+.er td{text-align:center;padding:28px;color:var(--muted);font-size:13px}
+.pag{padding:10px 18px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:flex-end;gap:7px}
+.pb{padding:5px 11px;border:1.5px solid var(--border);border-radius:7px;background:#fff;font-size:12px;font-weight:600;transition:.15s}
+.pb:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+.pb:disabled{opacity:.4;cursor:not-allowed}
+.pi{font-size:12px;color:var(--muted)}
+
+/* ── Badges ── */
+.b{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap}
+.b-elder{background:#EFF6FF;color:#1D4ED8}.b-guardian{background:#F0FDF4;color:#166534}
+.b-connected{background:#F0FDF4;color:#166534}.b-pending{background:#FFFBEB;color:#92400E}.b-declined{background:#FEF2F2;color:#991B1B}
+.b-banned{background:#FEF2F2;color:#991B1B}.b-active{background:#F0FDF4;color:#166534}.b-inactive{background:#F3F4F6;color:#6B7280}
+.b-Great{background:#F0FDF4;color:#166534}.b-Good{background:#EFF6FF;color:#1D4ED8}.b-Okay{background:#FFFBEB;color:#92400E}.b-Low{background:#FFF7ED;color:#C2410C}.b-Unwell{background:#FEF2F2;color:#991B1B}
+.b-user{background:#EEF2FF;color:#4338CA}.b-assistant{background:#F0FDFA;color:#0F766E}
+.b-Doctor{background:#FEF2F2;color:#DC2626}.b-Family{background:#F5F3FF;color:#7C3AED}.b-Medicine{background:#EFF6FF;color:#1D4ED8}.b-Wellness{background:#F0FDF4;color:#16A34A}
+.b-Critical{background:#FEF2F2;color:#DC2626}.b-High{background:#FFF7ED;color:#C2410C}.b-Medium{background:#FFFBEB;color:#92400E}.b-LowP{background:#F0FDF4;color:#16A34A}
+.b-prescription{background:#EEF2FF;color:#4338CA}.b-otc{background:#F0FDF4;color:#166534}.b-supplement{background:#F0FDFA;color:#0F766E}.b-vitamin{background:#FFFBEB;color:#92400E}.b-other{background:#F3F4F6;color:#6B7280}
+
+/* ── Buttons ── */
+.btn{padding:4px 10px;border:none;border-radius:6px;font-size:11px;font-weight:700;transition:.15s;white-space:nowrap}
+.btn-d{background:#FEF2F2;color:#DC2626}.btn-d:hover{background:#DC2626;color:#fff}
+.btn-s{background:#F0FDF4;color:#16A34A}.btn-s:hover{background:#16A34A;color:#fff}
+.btn-p{background:#EEF2FF;color:#4338CA}.btn-p:hover{background:#4338CA;color:#fff}
+.btn-gap{display:flex;gap:5px}
+
+/* ── Avatar ── */
+.av{width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff;flex-shrink:0}
+.uc{display:flex;align-items:center;gap:8px}
+.uc-info b{font-weight:700;font-size:12.5px;display:block}
+.uc-info span{color:var(--muted);font-size:11px}
+
+/* ── Pain bar ── */
+.pb-dots{display:inline-flex;gap:2px;vertical-align:middle}
+.pd{width:6px;height:6px;border-radius:50%;background:var(--border)}
+.pd.on{background:var(--danger)}
+
+/* ── Mini stats row (AI) ── */
+.ms-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.ms{background:#fff;border-radius:11px;padding:13px 18px;box-shadow:0 1px 4px rgba(0,0,0,.06);min-width:130px}
+.ms .n{font-size:20px;font-weight:900}
+.ms .l{font-size:10px;color:var(--muted);font-weight:600;margin-top:2px}
+
+/* ── Broadcast ── */
+.bc-wrap{padding:26px}
+.bc-form{max-width:540px}
+.bc-form h3{font-size:15px;font-weight:800;margin-bottom:4px}
+.bc-form>p{color:var(--muted);font-size:13px;margin-bottom:20px}
+.bc-form .fg label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
+.bc-form .fg input,.bc-form .fg textarea{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;transition:border-color .2s;color:var(--text);resize:vertical}
+.bc-form .fg input:focus,.bc-form .fg textarea:focus{border-color:var(--accent)}
+.bc-btn{padding:10px 22px;background:linear-gradient(135deg,var(--brand),var(--accent));color:#fff;border:none;border-radius:9px;font-size:14px;font-weight:700;transition:opacity .2s;margin-top:4px}
+.bc-btn:hover{opacity:.9}.bc-btn:disabled{opacity:.5;cursor:not-allowed}
+.bc-res{margin-top:12px;padding:10px 13px;border-radius:8px;font-size:13px;font-weight:600;display:none}
+.bc-res.ok{background:#F0FDF4;color:#166534}.bc-res.err{background:#FEF2F2;color:#991B1B}
+
+/* ── Modal ── */
+#modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(3px);z-index:1000;display:none;align-items:center;justify-content:center}
+#modal-ov.open{display:flex}
+.mc{background:#fff;border-radius:16px;padding:26px 26px 22px;max-width:390px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.mc h3{font-size:16px;font-weight:800;margin-bottom:8px}
+.mc p{color:var(--muted);font-size:13px;line-height:1.6;margin-bottom:20px}
+.mc-actions{display:flex;gap:9px;justify-content:flex-end}
+.mc-cancel{padding:8px 18px;border:1.5px solid var(--border);border-radius:8px;background:#fff;font-size:13px;font-weight:600;cursor:pointer}
+.mc-confirm{padding:8px 18px;border:none;border-radius:8px;font-size:13px;font-weight:700;color:#fff;cursor:pointer}
+.mc-confirm.danger{background:var(--danger)}.mc-confirm.success{background:var(--success)}
+
+/* ── Toast ── */
+#toast{position:fixed;bottom:22px;right:22px;padding:11px 18px;border-radius:11px;font-size:13px;font-weight:700;color:#fff;pointer-events:none;opacity:0;transition:opacity .3s,transform .3s;transform:translateY(8px);z-index:2000;max-width:300px}
+#toast.show{opacity:1;transform:translateY(0)}
+
+/* ── Misc ── */
+.fw{font-weight:700}.mu{color:var(--muted)}.trunc{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom}
+@media(max-width:768px){
+  #sidebar{width:56px}
+  .sb-brand-text,.ni span,.sb-label{display:none}
+  .ni{justify-content:center;padding:10px}.ni .ico{width:auto}
+  .sb-footer .lbl-logout{display:none}
+  #main{margin-left:56px}
+  .sec{padding:14px}
+  #topbar{padding:11px 14px}
+}
+</style>
+</head>
+<body>
+
+<!-- ── Login ─────────────────────────────────────────────────── -->
+<div id="login-page">
+  <div class="lc">
+    <div class="lc-logo">
+      <div class="lc-logo-icon">💙</div>
+      <div>
+        <h1>TinyBit</h1>
+        <small>Admin Panel</small>
+      </div>
+    </div>
+    <h2>Welcome back</h2>
+    <p>Sign in to manage the TinyBit platform</p>
+    <div class="fg"><label>Username</label><input id="login-u" type="text" placeholder="admin" autocomplete="username"/></div>
+    <div class="fg"><label>Password</label><input id="login-p" type="password" placeholder="••••••••" autocomplete="current-password"/></div>
+    <button class="login-btn" id="login-btn" onclick="doLogin()">Log In</button>
+    <div class="login-err" id="login-err"></div>
+  </div>
+</div>
+
+<!-- ── App ───────────────────────────────────────────────────── -->
+<div id="app">
+
+  <!-- Sidebar -->
+  <nav id="sidebar">
+    <div class="sb-brand">
+      <div class="sb-brand-icon">💙</div>
+      <div class="sb-brand-text"><h2>TinyBit</h2><span>Admin Panel</span></div>
+    </div>
+
+    <div class="sb-label">Overview</div>
+    <ul class="nav-list">
+      <li class="ni active" data-s="dashboard" onclick="navigate('dashboard')"><span class="ico">📊</span><span>Dashboard</span></li>
+    </ul>
+
+    <div class="sb-label">People</div>
+    <ul class="nav-list">
+      <li class="ni" data-s="users" onclick="navigate('users')"><span class="ico">👥</span><span>Users</span></li>
+      <li class="ni" data-s="connections" onclick="navigate('connections')"><span class="ico">🔗</span><span>Connections</span></li>
+    </ul>
+
+    <div class="sb-label">Health</div>
+    <ul class="nav-list">
+      <li class="ni" data-s="medicines" onclick="navigate('medicines')"><span class="ico">💊</span><span>Medicines</span></li>
+      <li class="ni" data-s="checkins" onclick="navigate('checkins')"><span class="ico">✅</span><span>Check-ins</span></li>
+      <li class="ni" data-s="moods" onclick="navigate('moods')"><span class="ico">😊</span><span>Mood & Wellness</span></li>
+    </ul>
+
+    <div class="sb-label">Engagement</div>
+    <ul class="nav-list">
+      <li class="ni" data-s="ai" onclick="navigate('ai')"><span class="ico">🤖</span><span>AI Sathi</span></li>
+      <li class="ni" data-s="care" onclick="navigate('care')"><span class="ico">📅</span><span>Care Calendar</span></li>
+      <li class="ni" data-s="games" onclick="navigate('games')"><span class="ico">🧠</span><span>Mind Games</span></li>
+    </ul>
+
+    <div class="sb-label">Tools</div>
+    <ul class="nav-list">
+      <li class="ni" data-s="broadcast" onclick="navigate('broadcast')"><span class="ico">📢</span><span>Broadcast</span></li>
+    </ul>
+
+    <div class="sb-footer">
+      <button class="logout-btn" onclick="doLogout()"><span class="ico">🚪</span><span class="lbl-logout">Log Out</span></button>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <div id="main">
+
+    <!-- Topbar -->
+    <div id="topbar">
+      <div id="tb-title">Dashboard</div>
+      <div class="tb-right">
+        <span id="last-updated"></span>
+        <button class="refresh-btn" onclick="refreshSection()">↻ Refresh</button>
+      </div>
+    </div>
+
+    <!-- ── DASHBOARD ─────────────────────────────── -->
+    <div class="sec active" id="sec-dashboard">
+      <div class="stats-grid">
+        <div class="sc"><div><div class="num" id="stat-elders" style="color:#3B82F6">—</div><div class="lbl">Total Elders</div></div><div class="sc-icon">👴</div></div>
+        <div class="sc"><div><div class="num" id="stat-guardians" style="color:#10B981">—</div><div class="lbl">Total Guardians</div></div><div class="sc-icon">🛡️</div></div>
+        <div class="sc"><div><div class="num" id="stat-connections" style="color:#14B8A6">—</div><div class="lbl">Active Connections</div></div><div class="sc-icon">🔗</div></div>
+        <div class="sc"><div><div class="num" id="stat-pending" style="color:#F59E0B">—</div><div class="lbl">Pending Invites</div></div><div class="sc-icon">⏳</div></div>
+        <div class="sc"><div><div class="num" id="stat-week" style="color:#8B5CF6">—</div><div class="lbl">New This Week</div></div><div class="sc-icon">🆕</div></div>
+        <div class="sc"><div><div class="num" id="stat-meds" style="color:#F43F5E">—</div><div class="lbl">Active Medicines</div></div><div class="sc-icon">💊</div></div>
+        <div class="sc"><div><div class="num" id="stat-checkins" style="color:#0EA5E9">—</div><div class="lbl">Check-ins Today</div></div><div class="sc-icon">✅</div></div>
+        <div class="sc"><div><div class="num" id="stat-moods" style="color:#EC4899">—</div><div class="lbl">Moods This Week</div></div><div class="sc-icon">😊</div></div>
+        <div class="sc"><div><div class="num" id="stat-ai" style="color:#F97316">—</div><div class="lbl">AI Messages Today</div></div><div class="sc-icon">🤖</div></div>
+      </div>
+
+      <div class="charts-grid">
+        <div class="cc" style="grid-column:span 2 / auto"><h3>User Growth <span>last 30 days</span></h3><div class="ch-wrap"><canvas id="chart-growth"></canvas></div></div>
+        <div class="cc"><h3>Mood Distribution <span>last 30 days</span></h3><div class="ch-wrap"><canvas id="chart-mood"></canvas></div></div>
+        <div class="cc"><h3>Check-ins by Day of Week</h3><div class="ch-wrap"><canvas id="chart-dow"></canvas></div></div>
+        <div class="cc"><h3>AI Messages <span>last 7 days</span></h3><div class="ch-wrap"><canvas id="chart-ai"></canvas></div></div>
+        <div class="cc"><h3>Care Events by Type</h3><div class="ch-wrap"><canvas id="chart-care"></canvas></div></div>
+        <div class="cc"><h3>Medicine by Category</h3><div class="ch-wrap"><canvas id="chart-medcat"></canvas></div></div>
+      </div>
+    </div>
+
+    <!-- ── USERS ──────────────────────────────────── -->
+    <div class="sec" id="sec-users">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>All Users</h2>
+          <div class="filters">
+            <input class="fi" id="user-search" placeholder="Search name or email…" oninput="onUserSearch()"/>
+            <select class="fs" id="user-role" onchange="loadUsers(1)">
+              <option value="">All Roles</option>
+              <option value="elder">Elder</option>
+              <option value="guardian">Guardian</option>
+            </select>
+            <button class="refresh-btn" onclick="loadUsers(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Role</th><th>Country</th><th>Age</th><th>Joined</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="users-tbody"><tr class="er"><td colspan="7">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="users-prev" onclick="loadUsers(pages.users-1)" disabled>← Prev</button>
+          <span class="pi" id="users-page">Page 1</span>
+          <button class="pb" id="users-next" onclick="loadUsers(pages.users+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CONNECTIONS ────────────────────────────── -->
+    <div class="sec" id="sec-connections">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Guardian–Elder Connections</h2>
+          <div class="filters">
+            <select class="fs" id="conn-status" onchange="loadConnections(1)">
+              <option value="">All Statuses</option>
+              <option value="connected">Connected</option>
+              <option value="pending">Pending</option>
+              <option value="declined">Declined</option>
+            </select>
+            <button class="refresh-btn" onclick="loadConnections(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>Guardian</th><th>Guardian Email</th><th>Parent Name</th><th>Elder</th><th>Elder Email</th><th>Relation</th><th>Status</th><th>Date</th><th>Action</th></tr></thead>
+            <tbody id="conn-tbody"><tr class="er"><td colspan="9">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="conn-prev" onclick="loadConnections(pages.connections-1)" disabled>← Prev</button>
+          <span class="pi" id="conn-page">Page 1</span>
+          <button class="pb" id="conn-next" onclick="loadConnections(pages.connections+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MEDICINES ──────────────────────────────── -->
+    <div class="sec" id="sec-medicines">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Medicine Records</h2>
+          <div class="filters">
+            <select class="fs" id="med-category" onchange="loadMedicines(1)">
+              <option value="">All Categories</option>
+              <option value="prescription">Prescription</option>
+              <option value="otc">OTC</option>
+              <option value="supplement">Supplement</option>
+              <option value="vitamin">Vitamin</option>
+              <option value="other">Other</option>
+            </select>
+            <select class="fs" id="med-priority" onchange="loadMedicines(1)">
+              <option value="">All Priorities</option>
+              <option value="Critical">Critical</option>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+            <select class="fs" id="med-active" onchange="loadMedicines(1)">
+              <option value="">All</option>
+              <option value="true">Active</option>
+              <option value="false">Inactive</option>
+            </select>
+            <button class="refresh-btn" onclick="loadMedicines(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Medicine</th><th>Category</th><th>Priority</th><th>Schedule</th><th>Frequency</th><th>Stock</th><th>Status</th><th>Added</th></tr></thead>
+            <tbody id="meds-tbody"><tr class="er"><td colspan="9">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="meds-prev" onclick="loadMedicines(pages.medicines-1)" disabled>← Prev</button>
+          <span class="pi" id="meds-page">Page 1</span>
+          <button class="pb" id="meds-next" onclick="loadMedicines(pages.medicines+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CHECK-INS ──────────────────────────────── -->
+    <div class="sec" id="sec-checkins">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Daily Check-ins</h2>
+          <div class="filters">
+            <select class="fs" id="ci-mood" onchange="loadCheckIns(1)">
+              <option value="">All Moods</option>
+              <option value="Great">😁 Great</option>
+              <option value="Good">😊 Good</option>
+              <option value="Okay">😐 Okay</option>
+              <option value="Low">😔 Low</option>
+              <option value="Unwell">🤒 Unwell</option>
+            </select>
+            <button class="refresh-btn" onclick="loadCheckIns(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Date</th><th>Mood</th><th>Sleep</th><th>Energy</th><th>Pain</th><th>Meds</th><th>Activity</th><th>Created</th></tr></thead>
+            <tbody id="ci-tbody"><tr class="er"><td colspan="9">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="ci-prev" onclick="loadCheckIns(pages.checkIns-1)" disabled>← Prev</button>
+          <span class="pi" id="ci-page">Page 1</span>
+          <button class="pb" id="ci-next" onclick="loadCheckIns(pages.checkIns+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MOODS ──────────────────────────────────── -->
+    <div class="sec" id="sec-moods">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Mood & Wellness Entries</h2>
+          <div class="filters">
+            <select class="fs" id="mood-filter" onchange="loadMoods(1)">
+              <option value="">All Moods</option>
+              <option value="Great">😁 Great</option>
+              <option value="Good">😊 Good</option>
+              <option value="Okay">😐 Okay</option>
+              <option value="Low">😔 Low</option>
+              <option value="Unwell">🤒 Unwell</option>
+            </select>
+            <button class="refresh-btn" onclick="loadMoods(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Date</th><th>Mood</th><th>Score</th><th>Factors</th><th>Activities</th><th>Notes</th></tr></thead>
+            <tbody id="moods-tbody"><tr class="er"><td colspan="7">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="moods-prev" onclick="loadMoods(pages.moods-1)" disabled>← Prev</button>
+          <span class="pi" id="moods-page">Page 1</span>
+          <button class="pb" id="moods-next" onclick="loadMoods(pages.moods+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── AI SATHI ───────────────────────────────── -->
+    <div class="sec" id="sec-ai">
+      <div class="ms-row" id="ai-mini-stats">
+        <div class="ms"><div class="n" id="ai-total" style="color:#8B5CF6">—</div><div class="l">Total Messages</div></div>
+        <div class="ms"><div class="n" id="ai-today" style="color:#F97316">—</div><div class="l">Messages Today</div></div>
+      </div>
+      <div class="dc">
+        <div class="dc-head">
+          <h2>AI Sathi Conversations</h2>
+          <div class="filters">
+            <select class="fs" id="ai-role" onchange="loadAI(1)">
+              <option value="">All</option>
+              <option value="user">User messages</option>
+              <option value="assistant">AI responses</option>
+            </select>
+            <button class="refresh-btn" onclick="loadAI(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>From</th><th>Message Preview</th><th>Date</th></tr></thead>
+            <tbody id="ai-tbody"><tr class="er"><td colspan="4">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="ai-prev" onclick="loadAI(pages.ai-1)" disabled>← Prev</button>
+          <span class="pi" id="ai-page">Page 1</span>
+          <button class="pb" id="ai-next" onclick="loadAI(pages.ai+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── CARE CALENDAR ──────────────────────────── -->
+    <div class="sec" id="sec-care">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Care Calendar Events</h2>
+          <div class="filters">
+            <select class="fs" id="care-type" onchange="loadCare(1)">
+              <option value="">All Types</option>
+              <option value="Doctor">🏥 Doctor</option>
+              <option value="Family">👨‍👩‍👧 Family</option>
+              <option value="Medicine">💊 Medicine</option>
+              <option value="Wellness">🌿 Wellness</option>
+            </select>
+            <button class="refresh-btn" onclick="loadCare(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>User</th><th>Title</th><th>Subtitle</th><th>Type</th><th>Date</th><th>Time</th><th>Created</th></tr></thead>
+            <tbody id="care-tbody"><tr class="er"><td colspan="7">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="care-prev" onclick="loadCare(pages.care-1)" disabled>← Prev</button>
+          <span class="pi" id="care-page">Page 1</span>
+          <button class="pb" id="care-next" onclick="loadCare(pages.care+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── MIND GAMES ─────────────────────────────── -->
+    <div class="sec" id="sec-games">
+      <div class="dc">
+        <div class="dc-head">
+          <h2>Mind Games Leaderboard</h2>
+          <div class="filters">
+            <select class="fs" id="game-type" onchange="loadGames(1)">
+              <option value="">All Games</option>
+              <option value="number_memory">Number Memory</option>
+              <option value="word_match">Word Match</option>
+              <option value="color_recall">Color Recall</option>
+              <option value="quiz">Quiz</option>
+            </select>
+            <button class="refresh-btn" onclick="loadGames(1)">Refresh</button>
+          </div>
+        </div>
+        <div class="tb-wrap">
+          <table>
+            <thead><tr><th>#</th><th>User</th><th>Game</th><th>Score</th><th>Date</th></tr></thead>
+            <tbody id="games-tbody"><tr class="er"><td colspan="5">Loading…</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pag">
+          <button class="pb" id="games-prev" onclick="loadGames(pages.games-1)" disabled>← Prev</button>
+          <span class="pi" id="games-page">Page 1</span>
+          <button class="pb" id="games-next" onclick="loadGames(pages.games+1)" disabled>Next →</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── BROADCAST ──────────────────────────────── -->
+    <div class="sec" id="sec-broadcast">
+      <div class="dc">
+        <div class="bc-wrap">
+          <div class="bc-form">
+            <h3>📢 Send Broadcast Notification</h3>
+            <p>Send an in-app notification to all active users on the platform. Messages appear in their notification centre instantly.</p>
+            <div class="fg">
+              <label>Notification Title</label>
+              <input id="bc-title" type="text" placeholder="e.g. App Update Available" maxlength="80"/>
+            </div>
+            <div class="fg">
+              <label>Message Body</label>
+              <textarea id="bc-body" rows="4" placeholder="Write your message here…" maxlength="400"></textarea>
+            </div>
+            <button class="bc-btn" id="bc-send-btn" onclick="sendBroadcast()">📢 Send to All Users</button>
+            <div class="bc-res" id="bc-res"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ── Modal ──────────────────────────────────────────────────── -->
+<div id="modal-ov" onclick="if(event.target===this)modalClose(false)">
+  <div class="mc">
+    <h3 id="modal-title"></h3>
+    <p id="modal-msg"></p>
+    <div class="mc-actions">
+      <button class="mc-cancel" onclick="modalClose(false)">Cancel</button>
+      <button class="mc-confirm danger" id="modal-confirm" onclick="modalClose(true)">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Toast ──────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────
+let token = sessionStorage.getItem('adminToken');
+let charts = {};
+let pages = { users:1, connections:1, medicines:1, checkIns:1, moods:1, ai:1, care:1, games:1 };
+let curSec = 'dashboard';
+let searchTimer;
+let toastTimer;
+let modalRes = null;
+let aiTotalCount = 0;
+
+// ── Utilities ─────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function fmtDate(dt) {
+  if (!dt) return '—';
+  return new Date(dt).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'2-digit'});
+}
+function avColor(s) {
+  const cols = ['#4F46E5','#0EA5E9','#10B981','#F59E0B','#8B5CF6','#EC4899','#F97316','#EF4444','#14B8A6'];
+  let h = 0;
+  for (const c of String(s||'U')) h = (h*31 + c.charCodeAt(0)) & 0xFFFFFF;
+  return cols[Math.abs(h) % cols.length];
+}
+function starRow(n) {
+  if (!n) return '—';
+  return '<span style="color:#F59E0B;letter-spacing:1px">' + '★'.repeat(n) + '<span style="color:#E5E7EB">' + '★'.repeat(5-n) + '</span></span>';
+}
+function painBar(lv) {
+  if (lv == null) return '—';
+  let h = '<div class="pb-dots">';
+  for (let i=1;i<=10;i++) h += `<div class="pd${i<=lv?' on':''}"></div>`;
+  return h + `</div> <small>${lv}/10</small>`;
+}
+
+// ── Toast ─────────────────────────────────────────
+function toast(msg, type='ok') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = type==='ok' ? '#10B981' : type==='warn' ? '#F59E0B' : '#EF4444';
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>el.classList.remove('show'), 2800);
+}
+
+// ── Modal ─────────────────────────────────────────
+function showModal(title, msg, type='danger') {
+  document.getElementById('modal-title').textContent = title;
+  document.getElementById('modal-msg').textContent = msg;
+  const btn = document.getElementById('modal-confirm');
+  btn.className = 'mc-confirm ' + type;
+  btn.textContent = type === 'danger' ? 'Delete' : 'Confirm';
+  document.getElementById('modal-ov').classList.add('open');
+  return new Promise(r => { modalRes = r; });
+}
+function modalClose(ok) {
+  document.getElementById('modal-ov').classList.remove('open');
+  if (modalRes) { modalRes(ok); modalRes = null; }
+}
+
+// ── API call ──────────────────────────────────────
+async function api(path, opts = {}) {
+  try {
+    const res = await fetch('/admin' + path, {
+      ...opts,
+      headers: { 'Content-Type':'application/json', Authorization:`Bearer ${token}`, ...(opts.headers||{}) },
+    });
+    if (res.status === 401) {
+      sessionStorage.removeItem('adminToken');
+      location.reload();
+      return null;
+    }
+    return res.json();
+  } catch(e) {
+    toast('Network error', 'err');
+    return null;
+  }
+}
+
+// ── Navigation ────────────────────────────────────
+function navigate(sec) {
+  curSec = sec;
+  document.querySelectorAll('.ni').forEach(el => el.classList.toggle('active', el.dataset.s === sec));
+  document.querySelectorAll('.sec').forEach(el => el.classList.toggle('active', el.id === 'sec-'+sec));
+  const titles = {
+    dashboard:'Dashboard', users:'User Management', connections:'Guardian–Elder Connections',
+    medicines:'Medicine Records', checkins:'Daily Check-ins', moods:'Mood & Wellness',
+    ai:'AI Sathi Conversations', care:'Care Calendar', games:'Mind Games Leaderboard', broadcast:'Broadcast Notification',
+  };
+  document.getElementById('tb-title').textContent = titles[sec] || sec;
+  loadSection(sec);
+}
+
+function refreshSection() { loadSection(curSec); }
+
+async function loadSection(sec) {
+  if (sec==='dashboard')   { await Promise.all([loadStats(), loadAnalytics()]); }
+  else if (sec==='users')       loadUsers();
+  else if (sec==='connections') loadConnections();
+  else if (sec==='medicines')   loadMedicines();
+  else if (sec==='checkins')    loadCheckIns();
+  else if (sec==='moods')       loadMoods();
+  else if (sec==='ai')          loadAI();
+  else if (sec==='care')        loadCare();
+  else if (sec==='games')       loadGames();
+}
+
+// ── Stats ─────────────────────────────────────────
+async function loadStats() {
+  const d = await api('/api/stats');
+  if (!d) return;
+  const map = {
+    'stat-elders':d.elders,'stat-guardians':d.guardians,'stat-connections':d.active_connections,
+    'stat-pending':d.pending_invitations,'stat-week':d.new_this_week,'stat-meds':d.active_medicines,
+    'stat-checkins':d.check_ins_today,'stat-moods':d.moods_this_week,'stat-ai':d.ai_messages_today,
+  };
+  Object.entries(map).forEach(([id,v]) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = v ?? '—';
+  });
+  document.getElementById('last-updated').textContent = 'Updated '+new Date().toLocaleTimeString();
+}
+
+// ── Analytics ─────────────────────────────────────
+async function loadAnalytics() {
+  const d = await api('/api/analytics');
+  if (!d) return;
+
+  mkChart('chart-growth','line', d.user_growth.labels, [{
+    label:'New Users', data:d.user_growth.data,
+    borderColor:'#4F46E5', backgroundColor:'rgba(79,70,229,.1)',
+    tension:.4, fill:true, pointRadius:2,
+  }]);
+
+  mkChart('chart-mood','doughnut', d.mood_dist.labels, [{
+    data:d.mood_dist.data,
+    backgroundColor:['#10B981','#3B82F6','#F59E0B','#F97316','#EF4444'],
+    borderWidth:0,
+  }], {plugins:{legend:{position:'bottom',labels:{boxWidth:12,padding:10}}}});
+
+  mkChart('chart-dow','bar', d.check_in_dow.labels, [{
+    label:'Check-ins', data:d.check_in_dow.data,
+    backgroundColor:'#36B0E6', borderRadius:5,
+  }]);
+
+  mkChart('chart-ai','bar', d.ai_by_day.labels.map(l=>l.slice(5)), [{
+    label:'AI Messages', data:d.ai_by_day.data,
+    backgroundColor:'#8B5CF6', borderRadius:5,
+  }]);
+
+  mkChart('chart-care','doughnut', d.care_by_type.labels, [{
+    data:d.care_by_type.data,
+    backgroundColor:['#EF4444','#8B5CF6','#3B82F6','#10B981'],
+    borderWidth:0,
+  }], {plugins:{legend:{position:'bottom',labels:{boxWidth:12,padding:10}}}});
+
+  mkChart('chart-medcat','bar', d.med_category.labels, [{
+    label:'Medicines', data:d.med_category.data,
+    backgroundColor:'#F43F5E', borderRadius:5,
+  }]);
+}
+
+function mkChart(id, type, labels, datasets, extra={}) {
+  const cvs = document.getElementById(id);
+  if (!cvs) return;
+  if (charts[id]) charts[id].destroy();
+  charts[id] = new Chart(cvs, {
+    type, data:{labels, datasets},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:type==='doughnut'}, ...extra.plugins },
+      scales: type==='doughnut' ? {} : {
+        x:{grid:{display:false}},
+        y:{grid:{color:'#F3F4F6'}, beginAtZero:true, ticks:{precision:0}},
+      },
+      ...extra,
+    },
+  });
+}
+
+// ── Users ─────────────────────────────────────────
+async function loadUsers(page=1) {
+  pages.users = page;
+  const role   = document.getElementById('user-role').value;
+  const search = document.getElementById('user-search').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (role)   p.set('role',role);
+  if (search) p.set('search',search);
+
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="7">Loading…</td></tr>';
+
+  const d = await api('/api/users?'+p);
+  if (!d) return;
+
+  if (!d.success) {
+    tbody.innerHTML = `<tr class="er"><td colspan="7">⚠️ ${esc(d.error || 'Query failed')}</td></tr>`;
+    toast(d.error || 'Users query failed', 'err');
+    return;
+  }
+
+  const users = d.users ?? [];
+
+  if (!users.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="7">No users found</td></tr>';
+  } else {
+    tbody.innerHTML = users.map(u => {
+      const init = (u.full_name||u.email||'U')[0].toUpperCase();
+      const col  = avColor(u.full_name||u.email);
+      return `<tr>
+        <td><div class="uc">
+          <div class="av" style="background:${col}">${init}</div>
+          <div class="uc-info"><b>${esc(u.full_name||'—')}</b><span>${esc(u.email||'—')}</span></div>
+        </div></td>
+        <td><span class="b b-${esc(u.role)}">${esc(u.role||'—')}</span></td>
+        <td>${esc(u.country||'—')}</td>
+        <td>${u.age||'—'}</td>
+        <td>${fmtDate(u.created_at)}</td>
+        <td>${u.is_banned
+          ? '<span class="b b-banned">Banned</span>'
+          : '<span class="b b-active">Active</span>'}</td>
+        <td><div class="btn-gap">
+          ${u.is_banned
+            ? `<button class="btn btn-s" onclick="toggleBan('${u.id}',false,\`${esc(u.full_name||'')}\`)">Unban</button>`
+            : `<button class="btn btn-d" onclick="toggleBan('${u.id}',true,\`${esc(u.full_name||'')}\`)">Ban</button>`}
+          <button class="btn btn-p" onclick="delUser('${u.id}',\`${esc(u.full_name||'')}\`)">Delete</button>
+        </div></td>
+      </tr>`;
+    }).join('');
+  }
+
+  document.getElementById('users-prev').disabled = page<=1;
+  document.getElementById('users-next').disabled = users.length<20;
+  document.getElementById('users-page').textContent = 'Page '+page;
+}
+
+async function toggleBan(id, ban, name) {
+  const ok = await showModal(ban?'Ban User':'Unban User',
+    ban?`Ban "${name}"? They won't be able to use the app.`:`Unban "${name}"? They'll regain full access.`,
+    ban?'danger':'success');
+  if (!ok) return;
+  const d = await api(`/api/users/${id}/ban`,{method:'PATCH',body:JSON.stringify({banned:ban})});
+  if (d?.success) { toast(ban?'User banned':'User unbanned'); loadUsers(pages.users); loadStats(); }
+  else toast('Action failed','err');
+}
+
+async function delUser(id, name) {
+  const ok = await showModal('Delete User',`Permanently delete "${name}" and all their data? This cannot be undone.`,'danger');
+  if (!ok) return;
+  const d = await api(`/api/users/${id}`,{method:'DELETE'});
+  if (d?.success) { toast('User deleted'); loadUsers(pages.users); loadStats(); }
+  else toast('Delete failed','err');
+}
+
+function onUserSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(()=>loadUsers(1), 350);
+}
+
+// ── Connections ───────────────────────────────────
+async function loadConnections(page=1) {
+  pages.connections = page;
+  const status = document.getElementById('conn-status').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (status) p.set('status',status);
+
+  const tbody = document.getElementById('conn-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="9">Loading…</td></tr>';
+
+  const d = await api('/api/connections?'+p);
+  if (!d) return;
+
+  if (!d.success) {
+    tbody.innerHTML = `<tr class="er"><td colspan="9">⚠️ ${esc(d.error || 'Query failed')}</td></tr>`;
+    toast(d.error || 'Connections query failed', 'err');
+    return;
+  }
+
+  const rows = d.connections ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="9">No connections found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(c=>`<tr>
+      <td class="fw">${esc(c.guardian_name)}</td>
+      <td class="mu">${esc(c.guardian_email)}</td>
+      <td>${esc(c.parent_name||'—')}</td>
+      <td class="fw">${esc(c.elder_name)}</td>
+      <td class="mu">${esc(c.elder_email||'—')}</td>
+      <td>${esc(c.relation||'—')}</td>
+      <td><span class="b b-${esc(c.status)}">${esc(c.status)}</span></td>
+      <td>${fmtDate(c.created_at)}</td>
+      <td><button class="btn btn-d" onclick="delConn('${c.id}')">Remove</button></td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('conn-prev').disabled = page<=1;
+  document.getElementById('conn-next').disabled = rows.length<20;
+  document.getElementById('conn-page').textContent = 'Page '+page;
+}
+
+async function delConn(id) {
+  const ok = await showModal('Remove Connection','Permanently remove this guardian–elder connection?','danger');
+  if (!ok) return;
+  const d = await api(`/api/connections/${id}`,{method:'DELETE'});
+  if (d?.success) { toast('Connection removed'); loadConnections(pages.connections); loadStats(); }
+  else toast('Remove failed','err');
+}
+
+// ── Medicines ─────────────────────────────────────
+async function loadMedicines(page=1) {
+  pages.medicines = page;
+  const cat  = document.getElementById('med-category').value;
+  const pri  = document.getElementById('med-priority').value;
+  const act  = document.getElementById('med-active').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (cat) p.set('category',cat);
+  if (pri) p.set('priority',pri);
+  if (act!=='') p.set('active',act);
+
+  const tbody = document.getElementById('meds-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="9">Loading…</td></tr>';
+
+  const d = await api('/api/medicines?'+p);
+  if (!d) return;
+  const rows = d.medicines ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="9">No medicines found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(m=>`<tr>
+      <td><div class="uc">
+        <div class="av" style="background:${avColor(m.user_name)}">${(m.user_name||'U')[0].toUpperCase()}</div>
+        <div class="uc-info"><b>${esc(m.user_name)}</b><span>${esc(m.user_email)}</span></div>
+      </div></td>
+      <td class="fw">${esc(m.name)}</td>
+      <td><span class="b b-${esc(m.category)}">${esc(m.category||'—')}</span></td>
+      <td><span class="b b-${m.priority==='Low'?'LowP':esc(m.priority)}">${esc(m.priority)}</span></td>
+      <td>${esc(m.schedule_time||'—')}</td>
+      <td>${esc(m.frequency||'—')}</td>
+      <td>${m.stock??0}</td>
+      <td>${m.is_active
+        ? '<span class="b b-active">Active</span>'
+        : '<span class="b b-inactive">Inactive</span>'}</td>
+      <td>${fmtDate(m.created_at)}</td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('meds-prev').disabled = page<=1;
+  document.getElementById('meds-next').disabled = rows.length<20;
+  document.getElementById('meds-page').textContent = 'Page '+page;
+}
+
+// ── Check-ins ─────────────────────────────────────
+const MOOD_EMO = {Great:'😁',Good:'😊',Okay:'😐',Low:'😔',Unwell:'🤒'};
+
+async function loadCheckIns(page=1) {
+  pages.checkIns = page;
+  const mood = document.getElementById('ci-mood').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (mood) p.set('mood',mood);
+
+  const tbody = document.getElementById('ci-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="9">Loading…</td></tr>';
+
+  const d = await api('/api/check-ins?'+p);
+  if (!d) return;
+  const rows = d.check_ins ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="9">No check-ins found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(r=>`<tr>
+      <td class="fw">${esc(r.user_name)}</td>
+      <td>${r.date||'—'}</td>
+      <td>${r.mood?`<span class="b b-${esc(r.mood)}">${MOOD_EMO[r.mood]||''} ${r.mood}</span>`:'—'}</td>
+      <td>${esc(r.sleep_quality||'—')}${r.sleep_hours?' ('+r.sleep_hours+'h)':''}</td>
+      <td>${esc(r.energy_level||'—')}</td>
+      <td>${painBar(r.pain_level)}</td>
+      <td style="text-align:center">${r.medications_taken?'✅':'❌'}</td>
+      <td>${esc(r.physical_activity||'—')}</td>
+      <td>${fmtDate(r.created_at)}</td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('ci-prev').disabled = page<=1;
+  document.getElementById('ci-next').disabled = rows.length<20;
+  document.getElementById('ci-page').textContent = 'Page '+page;
+}
+
+// ── Moods ─────────────────────────────────────────
+async function loadMoods(page=1) {
+  pages.moods = page;
+  const mood = document.getElementById('mood-filter').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (mood) p.set('mood',mood);
+
+  const tbody = document.getElementById('moods-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="7">Loading…</td></tr>';
+
+  const d = await api('/api/moods?'+p);
+  if (!d) return;
+  const rows = d.moods ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="7">No mood entries found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(r=>`<tr>
+      <td><div class="uc">
+        <div class="av" style="background:${avColor(r.user_name)}">${(r.user_name||'U')[0].toUpperCase()}</div>
+        <div class="uc-info"><b>${esc(r.user_name)}</b></div>
+      </div></td>
+      <td>${r.date||'—'}</td>
+      <td><span class="b b-${esc(r.mood)}">${MOOD_EMO[r.mood]||''} ${esc(r.mood)}</span></td>
+      <td>${starRow(r.mood_score)}</td>
+      <td><span class="trunc" title="${esc((r.factors||[]).join(', '))}">${esc((r.factors||[]).join(', ')||'—')}</span></td>
+      <td><span class="trunc" title="${esc((r.activities||[]).join(', '))}">${esc((r.activities||[]).join(', ')||'—')}</span></td>
+      <td><span class="trunc" title="${esc(r.notes||'')}">${esc(r.notes||'—')}</span></td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('moods-prev').disabled = page<=1;
+  document.getElementById('moods-next').disabled = rows.length<20;
+  document.getElementById('moods-page').textContent = 'Page '+page;
+}
+
+// ── AI Conversations ──────────────────────────────
+async function loadAI(page=1) {
+  pages.ai = page;
+  const role = document.getElementById('ai-role').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (role) p.set('role',role);
+
+  const tbody = document.getElementById('ai-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="4">Loading…</td></tr>';
+
+  const d = await api('/api/ai-conversations?'+p);
+  if (!d) return;
+  const rows = d.conversations ?? [];
+
+  // Update mini stats on first page
+  if (page===1 && !role) {
+    const stats = await api('/api/stats');
+    if (stats) {
+      document.getElementById('ai-total').textContent = '—';
+      document.getElementById('ai-today').textContent = stats.ai_messages_today ?? '—';
+    }
+  }
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="4">No conversations found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(r=>`<tr>
+      <td><div class="uc">
+        <div class="av" style="background:${avColor(r.user_name)}">${(r.user_name||'U')[0].toUpperCase()}</div>
+        <div class="uc-info"><b>${esc(r.user_name)}</b></div>
+      </div></td>
+      <td><span class="b b-${esc(r.role)}">${r.role==='user'?'👤 User':'🤖 AI'}</span></td>
+      <td><span class="trunc" style="max-width:320px" title="${esc(r.content_preview)}">${esc(r.content_preview)}${(r.content||'').length>120?'…':''}</span></td>
+      <td>${fmtDate(r.created_at)}</td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('ai-prev').disabled = page<=1;
+  document.getElementById('ai-next').disabled = rows.length<20;
+  document.getElementById('ai-page').textContent = 'Page '+page;
+}
+
+// ── Care Events ───────────────────────────────────
+const CARE_EMO = {Doctor:'🏥',Family:'👨‍👩‍👧',Medicine:'💊',Wellness:'🌿'};
+
+async function loadCare(page=1) {
+  pages.care = page;
+  const type = document.getElementById('care-type').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (type) p.set('type',type);
+
+  const tbody = document.getElementById('care-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="7">Loading…</td></tr>';
+
+  const d = await api('/api/care-events?'+p);
+  if (!d) return;
+  const rows = d.events ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="7">No care events found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map(r=>`<tr>
+      <td class="fw">${esc(r.user_name)}</td>
+      <td class="fw">${esc(r.title)}</td>
+      <td class="mu">${esc(r.sub||'—')}</td>
+      <td><span class="b b-${esc(r.type)}">${CARE_EMO[r.type]||''} ${esc(r.type)}</span></td>
+      <td>${r.month?`${r.month} ${r.date}, ${r.year}`:'—'}</td>
+      <td>${esc(r.time||'—')}</td>
+      <td>${fmtDate(r.created_at)}</td>
+    </tr>`).join('');
+  }
+
+  document.getElementById('care-prev').disabled = page<=1;
+  document.getElementById('care-next').disabled = rows.length<20;
+  document.getElementById('care-page').textContent = 'Page '+page;
+}
+
+// ── Mind Games ─────────────────────────────────────
+const GAME_NAMES = {number_memory:'Number Memory',word_match:'Word Match',color_recall:'Color Recall',quiz:'Quiz'};
+
+async function loadGames(page=1) {
+  pages.games = page;
+  const gt = document.getElementById('game-type').value;
+  const p = new URLSearchParams({page, limit:20});
+  if (gt) p.set('game_type',gt);
+
+  const tbody = document.getElementById('games-tbody');
+  tbody.innerHTML = '<tr class="er"><td colspan="5">Loading…</td></tr>';
+
+  const d = await api('/api/mind-games?'+p);
+  if (!d) return;
+  const rows = d.scores ?? [];
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr class="er"><td colspan="5">No scores found</td></tr>';
+  } else {
+    tbody.innerHTML = rows.map((r,i)=>{
+      const rank = (page-1)*20+i+1;
+      const medal = rank===1?'🥇':rank===2?'🥈':rank===3?'🥉':'';
+      return `<tr>
+        <td style="font-weight:700;color:var(--muted)">${medal||rank}</td>
+        <td><div class="uc">
+          <div class="av" style="background:${avColor(r.user_name)}">${(r.user_name||'U')[0].toUpperCase()}</div>
+          <div class="uc-info"><b>${esc(r.user_name)}</b></div>
+        </div></td>
+        <td>${esc(GAME_NAMES[r.game_type]||r.game_type)}</td>
+        <td><b style="font-size:16px;color:var(--purple)">${r.score}</b></td>
+        <td>${fmtDate(r.created_at)}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  document.getElementById('games-prev').disabled = page<=1;
+  document.getElementById('games-next').disabled = rows.length<20;
+  document.getElementById('games-page').textContent = 'Page '+page;
+}
+
+// ── Broadcast ─────────────────────────────────────
+async function sendBroadcast() {
+  const title = document.getElementById('bc-title').value.trim();
+  const body  = document.getElementById('bc-body').value.trim();
+  if (!title || !body) { toast('Title and message are required','err'); return; }
+
+  const btn = document.getElementById('bc-send-btn');
+  btn.disabled = true; btn.textContent = 'Sending…';
+
+  const d = await api('/api/broadcast',{method:'POST',body:JSON.stringify({title,body})});
+  btn.disabled = false; btn.textContent = '📢 Send to All Users';
+
+  const res = document.getElementById('bc-res');
+  res.style.display = 'block';
+  if (d?.success) {
+    res.className = 'bc-res ok';
+    res.textContent = `✅ Broadcast sent to ${d.sent} users!`;
+    document.getElementById('bc-title').value = '';
+    document.getElementById('bc-body').value = '';
+    toast('Broadcast sent to '+d.sent+' users!');
+  } else {
+    res.className = 'bc-res err';
+    res.textContent = '❌ Failed: '+(d?.error||'Unknown error');
+    toast('Broadcast failed','err');
+  }
+  setTimeout(()=>{ res.style.display='none'; },6000);
+}
+
+// ── Auth ──────────────────────────────────────────
+async function doLogin() {
+  const u = document.getElementById('login-u').value.trim();
+  const pw = document.getElementById('login-p').value;
+  const errEl = document.getElementById('login-err');
+  const btn = document.getElementById('login-btn');
+  if (!u||!pw) { errEl.textContent='Enter username and password'; errEl.style.display='block'; return; }
+
+  btn.disabled=true; btn.textContent='Signing in…'; errEl.style.display='none';
+  try {
+    const res = await fetch('/admin/api/login',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username:u, password:pw}),
+    });
+    const d = await res.json();
+    if (d.success && d.token) {
+      token = d.token;
+      sessionStorage.setItem('adminToken',token);
+      showApp();
+    } else {
+      errEl.textContent = d.error||'Login failed';
+      errEl.style.display = 'block';
+    }
+  } catch(e) {
+    errEl.textContent = 'Connection error — is the server running?';
+    errEl.style.display = 'block';
+  }
+  btn.disabled=false; btn.textContent='Log In';
+}
+
+async function doLogout() {
+  await fetch('/admin/api/logout',{method:'POST',headers:{Authorization:`Bearer ${token}`}}).catch(()=>{});
+  sessionStorage.removeItem('adminToken');
+  token=null;
+  Object.values(charts).forEach(c=>c.destroy());
+  charts={};
+  document.getElementById('app').style.display='none';
+  document.getElementById('login-page').style.display='flex';
+}
+
+function showApp() {
+  document.getElementById('login-page').style.display='none';
+  document.getElementById('app').style.display='flex';
+  navigate('dashboard');
+}
+
+// Enter key on login
+document.addEventListener('keydown', e => {
+  if (e.key==='Enter' && document.getElementById('login-page').style.display!=='none') doLogin();
+});
+
+// ── Boot ──────────────────────────────────────────
+if (token) showApp();
+</script>
+</body>
+</html>
