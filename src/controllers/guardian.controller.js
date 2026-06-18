@@ -195,7 +195,10 @@ const guardianElders = async (req, res) => {
 
     const [profilesRes, checkinsRes, medsRes, logsRes] = await Promise.all([
       supabaseClient.from('profiles').select('id, full_name, age, location').in('id', elderIds),
-      supabaseClient.from('daily_check_ins').select('user_id').eq('date', today).in('user_id', elderIds),
+      supabaseClient.from('daily_checkins').select('user_id, created_at')
+        .gte('created_at', `${today}T00:00:00Z`)
+        .lte('created_at', `${today}T23:59:59Z`)
+        .in('user_id', elderIds),
       supabaseClient.from('medicines').select('id, user_id').eq('is_active', true).in('user_id', elderIds),
       supabaseClient.from('medicine_logs').select('medicine_id, user_id')
         .gte('taken_at', `${today}T00:00:00Z`)
@@ -261,7 +264,11 @@ const guardianAlerts = async (req, res) => {
       const eid  = link.elder_id;
 
       const [checkinRes, medsRes] = await Promise.all([
-        supabaseClient.from('daily_check_ins').select('id').eq('user_id', eid).eq('date', today).maybeSingle(),
+        supabaseClient.from('daily_checkins').select('id')
+          .eq('user_id', eid)
+          .gte('created_at', `${today}T00:00:00Z`)
+          .lte('created_at', `${today}T23:59:59Z`)
+          .maybeSingle(),
         supabaseClient.from('medicines').select('id, name').eq('user_id', eid).eq('is_active', true),
       ]);
 
@@ -411,15 +418,15 @@ const guardianReports = async (req, res) => {
     const weekStart = dates[0];
 
     const [moodsRes, medsRes, logsRes, checkinsRes, sleepRes] = await Promise.all([
-      supabaseClient.from('moods').select('date, mood_score').eq('user_id', elderId).in('date', dates),
+      supabaseClient.from('mood_entries').select('created_at, mood_score').eq('user_id', elderId).gte('created_at', `${weekStart}T00:00:00Z`),
       supabaseClient.from('medicines').select('id').eq('user_id', elderId).eq('is_active', true),
       supabaseClient.from('medicine_logs').select('medicine_id').eq('user_id', elderId).gte('taken_at', `${weekStart}T00:00:00Z`),
-      supabaseClient.from('daily_check_ins').select('date').eq('user_id', elderId).in('date', dates),
-      supabaseClient.from('daily_check_ins').select('sleep_hours').eq('user_id', elderId).in('date', dates).not('sleep_hours', 'is', null),
+      supabaseClient.from('daily_checkins').select('created_at').eq('user_id', elderId).gte('created_at', `${weekStart}T00:00:00Z`),
+      supabaseClient.from('daily_checkins').select('sleep_hours').eq('user_id', elderId).gte('created_at', `${weekStart}T00:00:00Z`).not('sleep_hours', 'is', null),
     ]);
 
     const moodMap = {};
-    (moodsRes.data || []).forEach(m => { moodMap[m.date] = m.mood_score; });
+    (moodsRes.data || []).forEach(m => { moodMap[String(m.created_at).slice(0, 10)] = m.mood_score; });
     const bars = dates.map(d => moodMap[d] ? moodMap[d] * 20 : 0);
 
     const activeMeds  = medsRes.data?.length ?? 0;
@@ -432,7 +439,7 @@ const guardianReports = async (req, res) => {
       ? (moods.reduce((s, m) => s + m.mood_score, 0) / moods.length).toFixed(1)
       : null;
 
-    const checkinDates = new Set((checkinsRes.data || []).map(c => c.date));
+    const checkinDates = new Set((checkinsRes.data || []).map(c => String(c.created_at).slice(0, 10)));
     let streak = 0;
     for (let i = dates.length - 1; i >= 0; i--) {
       if (checkinDates.has(dates[i])) streak++;

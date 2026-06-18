@@ -97,8 +97,8 @@ const getStats = async (req, res) => {
       supabaseAdmin('/guardian_elder_links?status=eq.pending&select=id'),
       supabaseAdmin(`/profiles?created_at=gte.${weekAgo}&select=id`),
       supabaseAdmin('/medicines?is_active=eq.true&select=id'),
-      supabaseAdmin(`/daily_check_ins?created_at=gte.${yesterday}&select=id`),
-      supabaseAdmin(`/moods?created_at=gte.${weekAgo}&select=id`),
+      supabaseAdmin(`/daily_checkins?created_at=gte.${yesterday}&select=id`),
+      supabaseAdmin(`/mood_entries?created_at=gte.${weekAgo}&select=id`),
       supabaseAdmin(`/ai_conversations?created_at=gte.${yesterday}&select=id`),
     ]);
 
@@ -126,8 +126,8 @@ const getAnalytics = async (req, res) => {
     const [usersRes, moodsRes, checkInsRes, medsRes, aiRes, careRes, gamesRes] =
       await Promise.all([
         supabaseAdmin(`/profiles?created_at=gte.${thirtyDaysAgo}&select=created_at`),
-        supabaseAdmin(`/moods?created_at=gte.${thirtyDaysAgo}&select=mood,created_at`),
-        supabaseAdmin(`/daily_check_ins?created_at=gte.${thirtyDaysAgo}&select=created_at`),
+        supabaseAdmin(`/mood_entries?created_at=gte.${thirtyDaysAgo}&select=mood_score,created_at`),
+        supabaseAdmin(`/daily_checkins?created_at=gte.${thirtyDaysAgo}&select=created_at`),
         supabaseAdmin('/medicines?select=category'),
         supabaseAdmin(`/ai_conversations?created_at=gte.${thirtyDaysAgo}&select=created_at,role`),
         supabaseAdmin('/care_events?select=type'),
@@ -146,7 +146,11 @@ const getAnalytics = async (req, res) => {
 
     // Mood distribution — last 30 days
     const moodDist = { Great: 0, Good: 0, Okay: 0, Low: 0, Unwell: 0 };
-    (moodsRes.data ?? []).forEach((m) => { if (m.mood in moodDist) moodDist[m.mood]++; });
+    (moodsRes.data ?? []).forEach((m) => {
+      const score = Number(m.mood_score);
+      const label = score >= 5 ? 'Great' : score === 4 ? 'Good' : score === 3 ? 'Okay' : score === 2 ? 'Low' : 'Unwell';
+      moodDist[label]++;
+    });
 
     // Check-in by day of week — last 30 days
     const dowCounts = [0, 0, 0, 0, 0, 0, 0];
@@ -363,7 +367,7 @@ const getCheckIns = async (req, res) => {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   let endpoint =
-    `/daily_check_ins?select=id,user_id,date,mood,mood_score,sleep_quality,sleep_hours,energy_level,pain_level,medications_taken,physical_activity,created_at` +
+    `/daily_checkins?select=id,user_id,created_at,mood_score,sleep_quality,sleep_hours,energy_level,pain_level,medicines_taken,physical_activity,created_at` +
     `&order=created_at.desc&limit=${limit}&offset=${offset}`;
   if (mood) endpoint += `&mood=eq.${mood}`;
 
@@ -386,7 +390,7 @@ const getMoods = async (req, res) => {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   let endpoint =
-    `/moods?select=id,user_id,mood,mood_score,factors,activities,notes,date,created_at` +
+    `/mood_entries?select=id,user_id,mood_score,note,created_at` +
     `&order=created_at.desc&limit=${limit}&offset=${offset}`;
   if (mood) endpoint += `&mood=eq.${mood}`;
 
