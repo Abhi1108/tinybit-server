@@ -472,4 +472,46 @@ const guardianReports = async (req, res) => {
   }
 };
 
-module.exports = { inviteParent, respondToInvitation, getPendingInvitations, savePushToken, guardianElders, guardianAlerts, guardianLocation, guardianReports };
+// GET /api/guardian/connected-guardians
+// Returns connected guardians for the authenticated elder
+const getConnectedGuardians = async (req, res) => {
+  const elderId = req.supabase?.userId;
+  if (!elderId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+  try {
+    const { data: links, error: linksErr } = await supabaseClient
+      .from('guardian_elder_links')
+      .select('guardian_id, relation')
+      .eq('elder_id', elderId)
+      .eq('status', 'connected');
+
+    if (linksErr) throw linksErr;
+    if (!links || links.length === 0) return res.json({ success: true, data: [] });
+
+    const guardianIds = links.map((link) => link.guardian_id).filter(Boolean);
+    const { data: profiles, error: profErr } = await supabaseClient
+      .from('profiles')
+      .select('id, full_name, location, mobile')
+      .in('id', guardianIds);
+
+    if (profErr) throw profErr;
+
+    const profileMap = {};
+    (profiles || []).forEach((profile) => { profileMap[profile.id] = profile; });
+
+    const guardians = links.map((link) => ({
+      id:       link.guardian_id,
+      name:     profileMap[link.guardian_id]?.full_name ?? 'Guardian',
+      relation: link.relation,
+      location: profileMap[link.guardian_id]?.location ?? null,
+      phone:    profileMap[link.guardian_id]?.mobile ?? null,
+    }));
+
+    return res.json({ success: true, data: guardians });
+  } catch (err) {
+    console.error('getConnectedGuardians error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+module.exports = { inviteParent, respondToInvitation, getPendingInvitations, savePushToken, guardianElders, guardianAlerts, guardianLocation, guardianReports, getConnectedGuardians };

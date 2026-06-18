@@ -10,11 +10,13 @@ const {
   guardianAlerts,
   guardianLocation,
   guardianReports,
+  getConnectedGuardians,
 } = require('../controllers/guardian.controller');
 
 router.post('/invite',               requireSupabaseAuth, inviteParent);
 router.post('/respond',              requireSupabaseAuth, respondToInvitation);
 router.get('/pending-invitations',   requireSupabaseAuth, getPendingInvitations);
+router.get('/connected-guardians',   requireSupabaseAuth, getConnectedGuardians);
 router.post('/save-push-token',      requireSupabaseAuth, savePushToken);
 
 router.get('/elders',                requireSupabaseAuth, guardianElders);
