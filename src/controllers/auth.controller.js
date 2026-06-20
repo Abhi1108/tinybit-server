@@ -13,6 +13,40 @@ const { signVerificationToken, verifyVerificationToken } = require('../utils/ver
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 
+function isDuplicateUserError(error) {
+  if (!error) return false;
+  const msg = (error.message ?? '').toLowerCase();
+  return (
+    error.status === 422
+    || msg.includes('already been registered')
+    || msg.includes('already exists')
+    || msg.includes('duplicate')
+  );
+}
+
+/** Sign in an existing auth user via admin magic-link (server-only). */
+async function signInExistingUserByEmail(email) {
+  const { data: linkData, error: linkError } = await supabaseClient.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  });
+
+  if (linkError || !linkData?.properties?.hashed_token) {
+    throw new Error(linkError?.message ?? 'Could not start session');
+  }
+
+  const { data: otpData, error: otpError } = await supabaseClient.auth.verifyOtp({
+    type:       'email',
+    token_hash: linkData.properties.hashed_token,
+  });
+
+  if (otpError || !otpData.session || !otpData.user) {
+    throw new Error(otpError?.message ?? 'Login failed');
+  }
+
+  return otpData;
+}
+
 function sessionPayload(session, user) {
   return {
     access_token:  session.access_token,
@@ -161,30 +195,21 @@ async function completeOtpAuth(req, res) {
     const { phone, countryCode } = verifyVerificationToken(verificationToken);
     const email = phoneToAuthEmail(phone, countryCode);
     const mobile = formatMobile(phone, countryCode);
-
-    const { data: existingWrap } = await supabaseClient.auth.admin.getUserByEmail(email);
-    const existingUser = existingWrap?.user;
+    const password = crypto.randomBytes(32).toString('base64url');
 
     let isNewUser = false;
     let session;
     let user;
 
-    if (!existingUser) {
+    const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      user_metadata: { phone: mobile },
+    });
+
+    if (!createError && created?.user) {
       isNewUser = true;
-      const password = crypto.randomBytes(32).toString('base64url');
-
-      const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-        user_metadata: { phone: mobile },
-      });
-
-      if (createError || !created.user) {
-        console.error('[auth/otp/complete] createUser:', createError?.message);
-        return res.status(500).json({ success: false, message: createError?.message ?? 'Could not create account' });
-      }
-
       const { data: signInData, error: signInError } = await supabaseClient.auth.signInWithPassword({
         email,
         password,
@@ -196,29 +221,18 @@ async function completeOtpAuth(req, res) {
 
       session = signInData.session;
       user = signInData.user;
+    } else if (isDuplicateUserError(createError)) {
+      try {
+        const signInData = await signInExistingUserByEmail(email);
+        session = signInData.session;
+        user = signInData.user;
+      } catch (signInErr) {
+        console.error('[auth/otp/complete] existing user sign-in:', signInErr.message);
+        return res.status(500).json({ success: false, message: signInErr.message ?? 'Login failed' });
+      }
     } else {
-      const { data: linkData, error: linkError } = await supabaseClient.auth.admin.generateLink({
-        type: 'magiclink',
-        email,
-      });
-
-      if (linkError || !linkData?.properties?.hashed_token) {
-        console.error('[auth/otp/complete] generateLink:', linkError?.message);
-        return res.status(500).json({ success: false, message: linkError?.message ?? 'Could not start session' });
-      }
-
-      const { data: otpData, error: otpError } = await supabaseClient.auth.verifyOtp({
-        type:   'email',
-        token_hash: linkData.properties.hashed_token,
-      });
-
-      if (otpError || !otpData.session || !otpData.user) {
-        console.error('[auth/otp/complete] verifyOtp:', otpError?.message);
-        return res.status(500).json({ success: false, message: otpError?.message ?? 'Login failed' });
-      }
-
-      session = otpData.session;
-      user = otpData.user;
+      console.error('[auth/otp/complete] createUser:', createError?.message);
+      return res.status(500).json({ success: false, message: createError?.message ?? 'Could not create account' });
     }
 
     return res.json({
@@ -283,15 +297,6 @@ async function register(req, res) {
     const email = phoneToAuthEmail(phone, countryCode);
     const mobile = formatMobile(phone, countryCode);
 
-    const { data: existingUser } = await supabaseClient.auth.admin.getUserByEmail(email);
-    if (existingUser?.user) {
-      return res.status(409).json({
-        success: false,
-        message: 'Account already exists. Please log in instead.',
-        code: 'USER_EXISTS',
-      });
-    }
-
     const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
       email,
       password,
@@ -302,9 +307,20 @@ async function register(req, res) {
       },
     });
 
-    if (createError || !created.user) {
-      console.error('[auth/register] createUser:', createError?.message);
-      return res.status(500).json({ success: false, message: createError?.message ?? 'Could not create account' });
+    if (createError) {
+      if (isDuplicateUserError(createError)) {
+        return res.status(409).json({
+          success: false,
+          message: 'Account already exists. Please log in instead.',
+          code: 'USER_EXISTS',
+        });
+      }
+      console.error('[auth/register] createUser:', createError.message);
+      return res.status(500).json({ success: false, message: createError.message ?? 'Could not create account' });
+    }
+
+    if (!created?.user) {
+      return res.status(500).json({ success: false, message: 'Could not create account' });
     }
 
     const { data: signInData, error: signInError } = await supabaseClient.auth.signInWithPassword({
