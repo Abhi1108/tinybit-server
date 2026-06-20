@@ -2,6 +2,26 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 
+function parseSupabaseBody(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text.slice(0, 240) };
+  }
+}
+
+function supabaseErrorMessage(data, fallback) {
+  if (!data) return fallback;
+  if (Array.isArray(data)) {
+    return supabaseErrorMessage(data[0], fallback);
+  }
+  if (typeof data.message === 'string' && data.message.trim()) return data.message.trim();
+  if (typeof data.details === 'string' && data.details.trim()) return data.details.trim();
+  if (typeof data.hint === 'string' && data.hint.trim()) return data.hint.trim();
+  return fallback;
+}
+
 async function supabaseAdmin(path, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
     ...options,
@@ -14,19 +34,55 @@ async function supabaseAdmin(path, options = {}) {
     },
   });
   const text = await res.text();
-  return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
+  return { ok: res.ok, status: res.status, data: parseSupabaseBody(text) };
+}
+
+async function ensureGuardianProfile(guardianId, guardianName, email) {
+  const existing = await supabaseAdmin(`/profiles?id=eq.${guardianId}&select=id`);
+  if (existing.data?.[0]?.id) return;
+
+  const insertRes = await supabaseAdmin('/profiles', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: guardianId,
+      email: email ?? null,
+      full_name: guardianName || email || 'Family member',
+      role: 'guardian',
+      plan_type: 'free',
+      plan_status: 'active',
+      plan_currency: 'INR',
+      streak: 0,
+    }),
+  });
+
+  if (!insertRes.ok) {
+    const message = supabaseErrorMessage(
+      insertRes.data,
+      'Complete your profile before inviting an elder.',
+    );
+    const err = new Error(message);
+    err.statusCode = 400;
+    throw err;
+  }
 }
 
 // POST /api/guardian/invite
 // Body: { guardian_id, guardian_name, parent_name, relation, elder_email }
 const inviteParent = async (req, res) => {
-  const { guardian_id, guardian_name, parent_name, relation, elder_email } = req.body;
+  const { guardian_name, parent_name, relation, elder_email } = req.body;
+  const guardian_id = req.supabase?.userId;
 
-  if (!guardian_id || !parent_name || !relation || !elder_email) {
+  if (!guardian_id) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  if (!parent_name || !relation || !elder_email) {
     return res.status(400).json({ success: false, message: 'Missing required fields' });
   }
 
   try {
+    await ensureGuardianProfile(guardian_id, guardian_name, req.supabase?.email);
+
     // Look up the elder's profile by email to get their id and push token
     const elderRes = await supabaseAdmin(
       `/profiles?email=eq.${encodeURIComponent(elder_email)}&select=id,push_token`,
@@ -58,7 +114,7 @@ const inviteParent = async (req, res) => {
     });
 
     if (!insertRes.ok) {
-      throw new Error(insertRes.data?.message ?? 'Failed to create invitation');
+      throw new Error(supabaseErrorMessage(insertRes.data, 'Failed to create invitation'));
     }
 
     // Send push notification if elder has a token
@@ -75,7 +131,11 @@ const inviteParent = async (req, res) => {
     });
   } catch (err) {
     console.error('inviteParent error:', err);
-    return res.status(500).json({ success: false, message: err.message });
+    const status = err.statusCode ?? 500;
+    const message = (err && err.message && String(err.message).trim())
+      ? String(err.message).trim()
+      : 'Could not send invitation. Please try again.';
+    return res.status(status).json({ success: false, message });
   }
 };
 

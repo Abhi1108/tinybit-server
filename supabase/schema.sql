@@ -174,7 +174,51 @@ alter table public.health_readings enable row level security;
 alter table public.ai_conversations enable row level security;
 
 -- Basic owner policies for direct app reads/writes. Server service-role bypasses RLS.
-create policy "profiles own read" on public.profiles for select using (auth.uid() = id);
+create policy "profiles connected read" on public.profiles
+  for select using (
+    auth.uid() = id
+    or exists (
+      select 1 from public.guardian_elder_links g
+      where g.status = 'connected'
+        and (
+          (g.guardian_id = auth.uid() and g.elder_id = profiles.id)
+          or (g.elder_id = auth.uid() and g.guardian_id = profiles.id)
+        )
+    )
+  );
+
+create policy "medicines guardian read connected elder" on public.medicines
+  for select using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.guardian_elder_links g
+      where g.guardian_id = auth.uid()
+        and g.elder_id = medicines.user_id
+        and g.status = 'connected'
+    )
+  );
+
+create policy "medicine_logs guardian read connected elder" on public.medicine_logs
+  for select using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.guardian_elder_links g
+      where g.guardian_id = auth.uid()
+        and g.elder_id = medicine_logs.user_id
+        and g.status = 'connected'
+    )
+  );
+
+create policy "daily_checkins guardian read connected elder" on public.daily_checkins
+  for select using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.guardian_elder_links g
+      where g.guardian_id = auth.uid()
+        and g.elder_id = daily_checkins.user_id
+        and g.status = 'connected'
+    )
+  );
 create policy "profiles own update" on public.profiles for update using (auth.uid() = id);
 create policy "profiles own insert" on public.profiles for insert with check (auth.uid() = id);
 
@@ -187,10 +231,18 @@ create policy "health_readings own all" on public.health_readings for all using 
 create policy "ai_conversations own all" on public.ai_conversations for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "guardian links participant read" on public.guardian_elder_links
-  for select using (auth.uid() = guardian_id or auth.uid() = elder_id);
+  for select using (
+    auth.uid() = guardian_id
+    or auth.uid() = elder_id
+    or elder_email = (select email from public.profiles where id = auth.uid())
+  );
 
 create policy "guardian links guardian insert" on public.guardian_elder_links
   for insert with check (auth.uid() = guardian_id);
 
 create policy "guardian links elder update" on public.guardian_elder_links
-  for update using (auth.uid() = elder_id or auth.uid() = guardian_id);
+  for update using (
+    auth.uid() = elder_id
+    or auth.uid() = guardian_id
+    or elder_email = (select email from public.profiles where id = auth.uid())
+  );

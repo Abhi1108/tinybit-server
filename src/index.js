@@ -25,6 +25,8 @@ app.listen(PORT, '0.0.0.0', () => {
   if (!process.env.SUPABASE_SERVICE_ROLE_KEY) console.warn('⚠️  SUPABASE_SERVICE_ROLE_KEY not set');
   if (!process.env.OPENAI_API_KEY)          console.warn('⚠️  OPENAI_API_KEY not set');
   if (!process.env.GEMINI_API_KEY)          console.warn('⚠️  GEMINI_API_KEY not set');
+  if (!process.env.TWILIO_ACCOUNT_SID)        console.warn('⚠️  TWILIO_ACCOUNT_SID not set — OTP_DEV_MODE active');
+  if (!process.env.OTP_TOKEN_SECRET)          console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
 });
 
 // ── Routes — each mounted independently so one crash can't silence the rest ──
@@ -38,6 +40,7 @@ function mountRoute(path, routeFile) {
   }
 }
 
+mountRoute('/api/auth',        './routes/auth.routes');
 mountRoute('/api/ai',          './routes/ai.routes');
 mountRoute('/api/guardian',    './routes/guardian.routes');
 mountRoute('/api/health-card', './routes/health-card.routes');
