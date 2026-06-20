@@ -7,7 +7,11 @@ dotenv.config();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json({
+  limit: '25mb',
+  strict: true,
+  type: ['application/json', 'application/*+json'],
+}));
 
 // ── Health check first — no deps, responds instantly ─────────────────────────
 app.get('/api/health', (req, res) => {
@@ -33,6 +37,14 @@ mountRoute('/admin',           'routes/admin.routes');
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    console.error('[body] Invalid JSON on', req.method, req.path, '-', err.message);
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid JSON body. Use: {"phone":"9876543210","countryCode":"+91"}',
+    });
+  }
+
   console.error(err.stack);
   res.status(500).json({ success: false, message: 'Internal server error' });
 });
