@@ -1,4 +1,3 @@
-const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -18,22 +17,12 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'TinyBit API is running' });
 });
 
-// ── Routes — use __dirname so requires work on Vercel (cwd ≠ src/) ─────────
-function mountRoute(routePath, routeFile) {
-  try {
-    app.use(routePath, require(path.join(__dirname, routeFile)));
-    console.log(`✅ Route mounted: ${routePath}`);
-  } catch (err) {
-    console.error(`❌ Failed to mount ${routePath}: ${err.message}`);
-    console.error(err.stack);
-  }
-}
-
-mountRoute('/api/auth',        'routes/auth.routes');
-mountRoute('/api/ai',          'routes/ai.routes');
-mountRoute('/api/guardian',    'routes/guardian.routes');
-mountRoute('/api/health-card', 'routes/health-card.routes');
-mountRoute('/admin',           'routes/admin.routes');
+// ── Routes — static requires so Vercel bundles all route files ─────────────
+app.use('/api/auth',        require('./routes/auth.routes'));
+app.use('/api/ai',          require('./routes/ai.routes'));
+app.use('/api/guardian',    require('./routes/guardian.routes'));
+app.use('/api/health-card', require('./routes/health-card.routes'));
+app.use('/admin',           require('./routes/admin.routes'));
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
