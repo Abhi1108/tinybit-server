@@ -1,4 +1,5 @@
 const { supabaseClient } = require('../config/supabase');
+const crypto = require('crypto');
 const { sendOtpSms, isDevMode } = require('../services/twilio.service');
 const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
 const {
@@ -146,6 +147,89 @@ async function verifyOtp(req, res) {
   } catch (err) {
     console.error('[auth/otp/verify]', err);
     return res.status(500).json({ success: false, message: err.message || 'OTP verification failed' });
+  }
+}
+
+/** POST /api/auth/otp/complete — sign in or register after OTP (no user password). */
+async function completeOtpAuth(req, res) {
+  try {
+    const { verificationToken } = req.body ?? {};
+    if (!verificationToken) {
+      return res.status(400).json({ success: false, message: 'Verification token is required' });
+    }
+
+    const { phone, countryCode } = verifyVerificationToken(verificationToken);
+    const email = phoneToAuthEmail(phone, countryCode);
+    const mobile = formatMobile(phone, countryCode);
+
+    const { data: existingWrap } = await supabaseClient.auth.admin.getUserByEmail(email);
+    const existingUser = existingWrap?.user;
+
+    let isNewUser = false;
+    let session;
+    let user;
+
+    if (!existingUser) {
+      isNewUser = true;
+      const password = crypto.randomBytes(32).toString('base64url');
+
+      const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { phone: mobile },
+      });
+
+      if (createError || !created.user) {
+        console.error('[auth/otp/complete] createUser:', createError?.message);
+        return res.status(500).json({ success: false, message: createError?.message ?? 'Could not create account' });
+      }
+
+      const { data: signInData, error: signInError } = await supabaseClient.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (signInError || !signInData.session || !signInData.user) {
+        return res.status(500).json({ success: false, message: 'Account created but sign-in failed' });
+      }
+
+      session = signInData.session;
+      user = signInData.user;
+    } else {
+      const { data: linkData, error: linkError } = await supabaseClient.auth.admin.generateLink({
+        type: 'magiclink',
+        email,
+      });
+
+      if (linkError || !linkData?.properties?.hashed_token) {
+        console.error('[auth/otp/complete] generateLink:', linkError?.message);
+        return res.status(500).json({ success: false, message: linkError?.message ?? 'Could not start session' });
+      }
+
+      const { data: otpData, error: otpError } = await supabaseClient.auth.verifyOtp({
+        type:   'email',
+        token_hash: linkData.properties.hashed_token,
+      });
+
+      if (otpError || !otpData.session || !otpData.user) {
+        console.error('[auth/otp/complete] verifyOtp:', otpError?.message);
+        return res.status(500).json({ success: false, message: otpError?.message ?? 'Login failed' });
+      }
+
+      session = otpData.session;
+      user = otpData.user;
+    }
+
+    return res.json({
+      success: true,
+      isNewUser,
+      session: sessionPayload(session, user),
+    });
+  } catch (err) {
+    console.error('[auth/otp/complete]', err);
+    const status = err.message?.includes('expired') ? 400 : 500;
+    return res.status(status).json({ success: false, message: err.message || 'Could not complete sign-in' });
   }
 }
 
@@ -300,6 +384,7 @@ async function getMe(req, res) {
 module.exports = {
   sendOtp,
   verifyOtp,
+  completeOtpAuth,
   login,
   register,
   refreshSession,
