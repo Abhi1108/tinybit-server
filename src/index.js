@@ -52,6 +52,7 @@ if (!process.env.VERCEL) {
     if (!process.env.GEMINI_API_KEY)              console.warn('⚠️  GEMINI_API_KEY not set');
     if (!process.env.TWILIO_ACCOUNT_SID)          console.warn('⚠️  TWILIO_ACCOUNT_SID not set — OTP_DEV_MODE active');
     if (!process.env.OTP_TOKEN_SECRET)            console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
+    if (!process.env.JWT_SECRET)                  console.warn('⚠️  JWT_SECRET not set — auth endpoints will fail');
   });
 }
 

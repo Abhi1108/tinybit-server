@@ -1,5 +1,4 @@
 const { supabaseClient } = require('../config/supabase');
-const crypto = require('crypto');
 const { sendOtpSms, isDevMode } = require('../services/twilio.service');
 const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
 const {
@@ -10,56 +9,17 @@ const {
   MAX_VERIFY_ATTEMPTS,
 } = require('../utils/otp');
 const { signVerificationToken, verifyVerificationToken } = require('../utils/verificationToken');
+const {
+  findOrCreateByPhone,
+  findByPhone,
+  createUserWithPassword,
+  verifyPassword,
+  issueSession,
+  revokeRefreshToken,
+  refreshSessionFromToken,
+} = require('../services/auth-users.service');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
-
-function isDuplicateUserError(error) {
-  if (!error) return false;
-  const msg = (error.message ?? '').toLowerCase();
-  return (
-    error.status === 422
-    || msg.includes('already been registered')
-    || msg.includes('already exists')
-    || msg.includes('duplicate')
-  );
-}
-
-/** Sign in an existing auth user via admin magic-link (server-only). */
-async function signInExistingUserByEmail(email) {
-  const { data: linkData, error: linkError } = await supabaseClient.auth.admin.generateLink({
-    type: 'magiclink',
-    email,
-  });
-
-  if (linkError || !linkData?.properties?.hashed_token) {
-    throw new Error(linkError?.message ?? 'Could not start session');
-  }
-
-  const { data: otpData, error: otpError } = await supabaseClient.auth.verifyOtp({
-    type:       'email',
-    token_hash: linkData.properties.hashed_token,
-  });
-
-  if (otpError || !otpData.session || !otpData.user) {
-    throw new Error(otpError?.message ?? 'Login failed');
-  }
-
-  return otpData;
-}
-
-function sessionPayload(session, user) {
-  return {
-    access_token:  session.access_token,
-    refresh_token: session.refresh_token,
-    expires_in:    session.expires_in,
-    expires_at:    session.expires_at,
-    token_type:    session.token_type,
-    user: {
-      id:    user.id,
-      email: user.email,
-    },
-  };
-}
 
 /** POST /api/auth/otp/send */
 async function sendOtp(req, res) {
@@ -100,7 +60,7 @@ async function sendOtp(req, res) {
 
     const { error: insertError } = await supabaseClient.from('otp_verifications').insert({
       phone_e164: phoneE164,
-      code_hash:  hashCode(code),
+      code_hash: hashCode(code),
       expires_at: expiresAt,
     });
 
@@ -193,52 +153,16 @@ async function completeOtpAuth(req, res) {
     }
 
     const { phone, countryCode } = verifyVerificationToken(verificationToken);
+    const phoneE164 = toE164(phone, countryCode);
     const email = phoneToAuthEmail(phone, countryCode);
-    const mobile = formatMobile(phone, countryCode);
-    const password = crypto.randomBytes(32).toString('base64url');
 
-    let isNewUser = false;
-    let session;
-    let user;
-
-    const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: { phone: mobile },
-    });
-
-    if (!createError && created?.user) {
-      isNewUser = true;
-      const { data: signInData, error: signInError } = await supabaseClient.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (signInError || !signInData.session || !signInData.user) {
-        return res.status(500).json({ success: false, message: 'Account created but sign-in failed' });
-      }
-
-      session = signInData.session;
-      user = signInData.user;
-    } else if (isDuplicateUserError(createError)) {
-      try {
-        const signInData = await signInExistingUserByEmail(email);
-        session = signInData.session;
-        user = signInData.user;
-      } catch (signInErr) {
-        console.error('[auth/otp/complete] existing user sign-in:', signInErr.message);
-        return res.status(500).json({ success: false, message: signInErr.message ?? 'Login failed' });
-      }
-    } else {
-      console.error('[auth/otp/complete] createUser:', createError?.message);
-      return res.status(500).json({ success: false, message: createError?.message ?? 'Could not create account' });
-    }
+    const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
+    const session = await issueSession(user);
 
     return res.json({
       success: true,
       isNewUser,
-      session: sessionPayload(session, user),
+      session,
     });
   } catch (err) {
     console.error('[auth/otp/complete]', err);
@@ -256,20 +180,22 @@ async function login(req, res) {
     }
 
     const { phone, countryCode } = verifyVerificationToken(verificationToken);
-    const email = phoneToAuthEmail(phone, countryCode);
+    const phoneE164 = toE164(phone, countryCode);
 
-    const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-
-    if (error || !data.session || !data.user) {
-      const msg = error?.message?.toLowerCase().includes('invalid')
-        ? 'Invalid password or account not found'
-        : (error?.message ?? 'Login failed');
-      return res.status(401).json({ success: false, message: msg, code: 'AUTH_FAILED' });
+    const user = await findByPhone(phoneE164);
+    if (!user || !(await verifyPassword(user, password))) {
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid password or account not found',
+        code: 'AUTH_FAILED',
+      });
     }
+
+    const session = await issueSession(user);
 
     return res.json({
       success: true,
-      session: sessionPayload(data.session, data.user),
+      session,
     });
   } catch (err) {
     console.error('[auth/login]', err);
@@ -294,47 +220,42 @@ async function register(req, res) {
     }
 
     const { phone, countryCode } = verifyVerificationToken(verificationToken);
+    const phoneE164 = toE164(phone, countryCode);
     const email = phoneToAuthEmail(phone, countryCode);
     const mobile = formatMobile(phone, countryCode);
+    const trimmedName = fullName.trim();
 
-    const { data: created, error: createError } = await supabaseClient.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      user_metadata: {
-        full_name: fullName.trim(),
-        phone:     mobile,
-      },
-    });
-
-    if (createError) {
-      if (isDuplicateUserError(createError)) {
+    let user;
+    try {
+      user = await createUserWithPassword({ phoneE164, email, password });
+    } catch (err) {
+      if (err.code === 'USER_EXISTS') {
         return res.status(409).json({
           success: false,
           message: 'Account already exists. Please log in instead.',
           code: 'USER_EXISTS',
         });
       }
-      console.error('[auth/register] createUser:', createError.message);
-      return res.status(500).json({ success: false, message: createError.message ?? 'Could not create account' });
+      console.error('[auth/register] createUser:', err.message);
+      return res.status(500).json({ success: false, message: err.message ?? 'Could not create account' });
     }
 
-    if (!created?.user) {
-      return res.status(500).json({ success: false, message: 'Could not create account' });
-    }
+    // full_name hint for onboarding — profile row may be completed in the app later
+    await supabaseClient.from('profiles').upsert(
+      {
+        id: user.id,
+        full_name: trimmedName,
+        email,
+        mobile,
+      },
+      { onConflict: 'id', ignoreDuplicates: false },
+    );
 
-    const { data: signInData, error: signInError } = await supabaseClient.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (signInError || !signInData.session) {
-      return res.status(500).json({ success: false, message: 'Account created but sign-in failed. Try logging in.' });
-    }
+    const session = await issueSession(user);
 
     return res.json({
       success: true,
-      session: sessionPayload(signInData.session, signInData.user),
+      session,
     });
   } catch (err) {
     console.error('[auth/register]', err);
@@ -351,26 +272,41 @@ async function refreshSession(req, res) {
       return res.status(400).json({ success: false, message: 'refresh_token is required' });
     }
 
-    const { data, error } = await supabaseClient.auth.refreshSession({ refresh_token: refreshToken });
-
-    if (error || !data.session) {
-      return res.status(401).json({ success: false, message: 'Session refresh failed' });
-    }
+    const session = await refreshSessionFromToken(refreshToken);
 
     return res.json({
       success: true,
-      session: sessionPayload(data.session, data.user),
+      session,
     });
   } catch (err) {
     console.error('[auth/refresh]', err);
-    return res.status(500).json({ success: false, message: 'Session refresh failed' });
+    const status = err.status === 401 ? 401 : 500;
+    return res.status(status).json({ success: false, message: 'Session refresh failed' });
+  }
+}
+
+/** POST /api/auth/logout */
+async function logout(req, res) {
+  try {
+    const { refresh_token: refreshToken } = req.body ?? {};
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: 'refresh_token is required' });
+    }
+
+    await revokeRefreshToken(refreshToken);
+
+    return res.json({ success: true, message: 'Logged out' });
+  } catch (err) {
+    console.error('[auth/logout]', err);
+    return res.status(500).json({ success: false, message: 'Logout failed' });
   }
 }
 
 /** GET /api/auth/me */
 async function getMe(req, res) {
   try {
-    const userId = req.supabase.userId;
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const email = req.auth?.email ?? req.supabase?.email;
 
     const { data: profile, error } = await supabaseClient
       .from('profiles')
@@ -386,8 +322,8 @@ async function getMe(req, res) {
     return res.json({
       success: true,
       user: {
-        id:    req.supabase.userId,
-        email: req.supabase.email,
+        id: userId,
+        email,
       },
       profile: profile ?? null,
     });
@@ -404,5 +340,6 @@ module.exports = {
   login,
   register,
   refreshSession,
+  logout,
   getMe,
 };

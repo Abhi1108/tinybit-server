@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { requireSupabaseAuth } = require('../middleware/supabaseAuth.middleware');
+const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
   inviteParent,
   respondToInvitation,
@@ -13,15 +13,15 @@ const {
   getConnectedGuardians,
 } = require('../controllers/guardian.controller');
 
-router.post('/invite',               requireSupabaseAuth, inviteParent);
-router.post('/respond',              requireSupabaseAuth, respondToInvitation);
-router.get('/pending-invitations',   requireSupabaseAuth, getPendingInvitations);
-router.get('/connected-guardians',   requireSupabaseAuth, getConnectedGuardians);
-router.post('/save-push-token',      requireSupabaseAuth, savePushToken);
+router.post('/invite',               requireJwtAuth, inviteParent);
+router.post('/respond',              requireJwtAuth, respondToInvitation);
+router.get('/pending-invitations',   requireJwtAuth, getPendingInvitations);
+router.get('/connected-guardians',   requireJwtAuth, getConnectedGuardians);
+router.post('/save-push-token',      requireJwtAuth, savePushToken);
 
-router.get('/elders',                requireSupabaseAuth, guardianElders);
-router.get('/alerts',                requireSupabaseAuth, guardianAlerts);
-router.get('/location',              requireSupabaseAuth, guardianLocation);
-router.get('/reports',               requireSupabaseAuth, guardianReports);
+router.get('/elders',                requireJwtAuth, guardianElders);
+router.get('/alerts',                requireJwtAuth, guardianAlerts);
+router.get('/location',              requireJwtAuth, guardianLocation);
+router.get('/reports',               requireJwtAuth, guardianReports);
 
 module.exports = router;

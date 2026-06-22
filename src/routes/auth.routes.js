@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { requireSupabaseAuth } = require('../middleware/supabaseAuth.middleware');
+const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
   sendOtp,
   verifyOtp,
@@ -8,6 +8,7 @@ const {
   login,
   register,
   refreshSession,
+  logout,
   getMe,
 } = require('../controllers/auth.controller');
 
@@ -17,6 +18,7 @@ router.post('/otp/complete', completeOtpAuth);
 router.post('/login',       login);
 router.post('/register',    register);
 router.post('/refresh',     refreshSession);
-router.get('/me',           requireSupabaseAuth, getMe);
+router.post('/logout',      logout);
+router.get('/me',           requireJwtAuth, getMe);
 
 module.exports = router;

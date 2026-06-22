@@ -1,11 +1,28 @@
-const crypto = require('crypto');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const ADMIN_JWT_AUD = 'tinybit-admin';
+const ADMIN_SESSION_TTL = '24h';
 
-// In-memory session store: token → expiry timestamp
-const sessions = new Map();
+function getAdminJwtSecret() {
+  return process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET || 'tinybit-admin-dev-secret';
+}
+
+function signAdminToken(username) {
+  return jwt.sign(
+    { sub: 'admin', username, role: 'admin' },
+    getAdminJwtSecret(),
+    { expiresIn: ADMIN_SESSION_TTL, audience: ADMIN_JWT_AUD },
+  );
+}
+
+function parseContentRangeTotal(contentRange) {
+  if (!contentRange) return null;
+  const match = contentRange.match(/\/(\d+)$/);
+  return match ? parseInt(match[1], 10) : null;
+}
 
 async function supabaseAdmin(endpoint, options = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1${endpoint}`, {
@@ -19,7 +36,12 @@ async function supabaseAdmin(endpoint, options = {}) {
     },
   });
   const text = await res.text();
-  return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
+  return {
+    ok: res.ok,
+    status: res.status,
+    data: text ? JSON.parse(text) : null,
+    contentRange: res.headers.get('content-range'),
+  };
 }
 
 async function supabaseAuthAdmin(endpoint, options = {}) {
@@ -51,12 +73,12 @@ async function fetchUserMap(userIds) {
 
 // Exported so the route middleware can call it without coupling to req/res
 const checkSession = (token) => {
-  const expiry = sessions.get(token);
-  if (!expiry || Date.now() > expiry) {
-    sessions.delete(token);
+  try {
+    jwt.verify(token, getAdminJwtSecret(), { audience: ADMIN_JWT_AUD });
+    return true;
+  } catch {
     return false;
   }
-  return true;
 };
 
 // POST /admin/api/login
@@ -65,17 +87,15 @@ const login = (req, res) => {
   const validUser = process.env.ADMIN_USERNAME ?? 'admin';
   const validPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
   if (username === validUser && password === validPass) {
-    const token = crypto.randomBytes(32).toString('hex');
-    sessions.set(token, Date.now() + 24 * 60 * 60 * 1000);
-    return res.json({ success: true, token });
+    const token = signAdminToken(username);
+    return res.json({ success: true, token, user: { username, role: 'admin' } });
   }
   return res.status(401).json({ success: false, error: 'Invalid credentials' });
 };
 
 // POST /admin/api/logout
-const logout = (req, res) => {
-  const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) sessions.delete(auth.slice(7));
+const logout = (_req, res) => {
+  // JWT is stateless — client discards the token.
   return res.json({ success: true });
 };
 
@@ -206,37 +226,61 @@ const getAnalytics = async (req, res) => {
 
 // GET /admin/api/users
 const getUsers = async (req, res) => {
-  const { role, search, page = 1, limit = 20 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { role, search, status, page = '1', limit = '20' } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
 
-  const base = `&order=created_at.desc&limit=${limit}&offset=${offset}` + (role ? `&role=eq.${role}` : '');
+  const fullSelect = 'id,full_name,email,mobile,role,country,age,biological_sex,is_banned,last_active,created_at';
+  const safeSelect = 'id,full_name,email,mobile,role,country,age,biological_sex,created_at';
 
-  // Try full select first; fall back to safe columns if is_banned doesn't exist yet
-  const fullSelect = `id,full_name,email,role,country,age,biological_sex,is_banned,last_active,created_at`;
-  const safeSelect = `id,full_name,email,role,country,age,biological_sex,created_at`;
+  const buildQuery = (select) => {
+    const params = new URLSearchParams();
+    params.set('select', select);
+    params.set('order', 'created_at.desc');
+    params.set('limit', String(limitNum));
+    params.set('offset', String(offset));
+    if (role) params.set('role', `eq.${role}`);
+    if (status === 'suspended') params.set('is_banned', 'eq.true');
+    else if (status === 'active') params.set('is_banned', 'eq.false');
+
+    const term = String(search ?? '').trim();
+    if (term) {
+      const pattern = `*${term.replace(/[*,()]/g, '')}*`;
+      params.set('or', `(full_name.ilike.${pattern},email.ilike.${pattern},mobile.ilike.${pattern})`);
+    }
+
+    return `/profiles?${params.toString()}`;
+  };
 
   try {
-    let result = await supabaseAdmin(`/profiles?select=${fullSelect}${base}`);
+    let endpoint = buildQuery(fullSelect);
+    let result = await supabaseAdmin(endpoint, {
+      headers: { Prefer: 'count=exact' },
+    });
 
     if (!result.ok) {
       console.warn('[admin] getUsers full select failed, falling back:', result.data?.message);
-      result = await supabaseAdmin(`/profiles?select=${safeSelect}${base}`);
+      endpoint = buildQuery(safeSelect);
+      result = await supabaseAdmin(endpoint, {
+        headers: { Prefer: 'count=exact' },
+      });
     }
 
     if (!result.ok) {
       return res.status(500).json({ success: false, error: result.data?.message ?? 'Database query failed' });
     }
 
-    let users = (result.data ?? []).map((u) => ({ ...u, is_banned: u.is_banned ?? false }));
+    const users = (result.data ?? []).map((u) => ({ ...u, is_banned: u.is_banned ?? false }));
+    const total = parseContentRangeTotal(result.contentRange) ?? users.length;
 
-    if (search) {
-      const q = search.toLowerCase();
-      users = users.filter(
-        (u) => u.full_name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q),
-      );
-    }
-
-    return res.json({ success: true, users });
+    return res.json({
+      success: true,
+      users,
+      total,
+      page: pageNum,
+      limit: limitNum,
+    });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
