@@ -23,7 +23,11 @@ const OTP_REMOVED_MESSAGE =
 
 /** POST /api/auth/otp/* — removed (Firebase phone auth on device). */
 function deprecatedOtpEndpoint(_req, res) {
-  return res.status(410).json({ success: false, message: OTP_REMOVED_MESSAGE });
+  return res.status(410).json({
+    success: false,
+    message: OTP_REMOVED_MESSAGE,
+    hint: 'Install a recent TinyBit build. OTP is sent by Firebase on the device, then exchanged at POST /api/auth/phone.',
+  });
 }
 
 /** POST /api/auth/login */
@@ -163,12 +167,13 @@ function googleAuthStatus(req, res) {
   return res.json({
     success: true,
     ...status,
+    phoneAuth: 'firebase-on-device',
     hint: status.projectMatchesApp === false
       ? `Vercel service account is for "${status.projectId}" but the app uses "${status.expectedProjectId}". ` +
         'Download the service account key from the same Firebase project as google-services.json.'
       : !status.configured
         ? 'Set FIREBASE_SERVICE_ACCOUNT_JSON on Vercel, then redeploy.'
-        : 'Firebase Admin looks correctly configured. If sign-in still fails, rebuild the app after updating google-services.json.',
+        : 'Firebase Admin looks correctly configured. Phone OTP is sent on-device via Firebase; rebuild the app after updating google-services.json.',
   });
 }
 
@@ -277,13 +282,29 @@ async function phoneAuth(req, res) {
       decoded = await verifyFirebaseIdToken(token);
     } catch (err) {
       const status = getFirebaseAdminStatus();
+      const claims = peekJwtClaims(token);
       console.error('[auth/phone] token verify failed:', err.code || err.message, {
         adminProjectId: status.projectId,
         expectedProjectId: status.expectedProjectId,
+        tokenLength: token.length,
+        tokenClaims: claims,
       });
+
+      let hint;
+      if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+        hint = 'App sent a non-Firebase token. Rebuild the app and sign in again.';
+      } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
+        hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;
+      } else if (status.projectMatchesApp === false) {
+        hint = `Server Firebase project (${status.projectId}) does not match app (${status.expectedProjectId}).`;
+      } else if (!status.configured) {
+        hint = 'Set FIREBASE_SERVICE_ACCOUNT_JSON on Vercel, then redeploy tinybit-server.';
+      }
+
       return res.status(401).json({
         success: false,
         message: 'Invalid phone sign-in token',
+        hint,
       });
     }
 
