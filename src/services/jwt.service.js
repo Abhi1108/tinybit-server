@@ -25,7 +25,6 @@ function assertJwtSecret() {
 /** @param {{ id: string, email: string }} user */
 function signAccessToken(user) {
   assertJwtSecret();
-  const now = Math.floor(Date.now() / 1000);
   return jwt.sign(
     {
       sub: user.id,
@@ -37,7 +36,6 @@ function signAccessToken(user) {
     {
       algorithm: 'HS256',
       expiresIn: ACCESS_TTL_SECONDS,
-      iat: now,
     },
   );
 }
