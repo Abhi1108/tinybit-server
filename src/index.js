@@ -21,6 +21,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth',        require('./routes/auth.routes'));
 app.use('/api/ai',          require('./routes/ai.routes'));
 app.use('/api/guardian',    require('./routes/guardian.routes'));
+app.use('/api/sos',         require('./routes/sos.routes'));
 app.use('/api/health-card', require('./routes/health-card.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
@@ -50,7 +51,6 @@ if (!process.env.VERCEL) {
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY)   console.warn('⚠️  SUPABASE_SERVICE_ROLE_KEY not set');
     if (!process.env.OPENAI_API_KEY)              console.warn('⚠️  OPENAI_API_KEY not set');
     if (!process.env.GEMINI_API_KEY)              console.warn('⚠️  GEMINI_API_KEY not set');
-    if (!process.env.TWILIO_ACCOUNT_SID)          console.warn('⚠️  TWILIO_ACCOUNT_SID not set — OTP_DEV_MODE active');
     if (!process.env.OTP_TOKEN_SECRET)            console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
     if (!process.env.JWT_SECRET)                  console.warn('⚠️  JWT_SECRET not set — auth endpoints will fail');
   });

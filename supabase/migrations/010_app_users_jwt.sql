@@ -20,6 +20,37 @@ create table if not exists public.refresh_tokens (
 
 create index if not exists refresh_tokens_token_hash_idx on public.refresh_tokens(token_hash);
 
+-- Backfill app_users for legacy profiles (auth.users era) before repointing FK
+insert into public.app_users (id, phone_e164, email, created_at, updated_at)
+select
+  p.id,
+  case
+    when nullif(trim(p.mobile), '') is not null
+      and not exists (
+        select 1 from public.app_users u
+        where u.phone_e164 = trim(p.mobile)
+      )
+      then trim(p.mobile)
+    when p.email ~ '^\d+@phone\.tinybit\.app$'
+      and not exists (
+        select 1 from public.app_users u
+        where u.phone_e164 = '+' || split_part(p.email, '@', 1)
+      )
+      then '+' || split_part(p.email, '@', 1)
+    else '+99' || right(replace(p.id::text, '-', ''), 13)
+  end as phone_e164,
+  coalesce(
+    nullif(lower(trim(p.email)), ''),
+    p.id::text || '@legacy.tinybit.app'
+  ) as email,
+  coalesce(p.created_at, now()) as created_at,
+  now() as updated_at
+from public.profiles p
+where not exists (
+  select 1 from public.app_users u where u.id = p.id
+)
+on conflict (id) do nothing;
+
 -- Repoint profiles.id FK from auth.users → app_users (when safe)
 do $$
 declare

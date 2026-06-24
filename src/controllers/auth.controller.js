@@ -1,14 +1,6 @@
 const { supabaseClient } = require('../config/supabase');
-const { sendOtpSms, isDevMode } = require('../services/twilio.service');
 const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
-const {
-  generateCode,
-  hashCode,
-  verifyCode,
-  OTP_TTL_MS,
-  MAX_VERIFY_ATTEMPTS,
-} = require('../utils/otp');
-const { signVerificationToken, verifyVerificationToken } = require('../utils/verificationToken');
+const { verifyVerificationToken } = require('../utils/verificationToken');
 const {
   findOrCreateByPhone,
   findByPhone,
@@ -19,158 +11,19 @@ const {
   refreshSessionFromToken,
   findOrCreateByGoogle,
 } = require('../services/auth-users.service');
-const { verifyFirebaseIdToken } = require('../services/firebase-admin.service');
+const {
+  verifyFirebaseIdToken,
+  getFirebaseAdminStatus,
+  peekJwtClaims,
+  normalizeIdToken,
+} = require('../services/firebase-admin.service');
 
-const RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_REMOVED_MESSAGE =
+  'Twilio OTP was removed. Update the app and sign in with Firebase phone auth.';
 
-/** POST /api/auth/otp/send */
-async function sendOtp(req, res) {
-  try {
-    const { phone, countryCode = '+91' } = req.body ?? {};
-    if (!phone) {
-      return res.status(400).json({ success: false, message: 'Phone number is required' });
-    }
-
-    let phoneE164;
-    try {
-      phoneE164 = toE164(phone, countryCode);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid phone number' });
-    }
-
-    const { data: recent } = await supabaseClient
-      .from('otp_verifications')
-      .select('created_at')
-      .eq('phone_e164', phoneE164)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (recent?.created_at) {
-      const elapsed = Date.now() - new Date(recent.created_at).getTime();
-      if (elapsed < RESEND_COOLDOWN_MS) {
-        const wait = Math.ceil((RESEND_COOLDOWN_MS - elapsed) / 1000);
-        return res.status(429).json({
-          success: false,
-          message: `Please wait ${wait}s before requesting another OTP`,
-        });
-      }
-    }
-
-    const code = generateCode();
-    const expiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
-
-    const { error: insertError } = await supabaseClient.from('otp_verifications').insert({
-      phone_e164: phoneE164,
-      code_hash: hashCode(code),
-      expires_at: expiresAt,
-    });
-
-    if (insertError) {
-      console.error('[auth/otp/send] insert error:', insertError.message);
-      return res.status(500).json({ success: false, message: 'Could not create OTP. Try again.' });
-    }
-
-    await sendOtpSms(phoneE164, code);
-
-    return res.json({
-      success: true,
-      message: 'OTP sent',
-      devMode: isDevMode(),
-    });
-  } catch (err) {
-    console.error('[auth/otp/send]', err);
-    return res.status(500).json({ success: false, message: err.message || 'Failed to send OTP' });
-  }
-}
-
-/** POST /api/auth/otp/verify */
-async function verifyOtp(req, res) {
-  try {
-    const { phone, countryCode = '+91', code } = req.body ?? {};
-    if (!phone || !code) {
-      return res.status(400).json({ success: false, message: 'Phone and OTP code are required' });
-    }
-
-    let phoneE164;
-    try {
-      phoneE164 = toE164(phone, countryCode);
-    } catch {
-      return res.status(400).json({ success: false, message: 'Invalid phone number' });
-    }
-
-    const { data: row, error } = await supabaseClient
-      .from('otp_verifications')
-      .select('*')
-      .eq('phone_e164', phoneE164)
-      .is('verified_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !row) {
-      return res.status(400).json({ success: false, message: 'No OTP found. Please request a new one.' });
-    }
-
-    if (new Date(row.expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
-    }
-
-    if (row.attempts >= MAX_VERIFY_ATTEMPTS) {
-      return res.status(429).json({ success: false, message: 'Too many attempts. Request a new OTP.' });
-    }
-
-    if (!verifyCode(String(code), row.code_hash)) {
-      await supabaseClient
-        .from('otp_verifications')
-        .update({ attempts: row.attempts + 1 })
-        .eq('id', row.id);
-
-      return res.status(400).json({ success: false, message: 'Incorrect OTP. Please try again.' });
-    }
-
-    await supabaseClient
-      .from('otp_verifications')
-      .update({ verified_at: new Date().toISOString() })
-      .eq('id', row.id);
-
-    const verificationToken = signVerificationToken({ phone, countryCode });
-
-    return res.json({
-      success: true,
-      verificationToken,
-    });
-  } catch (err) {
-    console.error('[auth/otp/verify]', err);
-    return res.status(500).json({ success: false, message: err.message || 'OTP verification failed' });
-  }
-}
-
-/** POST /api/auth/otp/complete — sign in or register after OTP (no user password). */
-async function completeOtpAuth(req, res) {
-  try {
-    const { verificationToken } = req.body ?? {};
-    if (!verificationToken) {
-      return res.status(400).json({ success: false, message: 'Verification token is required' });
-    }
-
-    const { phone, countryCode } = verifyVerificationToken(verificationToken);
-    const phoneE164 = toE164(phone, countryCode);
-    const email = phoneToAuthEmail(phone, countryCode);
-
-    const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
-    const session = await issueSession(user);
-
-    return res.json({
-      success: true,
-      isNewUser,
-      session,
-    });
-  } catch (err) {
-    console.error('[auth/otp/complete]', err);
-    const status = err.message?.includes('expired') ? 400 : 500;
-    return res.status(status).json({ success: false, message: err.message || 'Could not complete sign-in' });
-  }
+/** POST /api/auth/otp/* — removed (Firebase phone auth on device). */
+function deprecatedOtpEndpoint(_req, res) {
+  return res.status(410).json({ success: false, message: OTP_REMOVED_MESSAGE });
 }
 
 /** POST /api/auth/login */
@@ -304,6 +157,21 @@ async function logout(req, res) {
   }
 }
 
+/** GET /api/auth/google/status — Firebase Admin config check (no secrets). */
+function googleAuthStatus(req, res) {
+  const status = getFirebaseAdminStatus();
+  return res.json({
+    success: true,
+    ...status,
+    hint: status.projectMatchesApp === false
+      ? `Vercel service account is for "${status.projectId}" but the app uses "${status.expectedProjectId}". ` +
+        'Download the service account key from the same Firebase project as google-services.json.'
+      : !status.configured
+        ? 'Set FIREBASE_SERVICE_ACCOUNT_JSON on Vercel, then redeploy.'
+        : 'Firebase Admin looks correctly configured. If sign-in still fails, rebuild the app after updating google-services.json.',
+  });
+}
+
 /** POST /api/auth/google — Firebase Google ID token → TinyBit session */
 async function googleAuth(req, res) {
   try {
@@ -312,12 +180,43 @@ async function googleAuth(req, res) {
       return res.status(400).json({ success: false, message: 'idToken is required' });
     }
 
+    let token;
+    try {
+      token = normalizeIdToken(idToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'idToken is invalid',
+      });
+    }
+
     let decoded;
     try {
-      decoded = await verifyFirebaseIdToken(idToken);
+      decoded = await verifyFirebaseIdToken(token);
     } catch (err) {
-      console.error('[auth/google] token verify failed:', err.message);
-      return res.status(401).json({ success: false, message: 'Invalid Google sign-in token' });
+      const status = getFirebaseAdminStatus();
+      const claims = peekJwtClaims(token);
+      console.error('[auth/google] token verify failed:', err.code || err.message, {
+        adminProjectId: status.projectId,
+        expectedProjectId: status.expectedProjectId,
+        tokenLength: token.length,
+        tokenClaims: claims,
+      });
+
+      let hint;
+      if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+        hint = 'App sent a Google OAuth token, not a Firebase ID token. Rebuild the app and sign in again.';
+      } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
+        hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;
+      } else if (status.projectMatchesApp === false) {
+        hint = `Server Firebase project (${status.projectId}) does not match app (${status.expectedProjectId}).`;
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Google sign-in token',
+        hint,
+      });
     }
 
     const email = decoded.email;
@@ -355,6 +254,73 @@ async function googleAuth(req, res) {
   }
 }
 
+/** POST /api/auth/phone — Firebase phone ID token → TinyBit session */
+async function phoneAuth(req, res) {
+  try {
+    const { idToken } = req.body ?? {};
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'idToken is required' });
+    }
+
+    let token;
+    try {
+      token = normalizeIdToken(idToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'idToken is invalid',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(token);
+    } catch (err) {
+      const status = getFirebaseAdminStatus();
+      console.error('[auth/phone] token verify failed:', err.code || err.message, {
+        adminProjectId: status.projectId,
+        expectedProjectId: status.expectedProjectId,
+      });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid phone sign-in token',
+      });
+    }
+
+    const phoneNumber = decoded.phone_number;
+    if (!phoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: 'Firebase token must include a verified phone_number claim',
+      });
+    }
+
+    const phoneE164 = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber.replace(/\D/g, '')}`;
+    const digitsOnly = phoneE164.replace(/\D/g, '');
+    const email = `${digitsOnly}@phone.tinybit.app`;
+
+    const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
+
+    if (isNewUser) {
+      await supabaseClient.from('profiles').upsert(
+        { id: user.id, email: user.email, mobile: phoneE164 },
+        { onConflict: 'id' },
+      );
+    }
+
+    const session = await issueSession(user);
+
+    return res.json({
+      success: true,
+      isNewUser,
+      session,
+    });
+  } catch (err) {
+    console.error('[auth/phone]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Phone sign-in failed' });
+  }
+}
+
 /** PATCH /api/auth/profile — upsert onboarding / profile fields (service role, no Supabase JWT on client). */
 async function updateProfile(req, res) {
   try {
@@ -375,6 +341,12 @@ async function updateProfile(req, res) {
       'height_unit',
       'weight',
       'weight_unit',
+      'date_of_birth',
+      'blood_group',
+      'medical_conditions',
+      'emergency_name',
+      'emergency_phone',
+      'emergency_relation',
     ];
 
     const patch = {};
@@ -404,6 +376,13 @@ async function updateProfile(req, res) {
 
     if (error) {
       console.error('[auth/profile] upsert error:', error.message);
+      if (error.code === '23503' && /profiles_id_fkey/i.test(error.message ?? '')) {
+        return res.status(500).json({
+          success: false,
+          message:
+            'Database setup incomplete: profiles must reference app_users. Run migration 010_app_users_jwt.sql in Supabase.',
+        });
+      }
       return res.status(500).json({ success: false, message: 'Could not save profile' });
     }
 
@@ -445,15 +424,86 @@ async function getMe(req, res) {
   }
 }
 
+const USER_SETTINGS_COLUMNS =
+  'user_id, voice_navigation, vibration_alerts, fall_detection, night_mode, font_scale, language, updated_at';
+
+/** GET /api/auth/settings */
+async function getSettings(req, res) {
+  try {
+    const userId = req.auth.userId;
+    const { data, error } = await supabaseClient
+      .from('user_settings')
+      .select(USER_SETTINGS_COLUMNS)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      if (error.code === 'PGRST205' || error.code === '42P01') {
+        return res.json({ success: true, settings: null });
+      }
+      console.error('[auth/settings] read error:', error.message);
+      return res.status(500).json({ success: false, message: 'Could not load settings' });
+    }
+
+    return res.json({ success: true, settings: data ?? null });
+  } catch (err) {
+    console.error('[auth/settings]', err);
+    return res.status(500).json({ success: false, message: 'Could not load settings' });
+  }
+}
+
+/** PATCH /api/auth/settings */
+async function updateSettings(req, res) {
+  try {
+    const userId = req.auth.userId;
+    const body = req.body ?? {};
+    const allowed = [
+      'voice_navigation',
+      'vibration_alerts',
+      'fall_detection',
+      'night_mode',
+      'font_scale',
+      'language',
+    ];
+
+    const patch = {};
+    for (const key of allowed) {
+      if (body[key] !== undefined) patch[key] = body[key];
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, message: 'No settings to update' });
+    }
+
+    const { data, error } = await supabaseClient
+      .from('user_settings')
+      .upsert({ user_id: userId, ...patch }, { onConflict: 'user_id' })
+      .select(USER_SETTINGS_COLUMNS)
+      .single();
+
+    if (error) {
+      console.error('[auth/settings] upsert error:', error.message);
+      return res.status(500).json({ success: false, message: 'Could not save settings' });
+    }
+
+    return res.json({ success: true, settings: data });
+  } catch (err) {
+    console.error('[auth/settings]', err);
+    return res.status(500).json({ success: false, message: 'Could not save settings' });
+  }
+}
+
 module.exports = {
-  sendOtp,
-  verifyOtp,
-  completeOtpAuth,
+  deprecatedOtpEndpoint,
   login,
   register,
   googleAuth,
+  phoneAuth,
+  googleAuthStatus,
   refreshSession,
   logout,
   getMe,
   updateProfile,
+  getSettings,
+  updateSettings,
 };
