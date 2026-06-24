@@ -1,4 +1,16 @@
 const { verifyAccessToken } = require('../services/jwt.service');
+const { supabaseClient } = require('../config/supabase');
+
+function touchLastActive(userId) {
+  if (!userId) return;
+  void supabaseClient
+    .from('profiles')
+    .update({ last_active: new Date().toISOString() })
+    .eq('id', userId)
+    .then(({ error }) => {
+      if (error) console.warn('[auth] last_active update failed:', error.message);
+    });
+}
 
 function requireJwtAuth(req, res, next) {
   const authHeader = req.headers.authorization || '';
@@ -20,8 +32,8 @@ function requireJwtAuth(req, res, next) {
       email: payload.email,
     };
     req.auth = auth;
-    // Backward compat for controllers that read req.supabase
     req.supabase = auth;
+    touchLastActive(auth.userId);
     return next();
   } catch (_error) {
     return res.status(401).json({ success: false, message: 'Token invalid or expired' });

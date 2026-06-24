@@ -1,5 +1,13 @@
 const path = require('path');
 const jwt = require('jsonwebtoken');
+const { toE164, phoneToAuthEmail } = require('../utils/phone');
+const {
+  createUserWithPassword,
+  deleteAppUser,
+  findAppUserById,
+  findByPhone,
+  findOrCreateByPhone,
+} = require('../services/auth-users.service');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -57,6 +65,43 @@ async function supabaseAuthAdmin(endpoint, options = {}) {
   const text = await res.text();
   return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
 }
+
+async function attachConnectionCounts(users, role) {
+  if (!users.length) return users;
+
+  const ids = users.map((u) => u.id).join(',');
+  if (role === 'guardian') {
+    const linksRes = await supabaseAdmin(
+      `/guardian_elder_links?guardian_id=in.(${ids})&status=eq.connected&select=guardian_id`,
+    );
+    const counts = {};
+    (linksRes.data ?? []).forEach((l) => {
+      counts[l.guardian_id] = (counts[l.guardian_id] || 0) + 1;
+    });
+    return users.map((u) => ({ ...u, linked_elder_count: counts[u.id] || 0 }));
+  }
+
+  if (role === 'elder') {
+    const linksRes = await supabaseAdmin(
+      `/guardian_elder_links?elder_id=in.(${ids})&status=eq.connected&select=elder_id`,
+    );
+    const counts = {};
+    (linksRes.data ?? []).forEach((l) => {
+      if (l.elder_id) counts[l.elder_id] = (counts[l.elder_id] || 0) + 1;
+    });
+    return users.map((u) => ({ ...u, guardian_count: counts[u.id] || 0 }));
+  }
+
+  return users;
+}
+
+const PROFILE_PATCH_FIELDS = [
+  'full_name', 'first_name', 'last_name', 'email', 'mobile', 'role',
+  'country', 'country_code', 'age', 'biological_sex', 'location',
+  'preferred_language', 'blood_group', 'medical_conditions',
+  'emergency_phone', 'emergency_name', 'emergency_relation',
+  'plan_type', 'plan_status', 'is_banned',
+];
 
 // Helper: fetch profile names for a set of user IDs
 async function fetchUserMap(userIds) {
@@ -271,7 +316,8 @@ const getUsers = async (req, res) => {
       return res.status(500).json({ success: false, error: result.data?.message ?? 'Database query failed' });
     }
 
-    const users = (result.data ?? []).map((u) => ({ ...u, is_banned: u.is_banned ?? false }));
+    let users = (result.data ?? []).map((u) => ({ ...u, is_banned: u.is_banned ?? false }));
+    users = await attachConnectionCounts(users, role);
     const total = parseContentRangeTotal(result.contentRange) ?? users.length;
 
     return res.json({
@@ -281,6 +327,238 @@ const getUsers = async (req, res) => {
       page: pageNum,
       limit: limitNum,
     });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// GET /admin/api/users/incomplete — app_users without profiles (OTP-only signups)
+const getIncompleteUsers = async (req, res) => {
+  const { page = '1', limit = '20' } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  try {
+    const endpoint =
+      `/app_users?select=id,phone_e164,email,created_at,profiles(id)` +
+      `&profiles=is.null&order=created_at.desc&limit=${limitNum}&offset=${offset}`;
+    const result = await supabaseAdmin(endpoint, { headers: { Prefer: 'count=exact' } });
+    if (!result.ok) {
+      return res.status(500).json({ success: false, error: result.data?.message ?? 'Query failed' });
+    }
+
+    const users = (result.data ?? []).map((row) => ({
+      id: row.id,
+      full_name: null,
+      email: row.email,
+      mobile: row.phone_e164,
+      role: 'pending',
+      country: null,
+      age: null,
+      biological_sex: null,
+      is_banned: false,
+      last_active: null,
+      created_at: row.created_at,
+      profile_incomplete: true,
+    }));
+
+    return res.json({
+      success: true,
+      users,
+      total: parseContentRangeTotal(result.contentRange) ?? users.length,
+      page: pageNum,
+      limit: limitNum,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// GET /admin/api/users/export
+const exportUsers = async (req, res) => {
+  const { role, status } = req.query;
+  const params = new URLSearchParams();
+  params.set('select', 'id,full_name,email,mobile,role,country,age,is_banned,created_at,last_active');
+  params.set('order', 'created_at.desc');
+  params.set('limit', '5000');
+  if (role) params.set('role', `eq.${role}`);
+  if (status === 'suspended') params.set('is_banned', 'eq.true');
+  else if (status === 'active') params.set('is_banned', 'eq.false');
+
+  try {
+    const result = await supabaseAdmin(`/profiles?${params.toString()}`);
+    if (!result.ok) {
+      return res.status(500).json({ success: false, error: result.data?.message ?? 'Export failed' });
+    }
+
+    const rows = result.data ?? [];
+    const header = ['id', 'full_name', 'email', 'mobile', 'role', 'country', 'age', 'is_banned', 'created_at', 'last_active'];
+    const escape = (v) => {
+      const s = v == null ? '' : String(v);
+      return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      header.join(','),
+      ...rows.map((r) => header.map((k) => escape(r[k])).join(',')),
+    ];
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="tinybit-users-${role || 'all'}.csv"`);
+    return res.send(lines.join('\n'));
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// GET /admin/api/users/:id
+const getUserById = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [profileRes, appUser, linksAsGuardian, linksAsElder] = await Promise.all([
+      supabaseAdmin(`/profiles?id=eq.${id}&select=*`),
+      findAppUserById(id),
+      supabaseAdmin(`/guardian_elder_links?guardian_id=eq.${id}&select=*&order=created_at.desc`),
+      supabaseAdmin(`/guardian_elder_links?elder_id=eq.${id}&select=*&order=created_at.desc`),
+    ]);
+
+    const profile = profileRes.data?.[0] ?? null;
+    if (!profile && !appUser) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+
+    const linkIds = [
+      ...(linksAsGuardian.data ?? []).map((l) => l.elder_id).filter(Boolean),
+      ...(linksAsElder.data ?? []).map((l) => l.guardian_id),
+    ];
+    const userMap = await fetchUserMap([...new Set(linkIds)]);
+
+    const enrichLink = (link) => ({
+      ...link,
+      guardian_name: userMap[link.guardian_id]?.full_name ?? '—',
+      guardian_email: userMap[link.guardian_id]?.email ?? '—',
+      elder_name: link.elder_id ? (userMap[link.elder_id]?.full_name ?? '—') : '—',
+    });
+
+    return res.json({
+      success: true,
+      profile,
+      app_user: appUser,
+      connections: {
+        as_guardian: (linksAsGuardian.data ?? []).map(enrichLink),
+        as_elder: (linksAsElder.data ?? []).map(enrichLink),
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// POST /admin/api/users
+const createUser = async (req, res) => {
+  const {
+    phone,
+    countryCode = '+91',
+    fullName,
+    password,
+    role = 'elder',
+    email: explicitEmail,
+    ...rest
+  } = req.body ?? {};
+
+  if (!phone) {
+    return res.status(400).json({ success: false, error: 'phone is required' });
+  }
+  if (!['elder', 'guardian', 'caregiver'].includes(role)) {
+    return res.status(400).json({ success: false, error: 'Invalid role' });
+  }
+
+  try {
+    const phoneE164 = toE164(phone, countryCode);
+    const authEmail = explicitEmail || phoneToAuthEmail(phone, countryCode);
+
+    let appUser;
+    if (password) {
+      appUser = await createUserWithPassword({ phoneE164, email: authEmail, password });
+    } else {
+      const existing = await findByPhone(phoneE164);
+      if (existing) {
+        return res.status(409).json({ success: false, error: 'User with this phone already exists' });
+      }
+      const created = await findOrCreateByPhone(phoneE164, authEmail);
+      appUser = created.user;
+    }
+
+    const profilePayload = {
+      id: appUser.id,
+      full_name: fullName || null,
+      email: explicitEmail || authEmail,
+      mobile: phoneE164,
+      role,
+      plan_type: 'free',
+      plan_status: 'active',
+      plan_currency: 'INR',
+      streak: 0,
+      is_banned: false,
+    };
+
+    PROFILE_PATCH_FIELDS.forEach((key) => {
+      if (rest[key] !== undefined) profilePayload[key] = rest[key];
+    });
+
+    const profileRes = await supabaseAdmin('/profiles', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=representation' },
+      body: JSON.stringify(profilePayload),
+    });
+
+    if (!profileRes.ok) {
+      const upsertRes = await supabaseAdmin(`/profiles?id=eq.${appUser.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(profilePayload),
+      });
+      if (!upsertRes.ok) {
+        return res.status(500).json({ success: false, error: profileRes.data?.message ?? 'Profile create failed' });
+      }
+      return res.status(201).json({ success: true, profile: upsertRes.data?.[0], app_user: appUser });
+    }
+
+    return res.status(201).json({
+      success: true,
+      profile: profileRes.data?.[0] ?? profilePayload,
+      app_user: appUser,
+    });
+  } catch (err) {
+    if (err.code === 'USER_EXISTS') {
+      return res.status(409).json({ success: false, error: 'User already exists' });
+    }
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// PATCH /admin/api/users/:id
+const updateUser = async (req, res) => {
+  const { id } = req.params;
+  const body = req.body ?? {};
+  const patch = {};
+
+  PROFILE_PATCH_FIELDS.forEach((key) => {
+    if (body[key] !== undefined) patch[key] = body[key];
+  });
+
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ success: false, error: 'No valid fields to update' });
+  }
+
+  try {
+    const result = await supabaseAdmin(`/profiles?id=eq.${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    if (!result.ok) {
+      return res.status(500).json({ success: false, error: result.data?.message ?? 'Update failed' });
+    }
+    return res.json({ success: true, profile: result.data?.[0] ?? null });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -308,11 +586,16 @@ const banUser = async (req, res) => {
 const deleteUser = async (req, res) => {
   const { id } = req.params;
   try {
-    // Delete auth user — cascades to profiles and all app data
-    const authResult = await supabaseAuthAdmin(`/users/${id}`, { method: 'DELETE' });
-    if (!authResult.ok && authResult.status !== 404) {
-      // Fallback: delete only the profile row
-      await supabaseAdmin(`/profiles?id=eq.${id}`, { method: 'DELETE' });
+    const appUser = await findAppUserById(id);
+    if (appUser) {
+      await deleteAppUser(id);
+      return res.json({ success: true });
+    }
+
+    // Legacy fallback: profile without app_users row
+    const profileRes = await supabaseAdmin(`/profiles?id=eq.${id}`, { method: 'DELETE' });
+    if (!profileRes.ok) {
+      return res.status(404).json({ success: false, error: 'User not found' });
     }
     return res.json({ success: true });
   } catch (err) {
@@ -324,40 +607,79 @@ const deleteUser = async (req, res) => {
 
 // GET /admin/api/connections
 const getConnections = async (req, res) => {
-  const { status, page = 1, limit = 20 } = req.query;
-  const offset = (parseInt(page) - 1) * parseInt(limit);
+  const { status, page = 1, limit = 20, search } = req.query;
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
 
-  let endpoint =
-    `/guardian_elder_links?select=id,guardian_id,elder_id,elder_email,parent_name,relation,status,created_at` +
-    `&order=created_at.desc&limit=${limit}&offset=${offset}`;
-  if (status) endpoint += `&status=eq.${status}`;
+  const params = new URLSearchParams();
+  params.set(
+    'select',
+    'id,guardian_id,elder_id,elder_email,parent_name,relation,status,created_at,guardian:profiles!guardian_id(full_name,email),elder:profiles!elder_id(full_name,email)',
+  );
+  params.set('order', 'created_at.desc');
+  params.set('limit', String(limitNum));
+  params.set('offset', String(offset));
+  if (status) params.set('status', `eq.${status}`);
+
+  const term = String(search ?? '').trim();
+  if (term) {
+    const pattern = `*${term.replace(/[*,()]/g, '')}*`;
+    params.set('or', `(elder_email.ilike.${pattern},parent_name.ilike.${pattern},relation.ilike.${pattern})`);
+  }
 
   try {
-    const linksRes = await supabaseAdmin(endpoint);
+    const linksRes = await supabaseAdmin(`/guardian_elder_links?${params.toString()}`, {
+      headers: { Prefer: 'count=exact' },
+    });
     if (!linksRes.ok) {
       console.error('[admin] getConnections failed:', linksRes.data);
       return res.status(500).json({ success: false, error: linksRes.data?.message ?? 'Query failed' });
     }
-    const links = linksRes.data ?? [];
 
-    const enriched = await Promise.all(
-      links.map(async (link) => {
-        const [gRes, eRes] = await Promise.all([
-          supabaseAdmin(`/profiles?id=eq.${link.guardian_id}&select=full_name,email`),
-          link.elder_id
-            ? supabaseAdmin(`/profiles?id=eq.${link.elder_id}&select=full_name,email`)
-            : Promise.resolve({ data: [] }),
-        ]);
-        return {
-          ...link,
-          guardian_name:  gRes.data?.[0]?.full_name ?? '—',
-          guardian_email: gRes.data?.[0]?.email     ?? '—',
-          elder_name:     eRes.data?.[0]?.full_name ?? '—',
-        };
-      }),
-    );
+    const enriched = (linksRes.data ?? []).map((link) => ({
+      id: link.id,
+      guardian_id: link.guardian_id,
+      elder_id: link.elder_id,
+      elder_email: link.elder_email,
+      parent_name: link.parent_name,
+      relation: link.relation,
+      status: link.status,
+      created_at: link.created_at,
+      guardian_name: link.guardian?.full_name ?? '—',
+      guardian_email: link.guardian?.email ?? '—',
+      elder_name: link.elder?.full_name ?? '—',
+    }));
 
-    return res.json({ success: true, connections: enriched });
+    return res.json({
+      success: true,
+      connections: enriched,
+      total: parseContentRangeTotal(linksRes.contentRange) ?? enriched.length,
+      page: pageNum,
+      limit: limitNum,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// PATCH /admin/api/connections/:id
+const updateConnection = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body ?? {};
+  if (!['connected', 'declined', 'pending'].includes(status)) {
+    return res.status(400).json({ success: false, error: 'Invalid status' });
+  }
+
+  try {
+    const result = await supabaseAdmin(`/guardian_elder_links?id=eq.${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, updated_at: new Date().toISOString() }),
+    });
+    if (!result.ok) {
+      return res.status(500).json({ success: false, error: result.data?.message ?? 'Update failed' });
+    }
+    return res.json({ success: true, connection: result.data?.[0] ?? null });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -571,8 +893,9 @@ module.exports = {
   login, logout,
   serveDashboard,
   getStats, getAnalytics,
-  getUsers, banUser, deleteUser,
-  getConnections, deleteConnection,
+  getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
+  banUser, deleteUser,
+  getConnections, updateConnection, deleteConnection,
   getMedicines,
   getCheckIns,
   getMoods,

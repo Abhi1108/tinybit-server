@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const SUPABASE_URL = process.env.SUPABASE_URL;
 const ACCESS_TTL_SECONDS = Number(process.env.JWT_ACCESS_TTL_SECONDS || 3600);
 const REFRESH_TTL_DAYS = Number(process.env.JWT_REFRESH_TTL_DAYS || 30);
 
@@ -25,19 +26,21 @@ function assertJwtSecret() {
 /** @param {{ id: string, email: string }} user */
 function signAccessToken(user) {
   assertJwtSecret();
-  return jwt.sign(
-    {
-      sub: user.id,
-      email: user.email,
-      role: 'authenticated',
-      aud: 'authenticated',
-    },
-    JWT_SECRET,
-    {
-      algorithm: 'HS256',
-      expiresIn: ACCESS_TTL_SECONDS,
-    },
-  );
+  const payload = {
+    sub: user.id,
+    email: user.email,
+    role: 'authenticated',
+    aud: 'authenticated',
+  };
+
+  if (SUPABASE_URL) {
+    payload.iss = `${SUPABASE_URL.replace(/\/$/, '')}/auth/v1`;
+  }
+
+  return jwt.sign(payload, JWT_SECRET, {
+    algorithm: 'HS256',
+    expiresIn: ACCESS_TTL_SECONDS,
+  });
 }
 
 function verifyAccessToken(token) {

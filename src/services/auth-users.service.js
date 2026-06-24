@@ -174,12 +174,97 @@ async function refreshSessionFromToken(refreshToken) {
   return issueSession(validated.user);
 }
 
+async function deleteAppUser(userId) {
+  const { error } = await supabaseClient.from('app_users').delete().eq('id', userId);
+  if (error) throw error;
+}
+
+async function findAppUserById(userId) {
+  const { data, error } = await supabaseClient
+    .from('app_users')
+    .select('id, phone_e164, email, created_at, updated_at')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+async function findByEmail(email) {
+  const { data, error } = await supabaseClient
+    .from('app_users')
+    .select('*')
+    .eq('email', email)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data;
+}
+
+function googlePlaceholderPhone(firebaseUid) {
+  const digits = firebaseUid.replace(/\D/g, '').slice(0, 15);
+  return `+99${digits.padEnd(15, '0').slice(0, 15)}`;
+}
+
+/**
+ * Sign in or register a user authenticated via Firebase Google provider.
+ */
+async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const existing = await findByEmail(normalizedEmail);
+  if (existing) {
+    return { user: existing, isNewUser: false };
+  }
+
+  const phoneE164 = googlePlaceholderPhone(firebaseUid);
+  const preservedId = await findExistingProfileId(phoneE164, normalizedEmail);
+
+  const { data, error } = await supabaseClient
+    .from('app_users')
+    .insert({
+      phone_e164: phoneE164,
+      email: normalizedEmail,
+      ...(preservedId ? { id: preservedId } : {}),
+    })
+    .select('*')
+    .single();
+
+  if (error) {
+    if (error.code === '23505') {
+      const retry = await findByEmail(normalizedEmail);
+      if (retry) return { user: retry, isNewUser: false };
+    }
+    throw error;
+  }
+
+  await supabaseClient.from('profiles').upsert(
+    {
+      id: data.id,
+      email: normalizedEmail,
+      full_name: fullName?.trim() || null,
+      role: 'elder',
+      plan_type: 'free',
+      plan_status: 'active',
+      plan_currency: 'INR',
+      streak: 0,
+    },
+    { onConflict: 'id', ignoreDuplicates: false },
+  );
+
+  return { user: data, isNewUser: true };
+}
+
 module.exports = {
   findByPhone,
   findOrCreateByPhone,
+  findExistingProfileId,
   verifyPassword,
   createUserWithPassword,
   issueSession,
   revokeRefreshToken,
   refreshSessionFromToken,
+  deleteAppUser,
+  findAppUserById,
+  findByEmail,
+  findOrCreateByGoogle,
 };

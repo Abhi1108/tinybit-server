@@ -17,7 +17,9 @@ const {
   issueSession,
   revokeRefreshToken,
   refreshSessionFromToken,
+  findOrCreateByGoogle,
 } = require('../services/auth-users.service');
+const { verifyFirebaseIdToken } = require('../services/firebase-admin.service');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 
@@ -302,6 +304,116 @@ async function logout(req, res) {
   }
 }
 
+/** POST /api/auth/google — Firebase Google ID token → TinyBit session */
+async function googleAuth(req, res) {
+  try {
+    const { idToken } = req.body ?? {};
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'idToken is required' });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(idToken);
+    } catch (err) {
+      console.error('[auth/google] token verify failed:', err.message);
+      return res.status(401).json({ success: false, message: 'Invalid Google sign-in token' });
+    }
+
+    const email = decoded.email;
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Google account must include an email address',
+      });
+    }
+
+    const fullName = decoded.name ?? decoded.display_name ?? null;
+    const { user, isNewUser } = await findOrCreateByGoogle({
+      email,
+      fullName,
+      firebaseUid: decoded.uid,
+    });
+
+    if (fullName && isNewUser) {
+      await supabaseClient.from('profiles').upsert(
+        { id: user.id, full_name: fullName, email: user.email },
+        { onConflict: 'id' },
+      );
+    }
+
+    const session = await issueSession(user);
+
+    return res.json({
+      success: true,
+      isNewUser,
+      session,
+    });
+  } catch (err) {
+    console.error('[auth/google]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Google sign-in failed' });
+  }
+}
+
+/** PATCH /api/auth/profile — upsert onboarding / profile fields (service role, no Supabase JWT on client). */
+async function updateProfile(req, res) {
+  try {
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const email = req.auth?.email ?? req.supabase?.email;
+    const body = req.body ?? {};
+
+    const allowed = [
+      'role',
+      'first_name',
+      'last_name',
+      'full_name',
+      'mobile',
+      'location',
+      'preferred_language',
+      'biological_sex',
+      'height',
+      'height_unit',
+      'weight',
+      'weight_unit',
+    ];
+
+    const patch = {};
+    for (const key of allowed) {
+      if (body[key] !== undefined) patch[key] = body[key];
+    }
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, message: 'No profile fields to update' });
+    }
+
+    const row = {
+      id: userId,
+      email: email ?? null,
+      plan_type: 'free',
+      plan_status: 'active',
+      plan_currency: 'INR',
+      streak: 0,
+      ...patch,
+    };
+
+    const { data, error } = await supabaseClient
+      .from('profiles')
+      .upsert(row, { onConflict: 'id' })
+      .select('*')
+      .single();
+
+    if (error) {
+      console.error('[auth/profile] upsert error:', error.message);
+      return res.status(500).json({ success: false, message: 'Could not save profile' });
+    }
+
+    return res.json({ success: true, profile: data });
+  } catch (err) {
+    console.error('[auth/profile]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not save profile' });
+  }
+}
+
 /** GET /api/auth/me */
 async function getMe(req, res) {
   try {
@@ -339,7 +451,9 @@ module.exports = {
   completeOtpAuth,
   login,
   register,
+  googleAuth,
   refreshSession,
   logout,
   getMe,
+  updateProfile,
 };
