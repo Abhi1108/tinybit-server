@@ -10,6 +10,38 @@ function readBody(req) {
   return req.body ?? {};
 }
 
+/** GET /api/sos/emergency-contacts */
+async function listEmergencyContacts(req, res) {
+  try {
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { data, error } = await supabaseClient
+      .from('emergency_contacts')
+      .select('id, name, role, phone, color')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('[sos/emergency-contacts] list:', error.message);
+      if (isTableMissing(error)) {
+        return res.status(501).json({
+          success: false,
+          message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
+        });
+      }
+      return res.status(500).json({ success: false, message: 'Could not load emergency contacts.' });
+    }
+
+    return res.json({ success: true, contacts: data ?? [] });
+  } catch (err) {
+    console.error('[sos/emergency-contacts] list', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load emergency contacts.' });
+  }
+}
+
 /** POST /api/sos/emergency-contacts */
 async function createEmergencyContact(req, res) {
   try {
@@ -190,6 +222,7 @@ async function triggerSos(req, res) {
 
 module.exports = {
   triggerSos,
+  listEmergencyContacts,
   createEmergencyContact,
   updateEmergencyContact,
   deleteEmergencyContact,
