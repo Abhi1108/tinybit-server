@@ -23,6 +23,7 @@ app.use('/api/ai',          require('./routes/ai.routes'));
 app.use('/api/guardian',    require('./routes/guardian.routes'));
 app.use('/api/sos',         require('./routes/sos.routes'));
 app.use('/api/wellness',    require('./routes/wellness.routes'));
+app.use('/api/medicines',   require('./routes/medicine.routes'));
 app.use('/api/health-card', require('./routes/health-card.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 

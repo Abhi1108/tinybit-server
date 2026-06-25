@@ -113,6 +113,9 @@ function getFirebaseAdminStatus() {
   }
 }
 
+/** Firebase ID tokens are JWTs, typically 800+ chars. Reject OTP codes / garbage early. */
+const MIN_FIREBASE_ID_TOKEN_LENGTH = 100;
+
 function peekJwtClaims(token) {
   try {
     const parts = token.split('.');
@@ -136,6 +139,19 @@ function normalizeIdToken(raw) {
   const token = raw.trim();
   if (!token) {
     throw new Error('idToken is empty');
+  }
+
+  if (/^\d{4,8}$/.test(token)) {
+    throw new Error(
+      'idToken looks like an OTP code, not a Firebase JWT. ' +
+      'The app must send user.getIdToken() after confirmation.confirm(code).',
+    );
+  }
+
+  if (token.length < MIN_FIREBASE_ID_TOKEN_LENGTH) {
+    throw new Error(
+      `idToken is too short (${token.length} chars). Expected a Firebase ID token (~800+ chars), not an OTP code or placeholder.`,
+    );
   }
 
   const parts = token.split('.');
@@ -182,5 +198,6 @@ module.exports = {
   getFirebaseAdminStatus,
   peekJwtClaims,
   normalizeIdToken,
+  MIN_FIREBASE_ID_TOKEN_LENGTH,
   EXPECTED_FIREBASE_PROJECT_ID,
 };

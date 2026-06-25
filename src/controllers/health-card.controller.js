@@ -23,6 +23,51 @@ async function supabaseAdmin(path, options = {}) {
   return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
 }
 
+function getServerUrl() {
+  if (process.env.SERVER_URL) {
+    return process.env.SERVER_URL.replace(/\/$/, '');
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  const port = process.env.PORT || 5000;
+  return `http://localhost:${port}`;
+}
+
+async function enrichProfileForHealthCard(profile) {
+  const userId = profile.id;
+  if (!userId) return profile;
+
+  const medsRes = await supabaseAdmin(
+    `/medicines?user_id=eq.${userId}&is_active=eq.true`
+      + '&select=name,dosage,dosage_unit,time,schedule_time,frequency'
+      + '&order=created_at.asc&limit=20',
+  );
+
+  if (medsRes.ok && Array.isArray(medsRes.data) && medsRes.data.length > 0) {
+    profile.medications = medsRes.data.map((m) => ({
+      name: m.name,
+      dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
+      timing: m.time || m.schedule_time || m.frequency || '',
+    }));
+  }
+
+  if (!profile.emergency_name && !profile.emergency_phone) {
+    const ecRes = await supabaseAdmin(
+      `/emergency_contacts?user_id=eq.${userId}`
+        + '&select=name,phone,role&order=created_at.asc&limit=1',
+    );
+    if (ecRes.ok && Array.isArray(ecRes.data) && ecRes.data[0]) {
+      const ec = ecRes.data[0];
+      profile.emergency_name = ec.name;
+      profile.emergency_phone = ec.phone;
+      profile.emergency_relation = ec.role || profile.emergency_relation;
+    }
+  }
+
+  return profile;
+}
+
 // POST /api/health-card/generate — requires Supabase auth
 const generateHealthCardToken = async (req, res) => {
   const userId = req.supabase?.userId;
@@ -44,7 +89,7 @@ const generateHealthCardToken = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to generate health card token' });
   }
 
-  const serverUrl = process.env.SERVER_URL || `http://192.168.0.240:5000`;
+  const serverUrl = getServerUrl();
   const scanUrl = `${serverUrl}/api/health-card/${token}`;
 
   return res.json({ success: true, data: { token, scanUrl, expiresAt: expiresAt.toISOString() } });
@@ -80,12 +125,14 @@ const getHealthCard = async (req, res) => {
     return res.status(410).send(renderErrorHTML('This health card has expired. Please ask the person to regenerate their card in the TinyBit app.'));
   }
 
+  const enriched = await enrichProfileForHealthCard({ ...profile });
+
   if (format === 'json') {
-    const { health_qr_expires_at, ...safeData } = profile;
+    const { health_qr_expires_at, health_qr_token, ...safeData } = enriched;
     return res.json({ success: true, data: safeData });
   }
 
-  return res.send(renderHealthCardHTML(profile));
+  return res.send(renderHealthCardHTML(enriched));
 };
 
 // ─── HTML helpers ────────────────────────────────────────────────────────────
@@ -613,11 +660,11 @@ const getHealthCardQR = async (req, res) => {
 
       if (!patch.ok) {
         console.error('[health-card] Supabase PATCH failed:', patch.status, patch.data);
-        return res.status(500).json({ success: false, message: 'Failed to save health card token. Make sure migration 030 has been applied.' });
+        return res.status(500).json({ success: false, message: 'Failed to save health card token. Apply migration 012_health_qr_token.sql in Supabase.' });
       }
     }
 
-    const serverUrl = process.env.SERVER_URL || 'http://192.168.0.240:5000';
+    const serverUrl = getServerUrl();
     const scanUrl = `${serverUrl}/api/health-card/${token}`;
 
     const qrDataUrl = await getQRCode().toDataURL(scanUrl, {

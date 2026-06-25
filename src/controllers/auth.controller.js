@@ -16,6 +16,7 @@ const {
   getFirebaseAdminStatus,
   peekJwtClaims,
   normalizeIdToken,
+  MIN_FIREBASE_ID_TOKEN_LENGTH,
 } = require('../services/firebase-admin.service');
 
 const OTP_REMOVED_MESSAGE =
@@ -209,7 +210,9 @@ async function googleAuth(req, res) {
       });
 
       let hint;
-      if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+      if (token.length < MIN_FIREBASE_ID_TOKEN_LENGTH) {
+        hint = 'App sent a value that is too short to be a Firebase ID token. Rebuild the app — OTP digits must not be sent as idToken.';
+      } else if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
         hint = 'App sent a Google OAuth token, not a Firebase ID token. Rebuild the app and sign in again.';
       } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
         hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;
@@ -291,7 +294,9 @@ async function phoneAuth(req, res) {
       });
 
       let hint;
-      if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+      if (token.length < MIN_FIREBASE_ID_TOKEN_LENGTH) {
+        hint = 'App sent a value that is too short to be a Firebase ID token. Rebuild the app — OTP digits must not be sent as idToken.';
+      } else if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
         hint = 'App sent a non-Firebase token. Rebuild the app and sign in again.';
       } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
         hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;

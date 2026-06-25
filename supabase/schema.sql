@@ -40,8 +40,12 @@ create table if not exists public.profiles (
   streak integer not null default 0,
   is_banned boolean not null default false,
   last_active timestamptz,
-  health_qr_token text unique,
+  health_qr_token text,
   health_qr_expires_at timestamptz,
+  allergies text[],
+  other_condition text,
+  doctor_name text,
+  doctor_contact text,
   created_at timestamptz not null default now()
 );
 
