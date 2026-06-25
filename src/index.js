@@ -25,6 +25,7 @@ app.use('/api/sos',         require('./routes/sos.routes'));
 app.use('/api/wellness',    require('./routes/wellness.routes'));
 app.use('/api/medicines',   require('./routes/medicine.routes'));
 app.use('/api/health-card', require('./routes/health-card.routes'));
+app.use('/api/location',    require('./routes/location.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
 // ── Error handler ─────────────────────────────────────────────────────────────

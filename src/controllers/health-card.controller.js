@@ -23,9 +23,14 @@ async function supabaseAdmin(path, options = {}) {
   return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
 }
 
+/** Public base URL for health-card QR links (must be reachable without Vercel Deployment Protection). */
 function getServerUrl() {
   if (process.env.SERVER_URL) {
     return process.env.SERVER_URL.replace(/\/$/, '');
+  }
+  // Per-deployment VERCEL_URL (*.vercel.app) often has Deployment Protection; production alias does not.
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
   }
   if (process.env.VERCEL_URL) {
     return `https://${process.env.VERCEL_URL}`;
