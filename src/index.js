@@ -14,7 +14,11 @@ app.use(express.json({
 
 // ── Health check first — no deps, responds instantly ─────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'TinyBit API is running' });
+  res.json({
+    status:  'ok',
+    message: 'TinyBit API is running',
+    db:      process.env.DB_DRIVER || 'supabase',
+  });
 });
 
 // ── Routes — static requires so Vercel bundles all route files ─────────────
