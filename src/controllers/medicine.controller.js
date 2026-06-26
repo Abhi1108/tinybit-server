@@ -177,9 +177,45 @@ async function updateMedicine(req, res) {
   }
 }
 
+/** DELETE /api/medicines/:id */
+async function deleteMedicine(req, res) {
+  try {
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const { data, error } = await supabaseClient
+      .from('medicines')
+      .delete()
+      .eq('id', req.params.id)
+      .eq('user_id', userId)
+      .select('id')
+      .maybeSingle();
+
+    if (error) {
+      console.error('[medicines] delete:', error.message);
+      if (isTableMissing(error)) {
+        return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
+      }
+      return res.status(500).json({ success: false, message: 'Could not delete medicine.' });
+    }
+
+    if (!data) {
+      return res.status(404).json({ success: false, message: 'Medicine not found.' });
+    }
+
+    return res.json({ success: true, id: data.id });
+  } catch (err) {
+    console.error('[medicines] delete', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not delete medicine.' });
+  }
+}
+
 module.exports = {
   listMedicines,
   getMedicine,
   createMedicines,
   updateMedicine,
+  deleteMedicine,
 };
