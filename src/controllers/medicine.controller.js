@@ -185,6 +185,18 @@ function dayRange(date) {
   return { start: start.toISOString(), end: end.toISOString() };
 }
 
+/** Bounds for YYYY-MM-DD calendar date (matches DB unique index on UTC date). */
+function calendarDayBoundsUtc(dateInput) {
+  const normalized = String(dateInput ?? '').trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return {
+      start: `${normalized}T00:00:00.000Z`,
+      end:   `${normalized}T23:59:59.999Z`,
+    };
+  }
+  return dayRange(new Date(dateInput));
+}
+
 function startOfWeek(date) {
   const d = new Date(date);
   d.setDate(d.getDate() - d.getDay());
@@ -255,14 +267,16 @@ async function toggleMedicineLog(req, res) {
 
     const body = readBody(req);
     const medicineId = String(body.medicine_id ?? '').trim();
-    const taken = Boolean(body.taken);
-    const date = body.date ? new Date(String(body.date)) : new Date();
+    const taken = body.taken === true || body.taken === 'true';
+    const dateStr = body.date
+      ? String(body.date).trim().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
 
     if (!medicineId) {
       return res.status(400).json({ success: false, message: 'medicine_id is required.' });
     }
 
-    const { start, end } = dayRange(date);
+    const { start, end } = calendarDayBoundsUtc(dateStr);
 
     if (taken) {
       const { data: existing, error: existingError } = await supabaseClient
@@ -283,16 +297,12 @@ async function toggleMedicineLog(req, res) {
         return res.json({ success: true, log: existing });
       }
 
-      const takenAt = new Date(date);
-      const now = new Date();
-      takenAt.setHours(now.getHours(), now.getMinutes(), 0, 0);
-
       const { data, error } = await supabaseClient
         .from('medicine_logs')
         .insert({
           user_id:     userId,
           medicine_id: medicineId,
-          taken_at:    takenAt.toISOString(),
+          taken_at:    new Date().toISOString(),
         })
         .select('*')
         .single();
