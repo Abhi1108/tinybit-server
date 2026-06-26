@@ -177,9 +177,165 @@ async function updateMedicine(req, res) {
   }
 }
 
+function dayRange(date) {
+  const start = new Date(date);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(date);
+  end.setHours(23, 59, 59, 999);
+  return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function startOfWeek(date) {
+  const d = new Date(date);
+  d.setDate(d.getDate() - d.getDay());
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function endOfWeek(date) {
+  const d = startOfWeek(date);
+  d.setDate(d.getDate() + 7);
+  d.setMilliseconds(-1);
+  return d;
+}
+
+/** GET /api/medicines/logs — ?from=&to= ISO or ?scope=day|week */
+async function listMedicineLogs(req, res) {
+  try {
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const scope = String(req.query.scope ?? '').toLowerCase();
+    let from = req.query.from ? String(req.query.from) : null;
+    let to = req.query.to ? String(req.query.to) : null;
+
+    if (!from || !to) {
+      const base = new Date();
+      if (scope === 'week') {
+        from = startOfWeek(base).toISOString();
+        to = endOfWeek(base).toISOString();
+      } else {
+        const range = dayRange(base);
+        from = range.start;
+        to = range.end;
+      }
+    }
+
+    const { data, error } = await supabaseClient
+      .from('medicine_logs')
+      .select('*')
+      .eq('user_id', userId)
+      .gte('taken_at', from)
+      .lte('taken_at', to);
+
+    if (error) {
+      console.error('[medicines] logs list:', error.message);
+      if (isTableMissing(error)) {
+        return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+      }
+      return res.status(500).json({ success: false, message: 'Could not load medicine logs.' });
+    }
+
+    return res.json({ success: true, logs: data ?? [] });
+  } catch (err) {
+    console.error('[medicines] logs list', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load medicine logs.' });
+  }
+}
+
+/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? } */
+async function toggleMedicineLog(req, res) {
+  try {
+    const userId = req.auth?.userId ?? req.supabase?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const body = readBody(req);
+    const medicineId = String(body.medicine_id ?? '').trim();
+    const taken = Boolean(body.taken);
+    const date = body.date ? new Date(String(body.date)) : new Date();
+
+    if (!medicineId) {
+      return res.status(400).json({ success: false, message: 'medicine_id is required.' });
+    }
+
+    const { start, end } = dayRange(date);
+
+    if (taken) {
+      const { data: existing, error: existingError } = await supabaseClient
+        .from('medicine_logs')
+        .select('*')
+        .eq('user_id', userId)
+        .eq('medicine_id', medicineId)
+        .gte('taken_at', start)
+        .lte('taken_at', end)
+        .maybeSingle();
+
+      if (existingError) {
+        console.error('[medicines] logs toggle existing:', existingError.message);
+        return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
+      }
+
+      if (existing) {
+        return res.json({ success: true, log: existing });
+      }
+
+      const takenAt = new Date(date);
+      const now = new Date();
+      takenAt.setHours(now.getHours(), now.getMinutes(), 0, 0);
+
+      const { data, error } = await supabaseClient
+        .from('medicine_logs')
+        .insert({
+          user_id:     userId,
+          medicine_id: medicineId,
+          taken_at:    takenAt.toISOString(),
+        })
+        .select('*')
+        .single();
+
+      if (error) {
+        console.error('[medicines] logs toggle insert:', error.message);
+        if (isTableMissing(error)) {
+          return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+        }
+        return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
+      }
+
+      return res.json({ success: true, log: data });
+    }
+
+    const { error } = await supabaseClient
+      .from('medicine_logs')
+      .delete()
+      .eq('user_id', userId)
+      .eq('medicine_id', medicineId)
+      .gte('taken_at', start)
+      .lte('taken_at', end);
+
+    if (error) {
+      console.error('[medicines] logs toggle delete:', error.message);
+      if (isTableMissing(error)) {
+        return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+      }
+      return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
+    }
+
+    return res.json({ success: true, log: null });
+  } catch (err) {
+    console.error('[medicines] logs toggle', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not update medicine log.' });
+  }
+}
+
 module.exports = {
   listMedicines,
   getMedicine,
   createMedicines,
   updateMedicine,
+  listMedicineLogs,
+  toggleMedicineLog,
 };
