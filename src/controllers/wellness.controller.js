@@ -8,6 +8,15 @@ function todayDateStr() {
   return new Date().toISOString().split('T')[0];
 }
 
+function normalizeSleepQuality(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const map = { excellent: 3, good: 2, poor: 1 };
+  if (map[value] != null) return map[value];
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function readBody(req) {
   return req.body ?? {};
 }
@@ -73,6 +82,10 @@ async function upsertDailyCheckIn(req, res) {
       user_id:       userId,
       check_in_date: String(fields.check_in_date ?? todayDateStr()).trim() || todayDateStr(),
     };
+
+    if ('sleep_quality' in payload) {
+      payload.sleep_quality = normalizeSleepQuality(payload.sleep_quality);
+    }
 
     const { data, error } = await supabaseClient
       .from('daily_checkins')
