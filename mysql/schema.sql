@@ -557,6 +557,27 @@ CREATE TABLE IF NOT EXISTS daily_inspirations (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- In-app notifications (admin broadcast + future push inbox)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id    CHAR(36)     NOT NULL,
+  sender_id  CHAR(36)     NULL,
+  type       VARCHAR(64)  NOT NULL,
+  title      VARCHAR(255) NOT NULL,
+  body       TEXT         NOT NULL,
+  data       JSON         NULL,
+  `read`     TINYINT(1)   NOT NULL DEFAULT 0,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_notifications_user_created (user_id, created_at DESC),
+  KEY idx_notifications_type (type),
+  CONSTRAINT fk_notifications_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- Doctor booking catalog
 -- -----------------------------------------------------------------------------
 
@@ -583,7 +604,7 @@ CREATE TABLE IF NOT EXISTS doctors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 26 tables
+-- End of schema — 27 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
 -- profiles, guardian_elder_links, user_settings, elder_locations
@@ -595,5 +616,6 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- ai_conversations
 -- mood_media_tracks, mood_media_favorites
 -- mind_games_scores, daily_quiz_questions, daily_inspirations
+-- notifications
 -- doctors
 -- =============================================================================

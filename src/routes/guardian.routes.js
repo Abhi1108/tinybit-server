@@ -5,6 +5,7 @@ const {
   inviteParent,
   respondToInvitation,
   getPendingInvitations,
+  getSentInvitations,
   savePushToken,
   guardianElders,
   guardianAlerts,
@@ -16,6 +17,7 @@ const {
 router.post('/invite',               requireJwtAuth, inviteParent);
 router.post('/respond',              requireJwtAuth, respondToInvitation);
 router.get('/pending-invitations',   requireJwtAuth, getPendingInvitations);
+router.get('/sent-invitations',      requireJwtAuth, getSentInvitations);
 router.get('/connected-guardians',   requireJwtAuth, getConnectedGuardians);
 router.post('/save-push-token',      requireJwtAuth, savePushToken);
 

@@ -1,4 +1,3 @@
-const { supabaseClient } = require('../config/supabase');
 const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
 const {
@@ -11,6 +10,15 @@ const {
   refreshSessionFromToken,
   findOrCreateByGoogle,
 } = require('../services/auth-users.service');
+const {
+  upsertProfile,
+  getProfileById,
+  updateProfile: saveProfile,
+} = require('../services/profiles.service');
+const {
+  getSettings: loadSettings,
+  upsertSettings: saveSettings,
+} = require('../services/user-settings.service');
 const {
   verifyFirebaseIdToken,
   getFirebaseAdminStatus,
@@ -101,15 +109,12 @@ async function register(req, res) {
     }
 
     // full_name hint for onboarding — profile row may be completed in the app later
-    await supabaseClient.from('profiles').upsert(
-      {
-        id: user.id,
-        full_name: trimmedName,
-        email,
-        mobile,
-      },
-      { onConflict: 'id', ignoreDuplicates: false },
-    );
+    await upsertProfile({
+      id: user.id,
+      full_name: trimmedName,
+      email,
+      mobile,
+    });
 
     const session = await issueSession(user);
 
@@ -243,10 +248,11 @@ async function googleAuth(req, res) {
     });
 
     if (fullName && isNewUser) {
-      await supabaseClient.from('profiles').upsert(
-        { id: user.id, full_name: fullName, email: user.email },
-        { onConflict: 'id' },
-      );
+      await upsertProfile({
+        id: user.id,
+        full_name: fullName,
+        email: user.email,
+      });
     }
 
     const session = await issueSession(user);
@@ -328,10 +334,11 @@ async function phoneAuth(req, res) {
     const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
 
     if (isNewUser) {
-      await supabaseClient.from('profiles').upsert(
-        { id: user.id, email: user.email, mobile: phoneE164 },
-        { onConflict: 'id' },
-      );
+      await upsertProfile({
+        id: user.id,
+        email: user.email,
+        mobile: phoneE164,
+      });
     }
 
     const session = await issueSession(user);
@@ -373,6 +380,7 @@ async function updateProfile(req, res) {
       'emergency_name',
       'emergency_phone',
       'emergency_relation',
+      'profile_image',
     ];
 
     const patch = {};
@@ -384,29 +392,23 @@ async function updateProfile(req, res) {
       return res.status(400).json({ success: false, message: 'No profile fields to update' });
     }
 
-    const row = {
-      id: userId,
-      email: email ?? null,
-      plan_type: 'free',
-      plan_status: 'active',
-      plan_currency: 'INR',
-      streak: 0,
-      ...patch,
-    };
-
-    const { data, error } = await supabaseClient
-      .from('profiles')
-      .upsert(row, { onConflict: 'id' })
-      .select('*')
-      .single();
-
-    if (error) {
+    let data;
+    try {
+      data = await saveProfile(userId, email, patch);
+    } catch (error) {
       console.error('[auth/profile] upsert error:', error.message);
       if (error.code === '23503' && /profiles_id_fkey/i.test(error.message ?? '')) {
         return res.status(500).json({
           success: false,
           message:
             'Database setup incomplete: profiles must reference app_users. Run migration 010_app_users_jwt.sql in Supabase.',
+        });
+      }
+      if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.errno === 1452) {
+        return res.status(500).json({
+          success: false,
+          message:
+            'Database setup incomplete: profiles must reference app_users. Ensure app_users row exists before saving profile.',
         });
       }
       return res.status(500).json({ success: false, message: 'Could not save profile' });
@@ -425,13 +427,10 @@ async function getMe(req, res) {
     const userId = req.auth?.userId ?? req.supabase?.userId;
     const email = req.auth?.email ?? req.supabase?.email;
 
-    const { data: profile, error } = await supabaseClient
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle();
-
-    if (error) {
+    let profile;
+    try {
+      profile = await getProfileById(userId);
+    } catch (error) {
       console.error('[auth/me] profile error:', error.message);
       return res.status(500).json({ success: false, message: 'Could not load profile' });
     }
@@ -442,7 +441,7 @@ async function getMe(req, res) {
         id: userId,
         email,
       },
-      profile: profile ?? null,
+      profile,
     });
   } catch (err) {
     console.error('[auth/me]', err);
@@ -450,28 +449,19 @@ async function getMe(req, res) {
   }
 }
 
-const USER_SETTINGS_COLUMNS =
-  'user_id, voice_navigation, vibration_alerts, fall_detection, night_mode, font_scale, language, updated_at';
-
 /** GET /api/auth/settings */
 async function getSettings(req, res) {
   try {
     const userId = req.auth.userId;
-    const { data, error } = await supabaseClient
-      .from('user_settings')
-      .select(USER_SETTINGS_COLUMNS)
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    if (error) {
-      if (error.code === 'PGRST205' || error.code === '42P01') {
-        return res.json({ success: true, settings: null });
-      }
+    let settings;
+    try {
+      settings = await loadSettings(userId);
+    } catch (error) {
       console.error('[auth/settings] read error:', error.message);
       return res.status(500).json({ success: false, message: 'Could not load settings' });
     }
 
-    return res.json({ success: true, settings: data ?? null });
+    return res.json({ success: true, settings });
   } catch (err) {
     console.error('[auth/settings]', err);
     return res.status(500).json({ success: false, message: 'Could not load settings' });
@@ -501,13 +491,10 @@ async function updateSettings(req, res) {
       return res.status(400).json({ success: false, message: 'No settings to update' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('user_settings')
-      .upsert({ user_id: userId, ...patch }, { onConflict: 'user_id' })
-      .select(USER_SETTINGS_COLUMNS)
-      .single();
-
-    if (error) {
+    let data;
+    try {
+      data = await saveSettings(userId, patch);
+    } catch (error) {
       console.error('[auth/settings] upsert error:', error.message);
       return res.status(500).json({ success: false, message: 'Could not save settings' });
     }

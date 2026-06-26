@@ -1,11 +1,7 @@
 /**
  * JWT access tokens — signed with JWT_SECRET.
  *
- * Set JWT_SECRET to your Supabase project's JWT Secret
- * (Dashboard → Settings → API → JWT Secret) so Postgres RLS auth.uid() works.
- *
- * Env:
- *   JWT_SECRET                 — required (Supabase JWT secret for RLS compatibility)
+ * JWT access tokens — signed with JWT_SECRET (no Supabase dependency).
  *   JWT_ACCESS_TTL_SECONDS     — default 3600 (1 hour)
  *   JWT_REFRESH_TTL_DAYS       — default 30
  */
@@ -13,7 +9,7 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
 const JWT_SECRET = process.env.JWT_SECRET;
-const SUPABASE_URL = process.env.SUPABASE_URL;
+const JWT_ISSUER = process.env.JWT_ISSUER || 'https://tinybit.app/auth';
 const ACCESS_TTL_SECONDS = Number(process.env.JWT_ACCESS_TTL_SECONDS || 3600);
 const REFRESH_TTL_DAYS = Number(process.env.JWT_REFRESH_TTL_DAYS || 30);
 
@@ -33,8 +29,8 @@ function signAccessToken(user) {
     aud: 'authenticated',
   };
 
-  if (SUPABASE_URL) {
-    payload.iss = `${SUPABASE_URL.replace(/\/$/, '')}/auth/v1`;
+  if (JWT_ISSUER) {
+    payload.iss = JWT_ISSUER;
   }
 
   return jwt.sign(payload, JWT_SECRET, {

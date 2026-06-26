@@ -5,23 +5,7 @@ function getQRCode() {
   return _QRCode;
 }
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-async function supabaseAdmin(path, options = {}) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1${path}`, {
-    ...options,
-    headers: {
-      apikey: SUPABASE_SERVICE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      'Content-Type': 'application/json',
-      Prefer: 'return=representation',
-      ...(options.headers ?? {}),
-    },
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, data: text ? JSON.parse(text) : null };
-}
+const healthCardService = require('../services/health-card.service');
 
 /** Public base URL for health-card QR links (must be reachable without Vercel Deployment Protection). */
 function getServerUrl() {
@@ -39,65 +23,21 @@ function getServerUrl() {
   return `http://localhost:${port}`;
 }
 
-async function enrichProfileForHealthCard(profile) {
-  const userId = profile.id;
-  if (!userId) return profile;
-
-  const medsRes = await supabaseAdmin(
-    `/medicines?user_id=eq.${userId}&is_active=eq.true`
-      + '&select=name,dosage,dosage_unit,time,schedule_time,frequency'
-      + '&order=created_at.asc&limit=20',
-  );
-
-  if (medsRes.ok && Array.isArray(medsRes.data) && medsRes.data.length > 0) {
-    profile.medications = medsRes.data.map((m) => ({
-      name: m.name,
-      dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
-      timing: m.time || m.schedule_time || m.frequency || '',
-    }));
-  }
-
-  if (!profile.emergency_name && !profile.emergency_phone) {
-    const ecRes = await supabaseAdmin(
-      `/emergency_contacts?user_id=eq.${userId}`
-        + '&select=name,phone,role&order=created_at.asc&limit=1',
-    );
-    if (ecRes.ok && Array.isArray(ecRes.data) && ecRes.data[0]) {
-      const ec = ecRes.data[0];
-      profile.emergency_name = ec.name;
-      profile.emergency_phone = ec.phone;
-      profile.emergency_relation = ec.role || profile.emergency_relation;
-    }
-  }
-
-  return profile;
-}
-
-// POST /api/health-card/generate — requires Supabase auth
+// POST /api/health-card/generate — requires auth
 const generateHealthCardToken = async (req, res) => {
   const userId = req.supabase?.userId;
   if (!userId) return res.status(401).json({ success: false, message: 'Not authenticated' });
 
-  const token = crypto.randomUUID();
-  const expiresAt = new Date();
-  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+  try {
+    const { token, expiresAt } = await healthCardService.generateHealthCardToken(userId);
+    const serverUrl = getServerUrl();
+    const scanUrl = `${serverUrl}/api/health-card/${token}`;
 
-  const result = await supabaseAdmin(`/profiles?id=eq.${userId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      health_qr_token: token,
-      health_qr_expires_at: expiresAt.toISOString(),
-    }),
-  });
-
-  if (!result.ok) {
+    return res.json({ success: true, data: { token, scanUrl, expiresAt } });
+  } catch (err) {
+    console.error('[health-card] generateHealthCardToken error:', err);
     return res.status(500).json({ success: false, message: 'Failed to generate health card token' });
   }
-
-  const serverUrl = getServerUrl();
-  const scanUrl = `${serverUrl}/api/health-card/${token}`;
-
-  return res.json({ success: true, data: { token, scanUrl, expiresAt: expiresAt.toISOString() } });
 };
 
 // GET /api/health-card/:token — public, no auth required
@@ -110,34 +50,29 @@ const getHealthCard = async (req, res) => {
     return res.status(400).send(renderErrorHTML('Invalid health card link.'));
   }
 
-  // Use select=* so the query never fails due to optional columns not existing
-  const result = await supabaseAdmin(
-    `/profiles?health_qr_token=eq.${encodeURIComponent(token)}&select=*`,
-  );
+  try {
+    const profile = await healthCardService.findProfileByHealthQrToken(token);
 
-  if (!result.ok) {
-    console.error('[health-card] Supabase lookup error:', result.status, result.data);
+    if (!profile) {
+      return res.status(404).send(renderErrorHTML('Health card not found. The link may be invalid.'));
+    }
+
+    if (profile.health_qr_expires_at && new Date(profile.health_qr_expires_at) < new Date()) {
+      return res.status(410).send(renderErrorHTML('This health card has expired. Please ask the person to regenerate their card in the TinyBit app.'));
+    }
+
+    const enriched = await healthCardService.enrichProfileForHealthCard({ ...profile });
+
+    if (format === 'json') {
+      const { health_qr_expires_at, health_qr_token, ...safeData } = enriched;
+      return res.json({ success: true, data: safeData });
+    }
+
+    return res.send(renderHealthCardHTML(enriched));
+  } catch (err) {
+    console.error('[health-card] getHealthCard error:', err);
     return res.status(500).send(renderErrorHTML('Server error. Please try again.'));
   }
-
-  if (!Array.isArray(result.data) || result.data.length === 0) {
-    return res.status(404).send(renderErrorHTML('Health card not found. The link may be invalid.'));
-  }
-
-  const profile = result.data[0];
-
-  if (profile.health_qr_expires_at && new Date(profile.health_qr_expires_at) < new Date()) {
-    return res.status(410).send(renderErrorHTML('This health card has expired. Please ask the person to regenerate their card in the TinyBit app.'));
-  }
-
-  const enriched = await enrichProfileForHealthCard({ ...profile });
-
-  if (format === 'json') {
-    const { health_qr_expires_at, health_qr_token, ...safeData } = enriched;
-    return res.json({ success: true, data: safeData });
-  }
-
-  return res.send(renderHealthCardHTML(enriched));
 };
 
 // ─── HTML helpers ────────────────────────────────────────────────────────────
@@ -637,37 +572,7 @@ const getHealthCardQR = async (req, res) => {
   if (!userId) return res.status(401).json({ success: false, message: 'Not authenticated' });
 
   try {
-    // Fetch existing token
-    const profileRes = await supabaseAdmin(
-      `/profiles?id=eq.${userId}&select=health_qr_token,health_qr_expires_at&limit=1`,
-    );
-
-    if (!profileRes.ok) {
-      console.error('[health-card] Supabase SELECT failed:', profileRes.status, profileRes.data);
-      return res.status(500).json({ success: false, message: 'Could not read profile from Supabase' });
-    }
-
-    let token = profileRes.data?.[0]?.health_qr_token;
-    let expiresAt = profileRes.data?.[0]?.health_qr_expires_at;
-
-    const expired = expiresAt && new Date(expiresAt) < new Date();
-
-    if (!token || expired) {
-      token = crypto.randomUUID();
-      const newExpiry = new Date();
-      newExpiry.setFullYear(newExpiry.getFullYear() + 1);
-      expiresAt = newExpiry.toISOString();
-
-      const patch = await supabaseAdmin(`/profiles?id=eq.${userId}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ health_qr_token: token, health_qr_expires_at: expiresAt }),
-      });
-
-      if (!patch.ok) {
-        console.error('[health-card] Supabase PATCH failed:', patch.status, patch.data);
-        return res.status(500).json({ success: false, message: 'Failed to save health card token. Apply migration 012_health_qr_token.sql in Supabase.' });
-      }
-    }
+    const { token, expiresAt } = await healthCardService.getOrCreateHealthQrToken(userId);
 
     const serverUrl = getServerUrl();
     const scanUrl = `${serverUrl}/api/health-card/${token}`;
