@@ -1,4 +1,5 @@
 const medicinesService = require('../services/medicines.service');
+const medicineLogsService = require('../services/medicine-logs.service');
 
 function isTableMissing(error) {
   return (
@@ -176,8 +177,7 @@ async function listMedicineLogs(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const medicineLogsService = require('../services/medicine-logs.service');
-    const scope = String(req.query.scope ?? 'day').toLowerCase();
+    const scope = String(req.query.scope ?? '').toLowerCase();
 
     let logs;
     if (scope === 'week') {
@@ -195,6 +195,9 @@ async function listMedicineLogs(req, res) {
     return res.json({ success: true, logs });
   } catch (err) {
     console.error('[medicines] logs list', err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+    }
     return res.status(500).json({
       success: false,
       message: err.message || 'Could not load medicine logs.',
@@ -202,7 +205,7 @@ async function listMedicineLogs(req, res) {
   }
 }
 
-/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? } */
+/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? YYYY-MM-DD } */
 async function toggleMedicineLog(req, res) {
   try {
     const userId = resolveUserId(req);
@@ -212,19 +215,23 @@ async function toggleMedicineLog(req, res) {
 
     const body = readBody(req);
     const medicineId = String(body.medicine_id ?? '').trim();
-    const taken = Boolean(body.taken);
-    const date = body.date ? new Date(String(body.date)) : new Date();
+    const taken = body.taken === true || body.taken === 'true';
+    const dateInput = body.date
+      ? String(body.date).trim().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
 
     if (!medicineId) {
       return res.status(400).json({ success: false, message: 'medicine_id is required.' });
     }
 
-    const medicineLogsService = require('../services/medicine-logs.service');
-    const result = await medicineLogsService.setTakenForDay(userId, medicineId, taken, date);
+    const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dateInput);
 
-    return res.json({ success: true, log: result });
+    return res.json({ success: true, log });
   } catch (err) {
     console.error('[medicines] logs toggle', err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+    }
     return res.status(500).json({
       success: false,
       message: err.message || 'Could not update medicine log.',

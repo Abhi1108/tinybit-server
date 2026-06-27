@@ -121,6 +121,14 @@ const CONDITION_LABELS = {
   others: 'Other',
 };
 
+function formatMedicineTiming(m) {
+  if (m.time?.trim()) return m.time.trim();
+  if (m.schedule_time === 'Morning') return '8:00 AM';
+  if (m.schedule_time === 'Afternoon') return '12:00 PM';
+  if (m.schedule_time === 'Night' || m.schedule_time === 'Evening') return '8:00 PM';
+  return m.frequency || '';
+}
+
 function renderHealthCardHTML(p) {
   const name = p.full_name
     || [p.first_name, p.last_name].filter(Boolean).join(' ')
@@ -136,38 +144,37 @@ function renderHealthCardHTML(p) {
     ? p.biological_sex.charAt(0).toUpperCase() + p.biological_sex.slice(1)
     : '';
 
-  const metaParts = [
-    ageLine && `<span class="meta-pill">${escapeHtml(ageLine)}</span>`,
-    dobLine && `<span class="meta-pill">DOB: ${escapeHtml(dobLine)}</span>`,
-    sexLabel && `<span class="meta-pill">${escapeHtml(sexLabel)}</span>`,
-  ].filter(Boolean).join('');
-
   const bloodGroup = p.blood_group || 'N/A';
+  const avatarInitial = (name.trim()[0] || '?').toUpperCase();
+  const avatarBlock = p.avatar_url
+    ? `<img src="${escapeHtml(p.avatar_url)}" class="avatar-img" alt="${escapeHtml(avatarInitial)}" />`
+    : `<div class="avatar-fallback">${escapeHtml(avatarInitial)}</div>`;
 
-  // Emergency contact block
+  const patientDetails = [
+    ageLine && `Age: ${escapeHtml(ageLine)}`,
+    sexLabel && `Gender: ${escapeHtml(sexLabel)}`,
+    dobLine && `DOB: ${escapeHtml(dobLine)}`,
+  ].filter(Boolean).join('<br>');
+
   const hasEmergencyContact = p.emergency_name || p.emergency_phone;
   const emergencyBlock = hasEmergencyContact
-    ? `<div class="contact-row">
-        <div class="contact-avatar">${escapeHtml((p.emergency_name || 'EC')[0].toUpperCase())}</div>
-        <div class="contact-info">
-          <div class="contact-name">${escapeHtml(p.emergency_name || 'Emergency Contact')}</div>
-          <div class="contact-rel">${escapeHtml(p.emergency_relation || '')}</div>
+    ? `<div class="emergency-card">
+        <div class="section-kicker">Emergency Contact</div>
+        <div class="emergency-row">
+          <div>
+            <div class="emergency-name">${escapeHtml(p.emergency_name || 'Emergency Contact')}</div>
+            ${p.emergency_relation ? `<div class="emergency-rel">${escapeHtml(p.emergency_relation)}</div>` : ''}
+          </div>
+          ${p.emergency_phone
+            ? `<a class="call-chip" href="tel:${escapeHtml(p.emergency_phone)}">Call</a>`
+            : ''}
         </div>
         ${p.emergency_phone
-          ? `<a class="call-pill" href="tel:${escapeHtml(p.emergency_phone)}">
-               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.6 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-               Call
-             </a>`
+          ? `<a class="call-full" href="tel:${escapeHtml(p.emergency_phone)}">${escapeHtml(p.emergency_phone)}</a>`
           : ''}
-      </div>
-      ${p.emergency_phone
-        ? `<div style="margin-top:10px;">
-             <a class="call-full" href="tel:${escapeHtml(p.emergency_phone)}">${escapeHtml(p.emergency_phone)}</a>
-           </div>`
-        : ''}`
+      </div>`
     : `<div class="empty-state">No emergency contact on file</div>`;
 
-  // Medical conditions — map keys to labels, skip 'none'
   const rawConditions = Array.isArray(p.medical_conditions) ? p.medical_conditions : [];
   const conditionLabels = rawConditions
     .filter(c => c !== 'none')
@@ -179,41 +186,45 @@ function renderHealthCardHTML(p) {
   }
 
   const conditionsBlock = conditionLabels.length > 0
-    ? conditionLabels.map(c => `<div class="tag">${escapeHtml(c)}</div>`).join('')
-    : `<div class="empty-state">No conditions on file</div>`;
+    ? conditionLabels.map(c => `<span class="chip chip-blue">${escapeHtml(c)}</span>`).join('')
+    : `<span class="empty-inline">None on file</span>`;
 
-  // Allergies
   const rawAllergies = Array.isArray(p.allergies) ? p.allergies : [];
   const allergiesBlock = rawAllergies.length > 0
-    ? rawAllergies.map(a => `<div class="tag tag-warn">${escapeHtml(a)}</div>`).join('')
-    : `<div class="empty-state">No known allergies on file</div>`;
+    ? rawAllergies.map(a => `<span class="chip chip-warn">${escapeHtml(a)}</span>`).join('')
+    : `<span class="empty-inline">None on file</span>`;
 
-  // Medications
   const rawMeds = Array.isArray(p.medications) ? p.medications : [];
   const filteredMeds = rawMeds.filter(m => typeof m === 'string' ? m.trim() : m?.name?.trim());
   const medsBlock = filteredMeds.length > 0
     ? filteredMeds.map(m => {
         if (typeof m === 'string') {
-          return `<div class="med-item"><div class="med-name">${escapeHtml(m)}</div></div>`;
+          return `<div class="med-card"><div class="med-name">${escapeHtml(m)}</div></div>`;
         }
-        return `<div class="med-item">
-          <div class="med-name">${escapeHtml(m.name || '')}</div>
-          <div class="med-detail">${[m.dosage, m.timing].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+        const timing = formatMedicineTiming(m);
+        return `<div class="med-card">
+          <div class="med-main">
+            <div class="med-name">${escapeHtml(m.name || '')}</div>
+            <div class="med-detail">${[m.dosage, timing].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+          </div>
+          ${timing ? `<div class="med-time">${escapeHtml(timing)}</div>` : ''}
         </div>`;
       }).join('')
-    : `<div class="empty-state">No medications on file</div>`;
+    : `<div class="empty-state">No active medications on file</div>`;
 
-  // Doctor info
   const doctorBlock = p.doctor_name
-    ? `<div class="doctor-row">
-        <div class="doctor-icon">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        </div>
-        <div>
-          <div class="doctor-name">${escapeHtml(p.doctor_name)}</div>
-          ${p.doctor_contact ? `<div class="doctor-contact">${escapeHtml(p.doctor_contact)}</div>` : ''}
-        </div>
+    ? `<div class="doctor-card">
+        <div class="doctor-label">Primary Doctor</div>
+        <div class="doctor-name">${escapeHtml(p.doctor_name)}</div>
+        ${p.doctor_contact ? `<a class="doctor-phone" href="tel:${escapeHtml(p.doctor_contact)}">${escapeHtml(p.doctor_contact)}</a>` : ''}
       </div>`
+    : '';
+
+  const stickyCallBar = p.emergency_phone
+    ? `<a class="sticky-call" href="tel:${escapeHtml(p.emergency_phone)}">
+         <span>Call Emergency Contact</span>
+         <strong>${escapeHtml(p.emergency_phone)}</strong>
+       </a>`
     : '';
 
   return `<!DOCTYPE html>
@@ -227,306 +238,181 @@ function renderHealthCardHTML(p) {
     html { -webkit-text-size-adjust: 100%; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-      background: #f0f3f8;
+      background: #f7f9fc;
       color: #1a2030;
       min-height: 100vh;
-      padding-bottom: 40px;
+      padding-bottom: ${p.emergency_phone ? '88px' : '32px'};
     }
-
-    /* ── Header ── */
-    .header {
-      background: linear-gradient(145deg, #b71c1c 0%, #c62828 40%, #e53935 100%);
-      padding: 28px 20px 24px;
-      position: relative;
-      overflow: hidden;
+    .page { max-width: 480px; margin: 0 auto; background: #fff; min-height: 100vh; }
+    .top-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; border-bottom: 1px solid #eef2f7;
     }
-    .header::before {
-      content: '';
-      position: absolute;
-      top: -30px; right: -30px;
-      width: 160px; height: 160px;
-      border-radius: 50%;
-      background: rgba(255,255,255,0.07);
-    }
-    .header::after {
-      content: '';
-      position: absolute;
-      bottom: -40px; left: -20px;
-      width: 120px; height: 120px;
-      border-radius: 50%;
-      background: rgba(255,255,255,0.05);
-    }
-    .header-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: rgba(255,255,255,0.18);
-      border: 1px solid rgba(255,255,255,0.25);
-      border-radius: 20px;
-      padding: 4px 12px;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 1.5px;
-      text-transform: uppercase;
-      color: #fff;
-      margin-bottom: 14px;
-    }
-    .header-name {
-      font-size: 30px;
-      font-weight: 800;
-      color: #fff;
-      line-height: 1.15;
-      letter-spacing: -0.3px;
-    }
-    .header-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 10px;
-    }
-    .meta-pill {
-      background: rgba(255,255,255,0.15);
-      border: 1px solid rgba(255,255,255,0.2);
-      color: rgba(255,255,255,0.95);
-      border-radius: 20px;
-      padding: 4px 12px;
-      font-size: 12px;
-      font-weight: 600;
-    }
-
-    /* ── Blood group hero ── */
-    .blood-hero {
-      background: #fff;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 16px 20px;
-      border-bottom: 1px solid #eef2f7;
-      gap: 12px;
-    }
-    .blood-group-wrap {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-    .blood-drop {
-      width: 44px; height: 44px;
-      background: linear-gradient(135deg, #ffebee, #ffcdd2);
-      border-radius: 50% 50% 50% 0;
-      transform: rotate(-45deg);
+    .brand { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 800; color: #1a3050; }
+    .brand-dot {
+      width: 30px; height: 30px; border-radius: 50%; background: #1a3050;
       display: flex; align-items: center; justify-content: center;
-      flex-shrink: 0;
     }
-    .blood-drop-inner {
-      transform: rotate(45deg);
-      font-size: 18px;
-      font-weight: 900;
-      color: #c62828;
-      line-height: 1;
+    .brand-dot-inner { width: 12px; height: 12px; border: 2.5px solid #fff; border-radius: 50%; }
+    .hero {
+      text-align: center; padding: 22px 18px 18px; border-bottom: 1px solid #eef2f7;
     }
-    .blood-label { font-size: 11px; color: #8a94a6; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }
-    .blood-value { font-size: 26px; font-weight: 900; color: #b71c1c; line-height: 1; }
-    .doctor-row {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      background: #f7f9fc;
-      border-radius: 12px;
-      padding: 10px 14px;
+    .hero-badge {
+      display: inline-block; background: #dc2626; color: #fff;
+      font-size: 11px; font-weight: 800; letter-spacing: 1.4px; text-transform: uppercase;
+      padding: 5px 14px; border-radius: 4px; margin-bottom: 10px;
     }
-    .doctor-icon { width: 28px; height: 28px; background: #e8f0fe; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #3d5afe; flex-shrink: 0; margin-top: 2px; }
-    .doctor-name { font-size: 14px; font-weight: 700; color: #1a2030; }
-    .doctor-contact { font-size: 13px; color: #6b7a8d; margin-top: 2px; }
-
-    /* ── Card container ── */
-    .cards { padding: 12px 12px 0; display: flex; flex-direction: column; gap: 10px; }
-
-    /* ── Section card ── */
-    .card {
-      background: #fff;
-      border-radius: 18px;
-      overflow: hidden;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04);
+    .hero-title { font-size: 24px; font-weight: 800; color: #1a2030; }
+    .hero-sub { margin-top: 6px; font-size: 13px; color: #6b7a8d; }
+    .patient-card {
+      margin: 16px; padding: 16px; border: 1px solid #e8edf3; border-radius: 16px;
+      display: flex; gap: 12px; align-items: flex-start;
     }
-    .card-header {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 16px 12px;
-      border-bottom: 1px solid #f4f6fa;
+    .avatar-img, .avatar-fallback {
+      width: 64px; height: 64px; border-radius: 50%; flex-shrink: 0; object-fit: cover;
     }
-    .card-icon {
-      width: 32px; height: 32px;
-      border-radius: 10px;
+    .avatar-fallback {
       display: flex; align-items: center; justify-content: center;
-      font-size: 16px;
-      flex-shrink: 0;
+      background: linear-gradient(135deg, #304b76, #4b99ca);
+      color: #fff; font-size: 26px; font-weight: 900;
     }
-    .card-icon.red    { background: #ffebee; }
-    .card-icon.blue   { background: #e3f2fd; }
-    .card-icon.orange { background: #fff3e0; }
-    .card-icon.green  { background: #e8f5e9; }
-    .card-icon.purple { background: #f3e5f5; }
-    .card-title { font-size: 13px; font-weight: 700; color: #4a5568; text-transform: uppercase; letter-spacing: 0.8px; }
-    .card-body { padding: 14px 16px; }
-
-    /* ── Emergency contact ── */
-    .contact-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+    .patient-name { font-size: 18px; font-weight: 800; color: #1a2030; }
+    .patient-detail { margin-top: 4px; font-size: 13px; color: #6b7a8d; line-height: 1.5; }
+    .blood-badge {
+      margin-left: auto; background: #dc2626; color: #fff; border-radius: 10px;
+      padding: 8px 10px; text-align: center; flex-shrink: 0;
     }
-    .contact-avatar {
-      width: 44px; height: 44px;
-      background: linear-gradient(135deg, #b71c1c, #e53935);
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 18px; font-weight: 800; color: #fff;
-      flex-shrink: 0;
+    .blood-label { font-size: 9px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
+    .blood-value { font-size: 20px; font-weight: 900; line-height: 1.1; margin-top: 2px; }
+    .split-row { display: flex; gap: 0; margin: 0 16px 16px; }
+    .split-col {
+      flex: 1; padding: 14px; border: 1px solid #e8edf3;
     }
-    .contact-info { flex: 1; min-width: 0; }
-    .contact-name { font-size: 16px; font-weight: 700; color: #1a2030; }
-    .contact-rel { font-size: 13px; color: #6b7a8d; margin-top: 2px; }
-    .call-pill {
-      display: inline-flex; align-items: center; gap: 5px;
-      background: #2e7d32; color: #fff;
-      text-decoration: none;
-      padding: 8px 14px; border-radius: 20px;
-      font-size: 13px; font-weight: 700;
-      white-space: nowrap;
+    .split-col.conditions {
+      background: #eff6ff; border-color: #bfdbfe; border-radius: 12px 0 0 12px; border-right: none;
+    }
+    .split-col.allergies {
+      background: #fef2f2; border-color: #fecaca; border-radius: 0 12px 12px 0;
+    }
+    .section-kicker {
+      font-size: 10px; font-weight: 800; letter-spacing: 1.1px; text-transform: uppercase;
+      color: #6b7a8d; margin-bottom: 10px;
+    }
+    .split-col.conditions .section-kicker { color: #2563eb; }
+    .split-col.allergies .section-kicker { color: #dc2626; }
+    .chip {
+      display: inline-block; border-radius: 20px; padding: 5px 12px;
+      font-size: 12px; font-weight: 700; margin: 0 6px 6px 0;
+    }
+    .chip-blue { background: #dbeafe; color: #1e40af; }
+    .chip-warn { background: #fee2e2; color: #dc2626; }
+    .section { margin: 0 16px 16px; }
+    .emergency-card {
+      border: 1px solid #e8edf3; border-radius: 14px; padding: 14px; background: #fff;
+    }
+    .emergency-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .emergency-name { font-size: 16px; font-weight: 800; color: #1a2030; }
+    .emergency-rel { font-size: 13px; color: #6b7a8d; margin-top: 2px; }
+    .call-chip {
+      background: #2e7d32; color: #fff; text-decoration: none;
+      padding: 8px 14px; border-radius: 20px; font-size: 13px; font-weight: 700;
     }
     .call-full {
-      display: block;
-      background: linear-gradient(135deg, #1b5e20, #2e7d32);
-      color: #fff; text-decoration: none;
-      text-align: center;
-      padding: 13px;
-      border-radius: 12px;
-      font-size: 15px; font-weight: 700;
-      letter-spacing: 0.5px;
-      margin-top: 10px;
+      display: block; margin-top: 10px; text-align: center; text-decoration: none;
+      background: linear-gradient(135deg, #1b5e20, #2e7d32); color: #fff;
+      padding: 12px; border-radius: 12px; font-size: 15px; font-weight: 700;
     }
-
-    /* ── Tags ── */
-    .tags { display: flex; flex-wrap: wrap; gap: 8px; }
-    .tag {
-      background: #eef2ff;
-      color: #3d4f8a;
-      border: 1px solid #c7d0f5;
-      border-radius: 20px;
-      padding: 6px 14px;
-      font-size: 13px; font-weight: 600;
+    .med-card {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      border: 1px solid #e8edf3; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px;
+      background: #fff;
     }
-    .tag-warn {
-      background: #fff8e1;
-      color: #b45309;
-      border-color: #fcd34d;
+    .med-name { font-size: 15px; font-weight: 700; color: #1a2030; }
+    .med-detail { font-size: 12px; color: #6b7a8d; margin-top: 3px; }
+    .med-time {
+      background: #f0f4f8; border-radius: 8px; padding: 8px 12px;
+      font-size: 13px; font-weight: 700; color: #1a2030; white-space: nowrap;
     }
-
-    /* ── Medications ── */
-    .med-item {
-      padding: 10px 0;
-      border-bottom: 1px solid #f4f6fa;
+    .doctor-card {
+      margin: 0 16px 16px; padding: 14px; border-radius: 12px; background: #f7f9fc; border: 1px solid #e8edf3;
     }
-    .med-item:last-child { border-bottom: none; }
-    .med-name { font-size: 15px; font-weight: 600; color: #1a2030; }
-    .med-detail { font-size: 13px; color: #6b7a8d; margin-top: 3px; }
-
-    /* ── Empty state ── */
-    .empty-state {
-      font-size: 14px;
-      color: #b0bcc8;
-      font-style: italic;
-      padding: 4px 0;
-    }
-
-    /* ── Footer ── */
+    .doctor-label { font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #6b7a8d; }
+    .doctor-name { margin-top: 6px; font-size: 15px; font-weight: 700; color: #1a2030; }
+    .doctor-phone { display: inline-block; margin-top: 6px; color: #2563eb; font-weight: 700; text-decoration: none; }
+    .empty-state, .empty-inline { font-size: 13px; color: #b0bcc8; font-style: italic; }
     .footer {
-      text-align: center;
-      padding: 28px 20px 16px;
-      font-size: 11px;
-      color: #b0bcc8;
-      line-height: 1.8;
+      text-align: center; padding: 20px 18px 28px; font-size: 11px; color: #9aa5b4; line-height: 1.7;
+      border-top: 1px solid #eef2f7;
     }
-    .footer strong { color: #8a94a6; }
+    .footer strong { color: #2563eb; }
+    .sticky-call {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 2px; padding: 14px 18px calc(14px + env(safe-area-inset-bottom));
+      background: linear-gradient(135deg, #b71c1c, #e53935); color: #fff; text-decoration: none;
+      font-size: 12px; font-weight: 700; letter-spacing: 0.3px;
+      box-shadow: 0 -4px 20px rgba(0,0,0,0.15);
+    }
+    .sticky-call strong { font-size: 18px; font-weight: 900; }
   </style>
 </head>
 <body>
-
-  <!-- Header -->
-  <div class="header">
-    <div class="header-tag">🚨 Emergency Health Card</div>
-    <div class="header-name">${escapeHtml(name)}</div>
-    <div class="header-meta">${metaParts}</div>
-  </div>
-
-  <!-- Blood group + doctor -->
-  <div class="blood-hero">
-    <div class="blood-group-wrap">
-      <div class="blood-drop">
-        <div class="blood-drop-inner">${escapeHtml(bloodGroup.replace('+','').replace('-',''))}</div>
+  <div class="page">
+    <div class="top-bar">
+      <div class="brand">
+        <div class="brand-dot"><div class="brand-dot-inner"></div></div>
+        TinyBit
       </div>
-      <div>
-        <div class="blood-label">Blood Group</div>
+      <span style="font-size:12px;color:#9aa5b4;">Emergency</span>
+    </div>
+
+    <div class="hero">
+      <div class="hero-badge">Emergency Health Card</div>
+      <div class="hero-title">${escapeHtml(name)}</div>
+      <div class="hero-sub">Critical medical information for first responders</div>
+    </div>
+
+    <div class="patient-card">
+      ${avatarBlock}
+      <div style="flex:1;min-width:0;">
+        <div class="patient-name">${escapeHtml(name)}</div>
+        ${patientDetails ? `<div class="patient-detail">${patientDetails}</div>` : ''}
+      </div>
+      <div class="blood-badge">
+        <div class="blood-label">Blood</div>
         <div class="blood-value">${escapeHtml(bloodGroup)}</div>
       </div>
     </div>
+
+    <div class="split-row">
+      <div class="split-col conditions">
+        <div class="section-kicker">Conditions</div>
+        <div>${conditionsBlock}</div>
+      </div>
+      <div class="split-col allergies">
+        <div class="section-kicker">Allergies</div>
+        <div>${allergiesBlock}</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-kicker">Emergency Contact</div>
+      ${emergencyBlock}
+    </div>
+
     ${doctorBlock}
+
+    <div class="section">
+      <div class="section-kicker">Active Medications</div>
+      ${medsBlock}
+    </div>
+
+    <div class="footer">
+      <strong>TinyBit Health</strong><br>
+      Self-reported data for emergency use only. Always consult a medical professional.
+    </div>
   </div>
-
-  <div class="cards">
-
-    <!-- Emergency Contact -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-icon red">🆘</div>
-        <div class="card-title">Emergency Contact</div>
-      </div>
-      <div class="card-body">
-        ${emergencyBlock}
-      </div>
-    </div>
-
-    <!-- Medical Conditions -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-icon blue">⚕️</div>
-        <div class="card-title">Medical Conditions</div>
-      </div>
-      <div class="card-body">
-        <div class="tags">${conditionsBlock}</div>
-      </div>
-    </div>
-
-    <!-- Allergies -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-icon orange">⚠️</div>
-        <div class="card-title">Allergies</div>
-      </div>
-      <div class="card-body">
-        <div class="tags">${allergiesBlock}</div>
-      </div>
-    </div>
-
-    <!-- Medications -->
-    <div class="card">
-      <div class="card-header">
-        <div class="card-icon green">💊</div>
-        <div class="card-title">Current Medications</div>
-      </div>
-      <div class="card-body">
-        ${medsBlock}
-      </div>
-    </div>
-
-  </div>
-
-  <div class="footer">
-    <strong>TinyBit Health</strong> · Emergency use only<br>
-    Data self-reported. Always consult a qualified medical professional.
-  </div>
-
+  ${stickyCallBar}
 </body>
 </html>`;
 }

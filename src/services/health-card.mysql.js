@@ -125,6 +125,9 @@ async function enrichProfileForHealthCard(profile) {
     profile.medications = meds.map((m) => ({
       name: m.name,
       dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
+      time: m.time,
+      schedule_time: m.schedule_time,
+      frequency: m.frequency,
       timing: m.time || m.schedule_time || m.frequency || '',
     }));
   }

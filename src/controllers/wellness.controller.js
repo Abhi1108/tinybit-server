@@ -19,6 +19,15 @@ function todayDateStr() {
   return new Date().toISOString().split('T')[0];
 }
 
+function normalizeSleepQuality(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const map = { excellent: 3, good: 2, poor: 1 };
+  if (map[value] != null) return map[value];
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function readBody(req) {
   return req.body ?? {};
 }
@@ -75,10 +84,16 @@ async function upsertDailyCheckInHandler(req, res) {
       return res.status(400).json({ success: false, message: 'Please select your mood.' });
     }
 
-    const checkIn = await upsertDailyCheckIn(userId, {
+    const upsertFields = {
       ...fields,
       check_in_date: String(fields.check_in_date ?? todayDateStr()).trim() || todayDateStr(),
-    });
+    };
+
+    if ('sleep_quality' in upsertFields) {
+      upsertFields.sleep_quality = normalizeSleepQuality(upsertFields.sleep_quality);
+    }
+
+    const checkIn = await upsertDailyCheckIn(userId, upsertFields);
 
     return res.json({ success: true, checkIn });
   } catch (err) {

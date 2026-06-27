@@ -16,16 +16,25 @@ function mapRow(row) {
   };
 }
 
-function dayBounds(date = new Date()) {
-  const start = new Date(date);
+/** Bounds for YYYY-MM-DD calendar date (matches DB unique index on UTC date). */
+function calendarDayBounds(dateInput) {
+  const normalized = String(dateInput ?? '').trim().slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return {
+      start: new Date(`${normalized}T00:00:00.000Z`),
+      end: new Date(`${normalized}T23:59:59.999Z`),
+    };
+  }
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  const start = new Date(d);
   start.setUTCHours(0, 0, 0, 0);
-  const end = new Date(date);
+  const end = new Date(d);
   end.setUTCHours(23, 59, 59, 999);
   return { start, end };
 }
 
 function weekBounds(baseDate = new Date()) {
-  const d = new Date(baseDate);
+  const d = baseDate instanceof Date ? baseDate : new Date(baseDate);
   const day = d.getUTCDay();
   const mondayOffset = day === 0 ? -6 : 1 - day;
   const start = new Date(d);
@@ -49,7 +58,7 @@ async function listInRange(userId, from, to) {
 }
 
 async function listForDay(userId, date = new Date()) {
-  const { start, end } = dayBounds(date);
+  const { start, end } = calendarDayBounds(date);
   return listInRange(userId, start, end);
 }
 
@@ -58,8 +67,8 @@ async function listForWeek(userId, baseDate = new Date()) {
   return listInRange(userId, start, end);
 }
 
-async function setTakenForDay(userId, medicineId, taken, date = new Date()) {
-  const { start, end } = dayBounds(date);
+async function setTakenForDay(userId, medicineId, taken, dateInput = new Date()) {
+  const { start, end } = calendarDayBounds(dateInput);
 
   if (!taken) {
     await execute(
@@ -67,11 +76,12 @@ async function setTakenForDay(userId, medicineId, taken, date = new Date()) {
        WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?`,
       [userId, medicineId, start, end],
     );
-    return { taken: false };
+    return null;
   }
 
   const existing = await query(
-    `SELECT id FROM medicine_logs
+    `SELECT id, user_id, medicine_id, taken_at, notes, created_at
+     FROM medicine_logs
      WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?
      LIMIT 1`,
     [userId, medicineId, start, end],
@@ -81,10 +91,7 @@ async function setTakenForDay(userId, medicineId, taken, date = new Date()) {
     return mapRow(existing[0]);
   }
 
-  const takenAt = new Date(date);
-  const now = new Date();
-  takenAt.setUTCHours(now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds(), 0);
-
+  const takenAt = new Date();
   const id = randomUUID();
   await execute(
     `INSERT INTO medicine_logs (id, user_id, medicine_id, taken_at)
