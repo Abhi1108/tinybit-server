@@ -13,22 +13,13 @@ function readBody(req) {
   return req.body ?? {};
 }
 
-function resolveAudioUri(value) {
-  if (value == null || value === '') return null;
+function resolveJournalAudioUrl(body) {
+  const url = body.audio_uri ?? body.audioUri ?? body.audio_url ?? body.audioUrl;
+  if (url == null || !String(url).trim()) return null;
 
-  const raw = String(value).trim();
-  if (!raw) return null;
-
-  if (/^https?:\/\//i.test(raw)) {
-    return raw;
-  }
-
-  if (raw.startsWith('data:')) {
-    return raw;
-  }
-
-  if (/^[A-Za-z0-9+/=]+$/.test(raw) && raw.length > 100) {
-    return `data:audio/m4a;base64,${raw}`;
+  const raw = String(url).trim();
+  if (!/^https?:\/\//i.test(raw)) {
+    return null;
   }
 
   return raw;
@@ -93,7 +84,7 @@ async function createJournalEntry(req, res) {
     const type = String(body.type ?? '').trim();
     const content = String(body.content ?? '').trim();
     const prompt = body.prompt == null ? null : String(body.prompt);
-    const audioUri = resolveAudioUri(body.audio_uri ?? body.audioUri);
+    const audioUri = resolveJournalAudioUrl(body);
 
     if (!VALID_TYPES.has(type)) {
       return res.status(400).json({
@@ -106,11 +97,13 @@ async function createJournalEntry(req, res) {
       return res.status(400).json({ success: false, message: 'Content is required.' });
     }
 
-    if (type === 'Voice' && !audioUri && !content) {
-      return res.status(400).json({
-        success: false,
-        message: 'Voice entries require audio_uri or content.',
-      });
+    if (type === 'Voice') {
+      if (!audioUri) {
+        return res.status(400).json({
+          success: false,
+          message: 'Voice entries require audio_url (HTTPS). Upload via POST /api/storage/presign-upload first.',
+        });
+      }
     }
 
     const entry = await journalService.create(userId, {

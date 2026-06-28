@@ -1,4 +1,5 @@
 const { Buffer } = require('buffer');
+const aiService = require('../services/ai.service');
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -63,6 +64,40 @@ CORE GUIDELINES:
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. CHAT — Gemini (primary) → OpenAI GPT-4o-mini (fallback)
 // ═══════════════════════════════════════════════════════════════════════════════
+function findNewMessages(dbHistory, incomingMessages) {
+  const H = dbHistory.length;
+  const I = incomingMessages.length;
+
+  let maxOverlap = 0;
+  for (let k = Math.min(H, I); k >= 1; k--) {
+    let match = true;
+    for (let i = 0; i < k; i++) {
+      const dbMsg = dbHistory[H - k + i];
+      const incMsg = incomingMessages[i];
+      if (dbMsg.role !== incMsg.role || dbMsg.content !== incMsg.content) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      maxOverlap = k;
+      break;
+    }
+  }
+  return incomingMessages.slice(maxOverlap);
+}
+
+const getChatHistory = async (req, res) => {
+  try {
+    const userId = req.auth.userId;
+    const { limit } = req.query || {};
+    const messages = await aiService.getChatHistory(userId, limit);
+    return res.json({ success: true, data: { messages } });
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+  }
+};
+
 const chat = async (req, res) => {
   try {
     const { messages, context } = req.body || {};
@@ -70,12 +105,36 @@ const chat = async (req, res) => {
       return res.status(400).json({ success: false, message: '`messages` must be an array' });
     }
 
+    const userId = req.auth.userId;
+    const dbHistory = await aiService.getChatHistory(userId, 50);
+
+    const newMessages = findNewMessages(dbHistory, messages);
+    for (const msg of newMessages) {
+      await aiService.saveMessage(userId, {
+        role: msg.role,
+        content: msg.content,
+      });
+    }
+
+    const fullConversation = [...dbHistory, ...newMessages];
+    if (fullConversation.length === 0) {
+      return res.status(400).json({ success: false, message: 'No messages provided' });
+    }
+
+    const lastMsg = fullConversation[fullConversation.length - 1];
+    if (lastMsg.role === 'assistant') {
+      return res.json({ success: true, data: { content: lastMsg.content }, provider: lastMsg.provider || 'unknown' });
+    }
+
     const systemPrompt = `${SATHI_SYSTEM}\n\nUSER CONTEXT:\n${context ?? 'No context provided.'}`;
+
+    let replyContent = '';
+    let provider = '';
 
     // ── Try Gemini first ──────────────────────────────────────────────────────
     try {
       // Build multi-turn contents; prepend system prompt to first user message
-      const contents = messages.map((m, i) => ({
+      const contents = fullConversation.map((m, i) => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: i === 0 ? `${systemPrompt}\n\n${m.content}` : String(m.content ?? '') }],
       }));
@@ -87,8 +146,10 @@ const chat = async (req, res) => {
 
       if (geminiResp.ok) {
         const json = await geminiResp.json();
-        const content = geminiText(json);
-        if (content) return res.json({ success: true, data: { content }, provider: 'gemini' });
+        replyContent = geminiText(json);
+        if (replyContent) {
+          provider = 'gemini';
+        }
       } else {
         const errBody = await geminiResp.text();
         console.warn('[Sathi] Gemini error:', geminiResp.status, errBody);
@@ -98,24 +159,41 @@ const chat = async (req, res) => {
     }
 
     // ── Fallback: OpenAI GPT-4o-mini ─────────────────────────────────────────
-    const oaiResp = await openAiFetch('/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'system', content: systemPrompt }, ...messages],
-        temperature: 0.7,
-      }),
-    });
+    if (!replyContent) {
+      const oaiResp = await openAiFetch('/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: systemPrompt }, ...fullConversation.map(m => ({ role: m.role, content: m.content }))],
+          temperature: 0.7,
+        }),
+      });
 
-    if (!oaiResp.ok) {
-      const body = await oaiResp.text();
-      return res.status(502).json({ success: false, message: 'AI service error', detail: body });
+      if (!oaiResp.ok) {
+        const body = await oaiResp.text();
+        return res.status(502).json({ success: false, message: 'AI service error', detail: body });
+      }
+
+      const oaiJson = await oaiResp.json();
+      replyContent = oaiJson?.choices?.[0]?.message?.content ?? '';
+      if (replyContent) {
+        provider = 'openai';
+      }
     }
 
-    const oaiJson = await oaiResp.json();
-    const content = oaiJson?.choices?.[0]?.message?.content ?? '';
-    return res.json({ success: true, data: { content }, provider: 'openai' });
+    if (!replyContent) {
+      return res.status(502).json({ success: false, message: 'AI service error: both providers failed' });
+    }
+
+    // Save assistant response
+    await aiService.saveMessage(userId, {
+      role: 'assistant',
+      content: replyContent,
+      provider,
+    });
+
+    return res.json({ success: true, data: { content: replyContent }, provider });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -460,7 +538,7 @@ Respond with ONLY valid JSON (no markdown):
     }
 
     // ── Static defaults ───────────────────────────────────────────────────────
-    return res.json({ success: true, data: CLOTHING_DEFAULTS });
+    return res.status(502).json({ success: false, message: 'Weather recommendation AI is currently unavailable.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -548,7 +626,7 @@ overallStatus must be: "Good", "Fair", or "Needs Attention". alertLevel must be:
     }
 
     // ── Static defaults ───────────────────────────────────────────────────────
-    return res.json({ success: true, data: WELLNESS_DEFAULTS });
+    return res.status(502).json({ success: false, message: 'Wellness log summary AI is currently unavailable.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -649,7 +727,7 @@ const healthForecast = async (req, res) => {
     // ── Fallback: OpenAI GPT-4o-mini (images only — PDFs not supported inline) ─
     // For PDFs we already tried Gemini above; skip OpenAI if it's a PDF.
     if (safeMime === 'application/pdf') {
-      return res.json({ success: true, data: FORECAST_FALLBACK });
+      return res.status(502).json({ success: false, message: 'AI forecast failed for PDF. Gemini service is unavailable.' });
     }
 
     try {
@@ -685,7 +763,7 @@ const healthForecast = async (req, res) => {
       console.warn('[healthForecast] OpenAI also failed:', oaiErr.message);
     }
 
-    return res.json({ success: true, data: FORECAST_FALLBACK });
+    return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -763,14 +841,10 @@ const healthForecastMulti = async (req, res) => {
       console.warn('[healthForecastMulti] Gemini failed:', geminiErr.message);
     }
 
-    return res.json({ success: true, data: {
-      ...FORECAST_FALLBACK,
-      reportType: 'Multi-Report Analysis',
-      summary: 'AI analysis is currently unavailable. Please try again later.',
-    }});
+    return res.status(502).json({ success: false, message: 'Multi-report trend analysis AI is currently unavailable.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
 };
 
-module.exports = { chat, transcribe, tts, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti };
+module.exports = { getChatHistory, chat, transcribe, tts, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti };

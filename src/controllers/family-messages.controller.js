@@ -15,6 +15,10 @@ function isValidDateParam(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''));
 }
 
+function todayDateParam() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 /** GET /api/family/messages/latest */
 async function getLatestMessage(req, res) {
   try {
@@ -48,13 +52,8 @@ async function getMessageCount(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const date = String(req.query.date ?? '').trim();
-    if (!isValidDateParam(date)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Query param date is required (YYYY-MM-DD).',
-      });
-    }
+    const dateRaw = String(req.query.date ?? '').trim();
+    const date = isValidDateParam(dateRaw) ? dateRaw : todayDateParam();
 
     const count = await familyMessagesService.countForReceiverOnDate(userId, date);
     return res.json({ success: true, count });
@@ -80,13 +79,13 @@ async function createMessage(req, res) {
 
     const body = readBody(req);
     const receiverId = String(body.receiver_id ?? body.receiverId ?? '').trim();
-    const message = String(body.message ?? '').trim();
+    const message = String(body.message ?? body.content ?? '').trim();
 
     if (!receiverId) {
       return res.status(400).json({ success: false, message: 'receiver_id is required.' });
     }
     if (!message) {
-      return res.status(400).json({ success: false, message: 'message is required.' });
+      return res.status(400).json({ success: false, message: 'message or content is required.' });
     }
 
     const created = await familyMessagesService.create(senderId, receiverId, message);

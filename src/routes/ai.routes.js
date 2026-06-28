@@ -3,6 +3,7 @@ const router = express.Router();
 
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
+  getChatHistory,
   chat,
   transcribe,
   tts,
@@ -15,6 +16,7 @@ const {
 } = require('../controllers/ai.controller');
 
 // Sathi AI core
+router.get('/chat',             requireJwtAuth, getChatHistory);
 router.post('/chat',            requireJwtAuth, chat);
 router.post('/transcribe',      requireJwtAuth, transcribe);
 router.post('/tts',             requireJwtAuth, tts);

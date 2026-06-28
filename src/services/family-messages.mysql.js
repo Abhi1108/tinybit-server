@@ -23,6 +23,7 @@ function mapMessageRow(row) {
     sender_id: row.sender_id,
     receiver_id: row.receiver_id,
     message: row.message,
+    content: row.message,
     created_at: toIsoString(row.created_at),
     ...(sender ? { sender } : {}),
   };

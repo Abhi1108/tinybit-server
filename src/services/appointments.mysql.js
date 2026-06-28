@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const careEventsService = require('./care-events.service');
 
 const APPOINTMENT_SELECT = `
   id, user_id, doctor_name, specialty, date, time, fee, reason, status, created_at
@@ -78,6 +79,31 @@ async function create(userId, rawRow) {
      VALUES (${placeholders})`,
     values,
   );
+
+  // Auto-create matching care event if date is present and parseable
+  if (fields.date) {
+    try {
+      const parsedDate = new Date(fields.date);
+      if (!isNaN(parsedDate.getTime())) {
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const careEventData = {
+          title: `Appointment: ${fields.doctor_name || 'Doctor'}`,
+          sub: `${fields.specialty || ''}${fields.specialty && fields.reason ? ' - ' : ''}${fields.reason || ''}`.trim() || 'Scheduled doctor visit',
+          time: fields.time || '',
+          type: 'Doctor',
+          color: '#DB5461',
+          emoji: '🏥',
+          date: parsedDate.getDate(),
+          month: monthNames[parsedDate.getMonth()],
+          year: parsedDate.getFullYear(),
+          timestamp: parsedDate.getTime(),
+        };
+        await careEventsService.create(userId, careEventData);
+      }
+    } catch (careEventErr) {
+      console.warn('[appointments] Failed to auto-create care event:', careEventErr.message);
+    }
+  }
 
   return getById(userId, id);
 }

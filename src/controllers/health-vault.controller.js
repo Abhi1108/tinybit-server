@@ -25,15 +25,12 @@ function formatRecordDate() {
   });
 }
 
-function formatFileSize(bytes) {
-  if (!bytes || bytes <= 0) return '0 MB';
-  return `${(bytes / 1048576).toFixed(1)} MB`;
-}
-
-function buildDataUri(base64, mimeType) {
-  const clean = String(base64).replace(/^data:[^;]+;base64,/, '');
-  const mime = String(mimeType || 'application/octet-stream').trim();
-  return `data:${mime};base64,${clean}`;
+function resolveFileUri(body, fields) {
+  const remoteUrl = body.file_url ?? body.fileUrl ?? fields.uri ?? null;
+  if (remoteUrl != null && /^https?:\/\//i.test(String(remoteUrl).trim())) {
+    return String(remoteUrl).trim();
+  }
+  return null;
 }
 
 function normalizeCreatePayload(body) {
@@ -41,25 +38,21 @@ function normalizeCreatePayload(body) {
     user_id: _ignoredUserId,
     id: _ignoredId,
     created_at: _ignoredCreatedAt,
-    base64,
+    file_url: _fileUrlSnake,
+    fileUrl: _fileUrlCamel,
     mime_type: mimeTypeSnake,
     mimeType: mimeTypeCamel,
     ...fields
   } = body;
 
   const mime_type = mimeTypeSnake ?? mimeTypeCamel ?? fields.mime_type ?? null;
-  let uri = fields.uri ?? null;
-
-  if (base64) {
-    uri = buildDataUri(base64, mime_type);
-  }
+  const uri = resolveFileUri(body, fields);
 
   const timestamp = fields.timestamp != null
     ? Number(fields.timestamp)
     : Date.now();
 
-  const size = fields.size
-    ?? (base64 ? formatFileSize(Math.floor(String(base64).length * 0.75)) : '0 MB');
+  const size = fields.size ?? '0 MB';
 
   return {
     title: String(fields.title ?? 'Health Record').trim() || 'Health Record',
@@ -116,6 +109,13 @@ async function createRecord(req, res) {
 
     if (!payload.title) {
       return res.status(400).json({ success: false, message: 'Record title is required.' });
+    }
+
+    if (!payload.uri || !/^https?:\/\//i.test(payload.uri)) {
+      return res.status(400).json({
+        success: false,
+        message: 'file_url is required. Upload the file via POST /api/storage/presign-upload first.',
+      });
     }
 
     const record = await healthRecordsService.create(userId, payload);

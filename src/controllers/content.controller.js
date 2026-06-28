@@ -15,6 +15,9 @@ function mapQuizForClient(row) {
     q: row.question,
     opts: row.options,
     ans: row.correct_index,
+    question: row.question,
+    options: row.options,
+    correct_index: row.correct_index,
   };
 }
 

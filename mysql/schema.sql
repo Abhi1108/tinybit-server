@@ -128,6 +128,10 @@ CREATE TABLE IF NOT EXISTS profiles (
   UNIQUE KEY uq_profiles_email (email),
   UNIQUE KEY uq_profiles_family_code (family_code),
   UNIQUE KEY uq_profiles_health_qr_token (health_qr_token),
+  KEY idx_profiles_role (role),
+  KEY idx_profiles_mobile (mobile),
+  KEY idx_profiles_is_banned (is_banned),
+  KEY idx_profiles_created_at (created_at),
   CONSTRAINT chk_profiles_role
     CHECK (role IN ('elder', 'guardian', 'caregiver', 'admin')),
   CONSTRAINT fk_profiles_app_user
@@ -140,22 +144,23 @@ CREATE TABLE IF NOT EXISTS profiles (
 
 CREATE TABLE IF NOT EXISTS guardian_elder_links (
   id           CHAR(36)     NOT NULL DEFAULT (UUID()),
-  guardian_id  CHAR(36)     NOT NULL,
-  elder_id     CHAR(36)     NULL,
+  guardian_id  CHAR(36)     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL,
+  elder_id     CHAR(36)     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
   elder_email  VARCHAR(255) NOT NULL,
   parent_name  VARCHAR(255) NOT NULL,
   relation     VARCHAR(64)  NOT NULL,
   status       VARCHAR(16)  NOT NULL DEFAULT 'pending',
   created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-  pending_key  VARCHAR(300) GENERATED ALWAYS AS (
-    IF(status = 'pending', CONCAT(guardian_id, ':', elder_email), NULL)
-  ) STORED,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_guardian_elder_pending (pending_key),
+  -- One row per (guardian, email, status) — blocks duplicate pending invites without
+  -- a STORED generated column (MySQL 8 errors on FK + generated col on same table).
+  UNIQUE KEY uq_guardian_elder_status (guardian_id, elder_email, status),
   KEY idx_guardian_links_guardian (guardian_id),
   KEY idx_guardian_links_elder (elder_id),
   KEY idx_guardian_links_email (elder_email),
+  KEY idx_guardian_links_guardian_status (guardian_id, status),
+  KEY idx_guardian_links_status_created (status, created_at),
   CONSTRAINT chk_guardian_link_status
     CHECK (status IN ('pending', 'connected', 'declined')),
   CONSTRAINT fk_guardian_links_guardian
@@ -264,6 +269,8 @@ CREATE TABLE IF NOT EXISTS medicines (
   updated_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_medicines_user_active (user_id, is_active),
+  KEY idx_medicines_user_created (user_id, created_at DESC),
+  KEY idx_medicines_is_active (is_active),
   CONSTRAINT fk_medicines_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -279,6 +286,7 @@ CREATE TABLE IF NOT EXISTS medicine_logs (
   PRIMARY KEY (id),
   UNIQUE KEY uq_medicine_logs_one_per_day (user_id, medicine_id, taken_date),
   KEY idx_medicine_logs_user (user_id, taken_at DESC),
+  KEY idx_medicine_logs_user_date (user_id, taken_date),
   CONSTRAINT fk_medicine_logs_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE,
   CONSTRAINT fk_medicine_logs_medicine
@@ -313,7 +321,7 @@ CREATE TABLE IF NOT EXISTS daily_checkins (
   updated_at          DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uq_daily_checkins_user_date (user_id, check_in_date),
-  KEY idx_daily_checkins_user_date (user_id, check_in_date DESC),
+  KEY idx_daily_checkins_created (created_at),
   CONSTRAINT chk_daily_checkins_mood
     CHECK (mood IS NULL OR mood IN ('happy', 'tired', 'low', 'calm', 'anxious', 'stressed')),
   CONSTRAINT chk_daily_checkins_mood_score
@@ -331,6 +339,7 @@ CREATE TABLE IF NOT EXISTS mood_entries (
   created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_mood_entries_user_created (user_id, created_at DESC),
+  KEY idx_mood_entries_created (created_at),
   CONSTRAINT fk_mood_entries_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -467,6 +476,7 @@ CREATE TABLE IF NOT EXISTS ai_conversations (
   created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_ai_conversations_user (user_id, created_at DESC),
+  KEY idx_ai_conversations_created (created_at),
   CONSTRAINT fk_ai_conversations_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -572,6 +582,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_notifications_user_created (user_id, created_at DESC),
+  KEY idx_notifications_user_unread (user_id, `read`, created_at DESC),
   KEY idx_notifications_type (type),
   CONSTRAINT fk_notifications_user
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE

@@ -18,6 +18,29 @@ const {
   getMindGames,
   broadcast,
 } = require('../controllers/admin.controller');
+const {
+  getDoctors,
+  getDoctor,
+  createDoctor,
+  updateDoctor,
+  deleteDoctor,
+  getMoodMediaTracks,
+  getMoodMediaTrack,
+  createMoodMediaTrack,
+  updateMoodMediaTrack,
+  deleteMoodMediaTrack,
+  getQuizQuestions,
+  getQuizQuestion,
+  createQuizQuestion,
+  updateQuizQuestion,
+  deleteQuizQuestion,
+  getInspirations,
+  getInspiration,
+  createInspiration,
+  updateInspiration,
+  deleteInspiration,
+} = require('../controllers/admin-catalog.controller');
+const { presignCatalogUpload } = require('../controllers/admin-storage.controller');
 
 router.use('/assets', express.static(path.join(__dirname, '../../public/admin')));
 
@@ -61,5 +84,32 @@ router.get('/api/care-events', sessionAuth, getCareEvents);
 router.get('/api/mind-games', sessionAuth, getMindGames);
 
 router.post('/api/broadcast', sessionAuth, broadcast);
+
+router.post('/api/storage/presign-upload', sessionAuth, presignCatalogUpload);
+
+// ── Catalog (P1 — real content via tinybit-admin) ───────────────────────────
+router.get('/api/doctors', sessionAuth, getDoctors);
+router.post('/api/doctors', sessionAuth, createDoctor);
+router.get('/api/doctors/:id', sessionAuth, getDoctor);
+router.patch('/api/doctors/:id', sessionAuth, updateDoctor);
+router.delete('/api/doctors/:id', sessionAuth, deleteDoctor);
+
+router.get('/api/mood-media', sessionAuth, getMoodMediaTracks);
+router.post('/api/mood-media', sessionAuth, createMoodMediaTrack);
+router.get('/api/mood-media/:id', sessionAuth, getMoodMediaTrack);
+router.patch('/api/mood-media/:id', sessionAuth, updateMoodMediaTrack);
+router.delete('/api/mood-media/:id', sessionAuth, deleteMoodMediaTrack);
+
+router.get('/api/quiz-questions', sessionAuth, getQuizQuestions);
+router.post('/api/quiz-questions', sessionAuth, createQuizQuestion);
+router.get('/api/quiz-questions/:id', sessionAuth, getQuizQuestion);
+router.patch('/api/quiz-questions/:id', sessionAuth, updateQuizQuestion);
+router.delete('/api/quiz-questions/:id', sessionAuth, deleteQuizQuestion);
+
+router.get('/api/inspirations', sessionAuth, getInspirations);
+router.post('/api/inspirations', sessionAuth, createInspiration);
+router.get('/api/inspirations/:id', sessionAuth, getInspiration);
+router.patch('/api/inspirations/:id', sessionAuth, updateInspiration);
+router.delete('/api/inspirations/:id', sessionAuth, deleteInspiration);
 
 module.exports = router;

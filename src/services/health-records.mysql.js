@@ -1,5 +1,7 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const storageService = require('./storage.service');
+const { isStorageConfigured } = require('../config/storage');
 
 const RECORD_SELECT = `
   id, user_id, title, date, timestamp, size, \`type\`, category,
@@ -99,6 +101,23 @@ async function create(userId, record) {
 }
 
 async function deleteById(userId, id) {
+  const record = await getById(userId, id);
+  if (!record) return null;
+
+  if (record.uri) {
+    try {
+      const key = new URL(record.uri).pathname.slice(1);
+      const segments = key.split('/');
+      if (segments.length >= 3 && storageService.VALID_PURPOSES.has(segments[0])) {
+        if (isStorageConfigured()) {
+          await storageService.deleteObject(key, userId);
+        }
+      }
+    } catch (err) {
+      console.warn(`[health-records] Failed to delete S3 object for record ${id}:`, err.message);
+    }
+  }
+
   const result = await execute(
     'DELETE FROM health_records WHERE id = ? AND user_id = ?',
     [id, userId],

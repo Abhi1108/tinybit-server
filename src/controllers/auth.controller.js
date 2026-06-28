@@ -392,6 +392,18 @@ async function updateProfile(req, res) {
       return res.status(400).json({ success: false, message: 'No profile fields to update' });
     }
 
+    if (
+      patch.profile_image !== undefined
+      && patch.profile_image !== null
+      && String(patch.profile_image).trim() !== ''
+      && !/^https?:\/\//i.test(String(patch.profile_image).trim())
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'profile_image must be an HTTPS URL. Upload via POST /api/storage/presign-upload first.',
+      });
+    }
+
     let data;
     try {
       data = await saveProfile(userId, email, patch);

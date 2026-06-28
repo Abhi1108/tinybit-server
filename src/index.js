@@ -51,7 +51,12 @@ app.use('/api/location',    require('./routes/location.routes'));
 app.use('/api/doctors',     require('./routes/doctors.routes'));
 app.use('/api/content',     require('./routes/content.routes'));
 app.use('/api/mood-media',  require('./routes/mood-media.routes'));
+app.use('/api/storage',     require('./routes/storage.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
+
+// ── OpenAPI / Swagger UI (mobile API only — excludes /admin) ────────────────
+const { mountSwagger } = require('./config/swagger');
+mountSwagger(app);
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
