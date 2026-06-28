@@ -241,8 +241,8 @@ async function getUsers({ role, search, status, page, limit }) {
        FROM profiles
        WHERE ${where}
        ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, limitNum, offset],
+       LIMIT ${limitNum} OFFSET ${offset}`,
+      params,
     ),
   ]);
 
@@ -275,8 +275,7 @@ async function getIncompleteUsers({ page, limit }) {
        LEFT JOIN profiles p ON p.id = au.id
        WHERE p.id IS NULL
        ORDER BY au.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [limitNum, offset],
+       LIMIT ${limitNum} OFFSET ${offset}`,
     ),
   ]);
 
@@ -451,8 +450,8 @@ async function getConnections({ status, page, limit, search }) {
        LEFT JOIN profiles ep ON ep.id = gel.elder_id
        ${where}
        ORDER BY gel.created_at DESC
-       LIMIT ? OFFSET ?`,
-      [...params, limitNum, offset],
+       LIMIT ${limitNum} OFFSET ${offset}`,
+      params,
     ),
   ]);
 
@@ -517,8 +516,8 @@ async function getMedicines({ page, limit, category, priority, active }) {
      FROM medicines
      ${where}
      ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((m) => m.user_id))]);
@@ -547,8 +546,8 @@ async function getCheckIns({ page, limit, mood }) {
      FROM daily_checkins
      ${where}
      ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
@@ -575,8 +574,8 @@ async function getMoods({ page, limit, mood }) {
      FROM mood_entries
      ${where}
      ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
@@ -603,8 +602,8 @@ async function getAIConversations({ page, limit, role }) {
      FROM ai_conversations
      ${where}
      ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
@@ -632,8 +631,8 @@ async function getCareEvents({ page, limit, type }) {
      FROM care_events
      ${where}
      ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
@@ -660,8 +659,8 @@ async function getMindGames({ page, limit, game_type }) {
      FROM mind_games_scores
      ${where}
      ORDER BY score DESC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);

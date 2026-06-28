@@ -52,13 +52,14 @@ function mapRow(row) {
 }
 
 async function listByUser(userId, { limit = 50 } = {}) {
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
   const rows = await query(
     `SELECT id, user_id, \`type\`, value, unit, created_at
      FROM health_readings
      WHERE user_id = ?
      ORDER BY created_at DESC
-     LIMIT ?`,
-    [userId, Math.min(Math.max(limit, 1), 200)],
+     LIMIT ${limitNum}`,
+    [userId],
   );
   return rows.map(mapRow);
 }

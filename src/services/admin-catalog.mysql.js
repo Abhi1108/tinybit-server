@@ -97,8 +97,8 @@ async function listDoctors({ page, limit, specialty, active, search }) {
      FROM doctors
      ${where}
      ORDER BY sort_order ASC, name ASC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   return rows.map(mapDoctor);
@@ -223,8 +223,8 @@ async function listMoodMediaTracks({ page, limit, category, active, search }) {
      FROM mood_media_tracks
      ${where}
      ORDER BY category ASC, sort_order ASC, title ASC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   return rows.map(mapMoodTrack);
@@ -369,8 +369,8 @@ async function listQuizQuestions({ page, limit, active, search }) {
      FROM daily_quiz_questions
      ${where}
      ORDER BY sort_order ASC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   return rows.map(mapQuiz);
@@ -497,8 +497,8 @@ async function listInspirations({ page, limit, active, search }) {
      FROM daily_inspirations
      ${where}
      ORDER BY sort_order ASC
-     LIMIT ? OFFSET ?`,
-    [...params, limitNum, offset],
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
   );
 
   return rows.map(mapInspiration);

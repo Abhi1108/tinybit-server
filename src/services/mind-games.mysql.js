@@ -81,8 +81,7 @@ async function getLeaderboard(limit = 5) {
      LEFT JOIN profiles p ON p.id = m.user_id
      GROUP BY m.user_id, p.full_name, p.location
      ORDER BY total_score DESC
-     LIMIT ?`,
-    [limitNum],
+     LIMIT ${limitNum}`,
   );
 
   return rows.map((row) => ({
