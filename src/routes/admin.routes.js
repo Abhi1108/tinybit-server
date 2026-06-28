@@ -42,7 +42,7 @@ const {
 } = require('../controllers/admin-catalog.controller');
 const { presignCatalogUpload } = require('../controllers/admin-storage.controller');
 
-router.use('/assets', express.static(path.join(__dirname, '../../public/admin')));
+router.use(express.static(path.join(__dirname, '../../public/admin')));
 
 const sessionAuth = (req, res, next) => {
   const auth = req.headers.authorization ?? '';
