@@ -28,7 +28,35 @@
  *                   type: array
  *                   items:
  *                     type: object
- *                     additionalProperties: true
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                       name:
+ *                         type: string
+ *                       specialty:
+ *                         type: string
+ *                       rating:
+ *                         type: number
+ *                       experience:
+ *                         type: string
+ *                       fee:
+ *                         type: string
+ *                       address:
+ *                         type: string
+ *                       hospital:
+ *                         type: string
+ *                       phone:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ *                       about:
+ *                         type: string
+ *                       image_url:
+ *                         type: string
+ *                       is_active:
+ *                         type: boolean
+ *                       sort_order:
+ *                         type: integer
  *
  * /api/doctors/{id}:
  *   get:
@@ -52,7 +80,35 @@
  *                   type: boolean
  *                 doctor:
  *                   type: object
- *                   additionalProperties: true
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     name:
+ *                       type: string
+ *                     specialty:
+ *                       type: string
+ *                     rating:
+ *                       type: number
+ *                     experience:
+ *                       type: string
+ *                     fee:
+ *                       type: string
+ *                     address:
+ *                       type: string
+ *                     hospital:
+ *                       type: string
+ *                     phone:
+ *                       type: string
+ *                     email:
+ *                       type: string
+ *                     about:
+ *                       type: string
+ *                     image_url:
+ *                       type: string
+ *                     is_active:
+ *                       type: boolean
+ *                     sort_order:
+ *                       type: integer
  *       404:
  *         description: Doctor not found
  */

@@ -46,7 +46,7 @@
  *                 type: string
  *               type:
  *                 type: string
- *                 enum: [Doctor, Family, Medicine, Wellness]
+ *                 enum: [Doctor, Family, Therapy, Activity, Medicine, Wellness]
  *               color:
  *                 type: string
  *               emoji:
@@ -102,7 +102,7 @@
  *                 type: string
  *               type:
  *                 type: string
- *                 enum: [Doctor, Family, Medicine, Wellness]
+ *                 enum: [Doctor, Family, Therapy, Activity, Medicine, Wellness]
  *               color:
  *                 type: string
  *               emoji:

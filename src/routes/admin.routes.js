@@ -15,8 +15,12 @@ const {
   getMoods,
   getAIConversations,
   getCareEvents,
+  createCareEvent,
+  deleteCareEvent,
   getMindGames,
   broadcast,
+  getHealthRecords,
+  deleteHealthRecord,
 } = require('../controllers/admin.controller');
 const {
   getDoctors,
@@ -81,7 +85,16 @@ router.get('/api/check-ins', sessionAuth, getCheckIns);
 router.get('/api/moods', sessionAuth, getMoods);
 router.get('/api/ai-conversations', sessionAuth, getAIConversations);
 router.get('/api/care-events', sessionAuth, getCareEvents);
+router.post('/api/care-events', sessionAuth, createCareEvent);
+router.delete('/api/care-events/:id', sessionAuth, deleteCareEvent);
 router.get('/api/mind-games', sessionAuth, getMindGames);
+
+router.get('/api/health-records', sessionAuth, getHealthRecords);
+router.delete('/api/health-records/:id', sessionAuth, deleteHealthRecord);
+router.post('/api/ai-forecast-multi', sessionAuth, async (req, res) => {
+  const { healthForecastMulti } = require('../controllers/ai.controller');
+  return healthForecastMulti(req, res);
+});
 
 router.post('/api/broadcast', sessionAuth, broadcast);
 

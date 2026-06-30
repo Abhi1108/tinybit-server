@@ -372,11 +372,112 @@ const getAIConversations = async (req, res) => {
 // ── Care Events ───────────────────────────────────────────────────────────────
 
 const getCareEvents = async (req, res) => {
-  const { page = 1, limit = 20, type } = req.query;
+  const { page = 1, limit = 20, type, user_id } = req.query;
 
   try {
-    const events = await adminService.getCareEvents({ page, limit, type });
+    const events = await adminService.getCareEvents({ page, limit, type, user_id });
     return res.json({ success: true, events });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const createCareEvent = async (req, res) => {
+  const { user_id, title, sub, time, type, color, emoji, date, month, year, timestamp } = req.body ?? {};
+  if (!user_id || !title) {
+    return res.status(400).json({ success: false, error: 'user_id and title are required' });
+  }
+  const careEventsService = require('../services/care-events.service');
+  try {
+    const careEvent = await careEventsService.create(user_id, {
+      title, sub, time, type, color, emoji, date, month, year, timestamp
+    });
+    
+    // Automatically trigger notification for the newly created event!
+    const { query, execute } = require('../config/mysql');
+    const { randomUUID } = require('crypto');
+    
+    const [elder] = await query('SELECT full_name FROM profiles WHERE id = ? LIMIT 1', [user_id]);
+    const elderName = elder?.full_name || 'Elder';
+    
+    const notifTitle = `New Event Scheduled: ${title}`;
+    const notifBody = `A new care event "${title}" is scheduled for ${elderName} on ${month} ${date}, ${year} at ${time}.`;
+    
+    const createNotif = async (targetId) => {
+      const notifId = randomUUID();
+      const dataJson = JSON.stringify({ source: 'calendar_event_created', event_id: careEvent.id });
+      await execute(
+        `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
+         VALUES (?, ?, NULL, 'calendar_alert', ?, ?, ?, 0)`,
+        [notifId, targetId, notifTitle, notifBody, dataJson],
+      );
+    };
+
+    // Notify Elder
+    await createNotif(user_id);
+
+    // Notify Guardians
+    const guardians = await query(
+      `SELECT guardian_id FROM guardian_elder_links WHERE elder_id = ? AND status = 'connected'`,
+      [user_id]
+    );
+    for (const g of guardians) {
+      await createNotif(g.guardian_id);
+    }
+
+    return res.status(201).json({ success: true, careEvent });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteCareEvent = async (req, res) => {
+  const { id } = req.params;
+  const careEventsService = require('../services/care-events.service');
+  const { query } = require('../config/mysql');
+  try {
+    const [event] = await query('SELECT user_id, title FROM care_events WHERE id = ? LIMIT 1', [id]);
+    if (!event) {
+      return res.status(404).json({ success: false, error: 'Event not found' });
+    }
+    const result = await careEventsService.deleteEvent(event.user_id, id);
+    if (!result) {
+      return res.status(404).json({ success: false, error: 'Event not found' });
+    }
+    
+    // Automatically trigger notification for deleted event!
+    const { execute } = require('../config/mysql');
+    const { randomUUID } = require('crypto');
+    
+    const [elder] = await query('SELECT full_name FROM profiles WHERE id = ? LIMIT 1', [event.user_id]);
+    const elderName = elder?.full_name || 'Elder';
+    
+    const notifTitle = `Event Cancelled: ${event.title}`;
+    const notifBody = `The care event "${event.title}" scheduled for ${elderName} has been cancelled.`;
+    
+    const createNotif = async (targetId) => {
+      const notifId = randomUUID();
+      const dataJson = JSON.stringify({ source: 'calendar_event_deleted' });
+      await execute(
+        `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
+         VALUES (?, ?, NULL, 'calendar_alert', ?, ?, ?, 0)`,
+        [notifId, targetId, notifTitle, notifBody, dataJson],
+      );
+    };
+
+    // Notify Elder
+    await createNotif(event.user_id);
+
+    // Notify Guardians
+    const guardians = await query(
+      `SELECT guardian_id FROM guardian_elder_links WHERE elder_id = ? AND status = 'connected'`,
+      [event.user_id]
+    );
+    for (const g of guardians) {
+      await createNotif(g.guardian_id);
+    }
+
+    return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -411,6 +512,35 @@ const broadcast = async (req, res) => {
   }
 };
 
+const getHealthRecords = async (req, res) => {
+  const { page = 1, limit = 20, category, user_id, search } = req.query;
+  try {
+    const result = await adminService.getHealthRecords({ page, limit, category, user_id, search });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteHealthRecord = async (req, res) => {
+  const { id } = req.params;
+  const healthRecordsService = require('../services/health-records.service');
+  const { query } = require('../config/mysql');
+  try {
+    const [rec] = await query('SELECT user_id FROM health_records WHERE id = ? LIMIT 1', [id]);
+    if (!rec) {
+      return res.status(404).json({ success: false, error: 'Record not found' });
+    }
+    const result = await healthRecordsService.deleteById(rec.user_id, id);
+    if (!result) {
+      return res.status(404).json({ success: false, error: 'Record not found' });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Serve dashboard ───────────────────────────────────────────────────────────
 
 const serveDashboard = (req, res) => {
@@ -430,6 +560,10 @@ module.exports = {
   getMoods,
   getAIConversations,
   getCareEvents,
+  createCareEvent,
+  deleteCareEvent,
   getMindGames,
   broadcast,
+  getHealthRecords,
+  deleteHealthRecord,
 };

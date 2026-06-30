@@ -85,14 +85,15 @@ async function listDoctors({ page, limit, specialty, active, search }) {
     params.push(active === 'true' || active === true || active === '1' ? 1 : 0);
   }
   if (search) {
-    clauses.push('(name LIKE ? OR specialty LIKE ? OR address LIKE ?)');
+    clauses.push('(name LIKE ? OR specialty LIKE ? OR address LIKE ? OR hospital LIKE ?)');
     const q = `%${search}%`;
-    params.push(q, q, q);
+    params.push(q, q, q, q);
   }
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const rows = await query(
     `SELECT id, name, specialty, rating, experience, fee, address, image_url,
+            hospital, phone, email, about,
             is_active, sort_order, created_at, updated_at
      FROM doctors
      ${where}
@@ -107,6 +108,7 @@ async function listDoctors({ page, limit, specialty, active, search }) {
 async function getDoctorById(id) {
   const rows = await query(
     `SELECT id, name, specialty, rating, experience, fee, address, image_url,
+            hospital, phone, email, about,
             is_active, sort_order, created_at, updated_at
      FROM doctors WHERE id = ? LIMIT 1`,
     [id],
@@ -115,9 +117,13 @@ async function getDoctorById(id) {
 }
 
 async function createDoctor(body) {
-  const { name, specialty, rating, experience, fee, address, image_url, is_active, sort_order } = body ?? {};
-  if (!name?.trim() || !specialty?.trim() || !experience?.trim() || !fee?.trim()) {
-    const err = new Error('name, specialty, experience, and fee are required');
+  const {
+    name, specialty, rating, experience, fee, address, image_url,
+    hospital, phone, email, about,
+    is_active, sort_order
+  } = body ?? {};
+  if (!name?.trim() || !specialty?.trim() || !experience?.trim()) {
+    const err = new Error('name, specialty, and experience are required');
     err.status = 400;
     throw err;
   }
@@ -126,17 +132,22 @@ async function createDoctor(body) {
   const normalizedImageUrl = requireHttpsMediaUrl(image_url, 'image_url');
   await execute(
     `INSERT INTO doctors
-       (id, name, specialty, rating, experience, fee, address, image_url, is_active, sort_order)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, name, specialty, rating, experience, fee, address, image_url,
+        hospital, phone, email, about, is_active, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       name.trim(),
       specialty.trim(),
       rating ?? 4.5,
       experience.trim(),
-      fee.trim(),
+      fee?.trim() || null,
       address?.trim() || null,
       normalizedImageUrl,
+      hospital?.trim() || null,
+      phone?.trim() || null,
+      email?.trim() || null,
+      about?.trim() || null,
       is_active === false || is_active === 0 ? 0 : 1,
       sort_order ?? 0,
     ],
@@ -150,7 +161,10 @@ async function updateDoctor(id, body) {
 
   const fields = [];
   const params = [];
-  const allowed = ['name', 'specialty', 'rating', 'experience', 'fee', 'address', 'image_url', 'is_active', 'sort_order'];
+  const allowed = [
+    'name', 'specialty', 'rating', 'experience', 'fee', 'address', 'image_url',
+    'hospital', 'phone', 'email', 'about', 'is_active', 'sort_order'
+  ];
 
   for (const key of allowed) {
     if (body[key] === undefined) continue;

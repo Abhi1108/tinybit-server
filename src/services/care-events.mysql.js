@@ -9,7 +9,7 @@ const WRITABLE_COLUMNS = [
   'title', 'sub', 'time', 'type', 'color', 'emoji', 'date', 'month', 'year', 'timestamp'
 ];
 
-const VALID_TYPES = ['Doctor', 'Family', 'Medicine', 'Wellness'];
+const VALID_TYPES = ['Doctor', 'Family', 'Therapy', 'Activity', 'Medicine', 'Wellness'];
 
 function toIsoString(value) {
   if (value == null) return null;

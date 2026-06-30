@@ -108,6 +108,7 @@ async function getDashboardStats() {
   const [
     elders, guardians, active_connections, pending_invitations, new_this_week,
     active_medicines, check_ins_today, moods_this_week, ai_messages_today,
+    sos_today,
   ] = await Promise.all([
     countRows('profiles', 'role = ?', ['elder']),
     countRows('profiles', 'role = ?', ['guardian']),
@@ -118,6 +119,7 @@ async function getDashboardStats() {
     countRows('daily_checkins', 'created_at >= ?', [yesterday]),
     countRows('mood_entries', 'created_at >= ?', [weekAgo]),
     countRows('ai_conversations', 'created_at >= ?', [yesterday]),
+    countRows('sos_alerts', 'triggered_at >= ?', [yesterday]),
   ]);
 
   return {
@@ -130,6 +132,7 @@ async function getDashboardStats() {
     check_ins_today,
     moods_this_week,
     ai_messages_today,
+    sos_today,
   };
 }
 
@@ -614,23 +617,28 @@ async function getAIConversations({ page, limit, role }) {
   }));
 }
 
-async function getCareEvents({ page, limit, type }) {
+async function getCareEvents({ page, limit, type, user_id }) {
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
 
   const params = [];
-  let where = '';
+  const clauses = [];
   if (type) {
-    where = 'WHERE type = ?';
+    clauses.push('type = ?');
     params.push(type);
   }
+  if (user_id) {
+    clauses.push('user_id = ?');
+    params.push(user_id);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT id, user_id, title, sub, type, date, month, year, time, created_at
+    `SELECT id, user_id, title, sub, type, date, month, year, time, color, emoji, timestamp, created_at
      FROM care_events
      ${where}
-     ORDER BY created_at DESC
+     ORDER BY timestamp DESC, created_at DESC
      LIMIT ${limitNum} OFFSET ${offset}`,
     params,
   );
@@ -638,6 +646,7 @@ async function getCareEvents({ page, limit, type }) {
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
   return rows.map((r) => ({
     ...normalizeRow(r),
+    timestamp: r.timestamp == null ? null : Number(r.timestamp),
     user_name: userMap[r.user_id]?.full_name ?? '—',
   }));
 }
@@ -695,6 +704,58 @@ async function broadcastNotification(title, body) {
   return userIds.length;
 }
 
+async function getHealthRecords(params = {}) {
+  const page = Math.max(1, parseInt(params.page) || 1);
+  const limit = Math.max(1, parseInt(params.limit) || 10);
+  const offset = (page - 1) * limit;
+
+  let whereClauses = [];
+  const queryParams = [];
+
+  if (params.category && params.category !== 'All') {
+    whereClauses.push('category = ?');
+    queryParams.push(params.category);
+  }
+  if (params.user_id) {
+    whereClauses.push('user_id = ?');
+    queryParams.push(params.user_id);
+  }
+  if (params.search) {
+    whereClauses.push('(title LIKE ? OR type LIKE ? OR category LIKE ?)');
+    const q = `%${params.search}%`;
+    queryParams.push(q, q, q);
+  }
+
+  const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+  const [countRow] = await query(`SELECT COUNT(*) as count FROM health_records ${whereStr}`, queryParams);
+  const total = countRow?.count || 0;
+
+  const rows = await query(
+    `SELECT hr.id, hr.user_id, hr.title, hr.date, hr.timestamp, hr.size, hr.\`type\`, hr.category,
+            hr.icon_name, hr.badge_bg, hr.badge_color, hr.uri, hr.mime_type, hr.ai_read, hr.created_at,
+            p.full_name as user_name, p.email as user_email
+     FROM health_records hr
+     LEFT JOIN profiles p ON hr.user_id = p.id
+     ${whereStr}
+     ORDER BY hr.timestamp DESC
+     LIMIT ? OFFSET ?`,
+    [...queryParams, limit, offset]
+  );
+
+  return {
+    records: rows.map(r => ({
+      ...r,
+      timestamp: r.timestamp == null ? null : Number(r.timestamp),
+      ai_read: Boolean(r.ai_read)
+    })),
+    total,
+    page,
+    limit,
+    pages: Math.ceil(total / limit)
+  };
+}
+
 module.exports = {
   fetchUserMap,
   attachConnectionCounts,
@@ -719,4 +780,5 @@ module.exports = {
   getCareEvents,
   getMindGames,
   broadcastNotification,
+  getHealthRecords,
 };
