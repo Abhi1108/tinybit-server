@@ -3,8 +3,8 @@ const aiService = require('../services/ai.service');
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1';
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL_TEXT   = 'gemini-2.0-flash';   // fast text + vision
-const GEMINI_MODEL_VISION = 'gemini-2.0-flash';   // supports image input
+const GEMINI_MODEL_TEXT   = 'gemini-3.1-flash-lite';   // fast text + vision
+const GEMINI_MODEL_VISION = 'gemini-3.1-flash-lite';   // supports image input
 
 // ── Key helpers ───────────────────────────────────────────────────────────────
 function getOpenAiKey()  { return process.env.OPENAI_API_KEY; }
