@@ -40,7 +40,20 @@
  *                   type: boolean
  *                 score:
  *                   type: object
- *                   additionalProperties: true
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     user_id:
+ *                       type: string
+ *                     game_type:
+ *                       type: string
+ *                     score:
+ *                       type: number
+ *                     duration_seconds:
+ *                       type: number
+ *                     created_at:
+ *                       type: string
+ *                       format: date-time
  *
  * /api/mind-games/stats:
  *   get:
@@ -60,7 +73,21 @@
  *                   type: boolean
  *                 stats:
  *                   type: object
- *                   additionalProperties: true
+ *                   properties:
+ *                     todayScore:
+ *                       type: number
+ *                       description: Sum of the caller's scores submitted today
+ *                     totalScore:
+ *                       type: number
+ *                       description: Sum of the caller's scores across all time
+ *                     rank:
+ *                       oneOf:
+ *                         - type: number
+ *                         - type: string
+ *                       description: 1-based position by all-time total score across all users, or "—" if the caller has never scored
+ *                     playTime:
+ *                       type: number
+ *                       description: Minutes played today, derived from duration_seconds on today's score rows
  *
  * /api/mind-games/leaderboard:
  *   get:
