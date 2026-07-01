@@ -123,10 +123,122 @@ async function recalculateJournalStreak(userId) {
   }
 }
 
+async function calculateMedicineStreak(userId) {
+  try {
+    const medicines = await query(
+      `SELECT id, days_of_week, start_date, end_date 
+       FROM medicines 
+       WHERE user_id = ? AND is_active = 1`,
+      [userId]
+    );
+
+    if (medicines.length === 0) return 0;
+
+    const parsedMeds = medicines.map(med => {
+      let days = [];
+      if (med.days_of_week) {
+        if (typeof med.days_of_week === 'string') {
+          try { days = JSON.parse(med.days_of_week); } catch (e) { days = []; }
+        } else if (Array.isArray(med.days_of_week)) {
+          days = med.days_of_week;
+        }
+      } else {
+        days = [0, 1, 2, 3, 4, 5, 6];
+      }
+      return {
+        id: med.id,
+        days: new Set(days),
+        start: med.start_date ? new Date(med.start_date) : null,
+        end: med.end_date ? new Date(med.end_date) : null,
+      };
+    });
+
+    const sixtyDaysAgo = new Date();
+    sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
+    sixtyDaysAgo.setHours(0, 0, 0, 0);
+
+    const logs = await query(
+      `SELECT medicine_id, DATE(taken_at) AS taken_date 
+       FROM medicine_logs 
+       WHERE user_id = ? AND taken_at >= ?`,
+      [userId, sixtyDaysAgo]
+    );
+
+    if (logs.length === 0) return 0;
+
+    const logsMap = new Map();
+    for (const log of logs) {
+      const dateStr = log.taken_date instanceof Date
+        ? log.taken_date.toISOString().slice(0, 10)
+        : String(log.taken_date).slice(0, 10);
+      if (!logsMap.has(dateStr)) {
+        logsMap.set(dateStr, new Set());
+      }
+      logsMap.get(dateStr).add(log.medicine_id);
+    }
+
+    const isDayCompliant = (date) => {
+      const dateStr = date.toISOString().slice(0, 10);
+      const dayOfWeek = date.getDay();
+
+      const scheduledMeds = parsedMeds.filter(med => {
+        if (!med.days.has(dayOfWeek)) return false;
+        if (med.start && date < med.start) return false;
+        if (med.end && date > med.end) return false;
+        return true;
+      });
+
+      if (scheduledMeds.length === 0) return true;
+
+      const takenMeds = logsMap.get(dateStr);
+      if (!takenMeds) return false;
+
+      for (const med of scheduledMeds) {
+        if (!takenMeds.has(med.id)) return false;
+      }
+      return true;
+    };
+
+    let streak = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const isTodayCompliant = isDayCompliant(today);
+    let checkDate = new Date(today);
+
+    if (isTodayCompliant) {
+      streak = 1;
+      checkDate.setDate(checkDate.getDate() - 1);
+    } else {
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+
+    for (let i = 0; i < 60; i++) {
+      const current = new Date(checkDate);
+      if (isDayCompliant(current)) {
+        streak++;
+        checkDate.setDate(checkDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    return streak;
+  } catch (err) {
+    console.error('[profiles] calculateMedicineStreak error:', err);
+    return 0;
+  }
+}
+
 async function getProfileById(userId) {
   await recalculateJournalStreak(userId);
+  const medStreak = await calculateMedicineStreak(userId);
   const rows = await query('SELECT * FROM profiles WHERE id = ? LIMIT 1', [userId]);
-  return parseProfileRow(rows[0] ?? null);
+  const profile = parseProfileRow(rows[0] ?? null);
+  if (profile) {
+    profile.medicine_streak = medStreak;
+  }
+  return profile;
 }
 
 async function updateProfile(userId, email, patch) {

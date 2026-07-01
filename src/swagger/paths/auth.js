@@ -323,6 +323,13 @@
  *                       type: string
  *                 profile:
  *                   type: object
+ *                   properties:
+ *                     streak:
+ *                       type: integer
+ *                       description: Consecutive days elder shared a memory in the journal.
+ *                     medicine_streak:
+ *                       type: integer
+ *                       description: Consecutive days elder completed 100% of their scheduled medicines.
  *                   additionalProperties: true
  *       401:
  *         description: Missing or invalid token
@@ -393,6 +400,13 @@
  *                   type: boolean
  *                 profile:
  *                   type: object
+ *                   properties:
+ *                     streak:
+ *                       type: integer
+ *                       description: Consecutive days elder shared a memory in the journal.
+ *                     medicine_streak:
+ *                       type: integer
+ *                       description: Consecutive days elder completed 100% of their scheduled medicines.
  *                   additionalProperties: true
  *       400:
  *         description: No fields to update
