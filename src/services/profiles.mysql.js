@@ -153,6 +153,8 @@ async function calculateMedicineStreak(userId) {
       };
     });
 
+    const activeIds = parsedMeds.map(m => m.id);
+
     const sixtyDaysAgo = new Date();
     sixtyDaysAgo.setDate(sixtyDaysAgo.getDate() - 60);
     sixtyDaysAgo.setHours(0, 0, 0, 0);
@@ -160,8 +162,8 @@ async function calculateMedicineStreak(userId) {
     const logs = await query(
       `SELECT medicine_id, DATE(taken_at) AS taken_date 
        FROM medicine_logs 
-       WHERE user_id = ? AND taken_at >= ?`,
-      [userId, sixtyDaysAgo]
+       WHERE user_id = ? AND taken_at >= ? AND medicine_id IN (?)`,
+      [userId, sixtyDaysAgo, activeIds]
     );
 
     if (logs.length === 0) return 0;
@@ -177,7 +179,7 @@ async function calculateMedicineStreak(userId) {
       logsMap.get(dateStr).add(log.medicine_id);
     }
 
-    const isDayCompliant = (date) => {
+    const checkComplianceAndSchedule = (date) => {
       const dateStr = date.toISOString().slice(0, 10);
       const dayOfWeek = date.getDay();
 
@@ -188,26 +190,32 @@ async function calculateMedicineStreak(userId) {
         return true;
       });
 
-      if (scheduledMeds.length === 0) return true;
+      if (scheduledMeds.length === 0) {
+        return { compliant: true, hadScheduled: false };
+      }
 
       const takenMeds = logsMap.get(dateStr);
-      if (!takenMeds) return false;
+      if (!takenMeds) return { compliant: false, hadScheduled: true };
 
       for (const med of scheduledMeds) {
-        if (!takenMeds.has(med.id)) return false;
+        if (!takenMeds.has(med.id)) return { compliant: false, hadScheduled: true };
       }
-      return true;
+      return { compliant: true, hadScheduled: true };
     };
 
     let streak = 0;
+    let actualTakenCount = 0;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const isTodayCompliant = isDayCompliant(today);
+    const todayRes = checkComplianceAndSchedule(today);
     let checkDate = new Date(today);
 
-    if (isTodayCompliant) {
+    if (todayRes.compliant) {
       streak = 1;
+      if (todayRes.hadScheduled) {
+        actualTakenCount++;
+      }
       checkDate.setDate(checkDate.getDate() - 1);
     } else {
       checkDate.setDate(checkDate.getDate() - 1);
@@ -215,14 +223,19 @@ async function calculateMedicineStreak(userId) {
 
     for (let i = 0; i < 60; i++) {
       const current = new Date(checkDate);
-      if (isDayCompliant(current)) {
+      const res = checkComplianceAndSchedule(current);
+      if (res.compliant) {
         streak++;
+        if (res.hadScheduled) {
+          actualTakenCount++;
+        }
         checkDate.setDate(checkDate.getDate() - 1);
       } else {
         break;
       }
     }
 
+    if (actualTakenCount === 0) return 0;
     return streak;
   } catch (err) {
     console.error('[profiles] calculateMedicineStreak error:', err);
