@@ -17,19 +17,20 @@ function mapScoreRow(row) {
   };
 }
 
-async function insertScore(userId, { game_type: gameType, score }) {
+async function insertScore(userId, { game_type: gameType, score, duration_seconds: durationSeconds }) {
   const id = randomUUID();
   const normalizedScore = Math.max(0, Number(score) || 0);
   const normalizedType = String(gameType ?? '').trim();
+  const normalizedDuration = Math.max(0, Number(durationSeconds) || 0);
 
   await execute(
-    `INSERT INTO mind_games_scores (id, user_id, game_type, score)
-     VALUES (?, ?, ?, ?)`,
-    [id, userId, normalizedType, normalizedScore],
+    `INSERT INTO mind_games_scores (id, user_id, game_type, score, duration_seconds)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, userId, normalizedType, normalizedScore, normalizedDuration],
   );
 
   const rows = await query(
-    `SELECT id, user_id, game_type, score, created_at
+    `SELECT id, user_id, game_type, score, duration_seconds, created_at
      FROM mind_games_scores
      WHERE id = ?
      LIMIT 1`,
@@ -42,7 +43,7 @@ async function insertScore(userId, { game_type: gameType, score }) {
 async function getUserStats(userId) {
   const [todayRows, totalRows, rankRows] = await Promise.all([
     query(
-      `SELECT score
+      `SELECT score, duration_seconds
        FROM mind_games_scores
        WHERE user_id = ? AND created_at >= CURDATE()`,
       [userId],
@@ -63,7 +64,8 @@ async function getUserStats(userId) {
 
   const todayScore = todayRows.reduce((sum, row) => sum + Number(row.score), 0);
   const totalScore = totalRows.reduce((sum, row) => sum + Number(row.score), 0);
-  const playTime = todayRows.length;
+  const todayDurationSeconds = todayRows.reduce((sum, row) => sum + Number(row.duration_seconds ?? 0), 0);
+  const playTime = Math.round(todayDurationSeconds / 60);
 
   const rankIdx = rankRows.findIndex((row) => row.user_id === userId);
   const rank = rankIdx >= 0 ? rankIdx + 1 : '—';

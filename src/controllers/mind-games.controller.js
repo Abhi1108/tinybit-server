@@ -48,6 +48,7 @@ async function postScore(req, res) {
     const body = readBody(req);
     const game_type = body.game_type ?? body.gameType;
     const score = body.score;
+    const durationSeconds = body.duration_seconds ?? body.durationSeconds ?? 0;
 
     if (!game_type || !String(game_type).trim()) {
       return res.status(400).json({ success: false, message: 'game_type is required.' });
@@ -57,9 +58,14 @@ async function postScore(req, res) {
       return res.status(400).json({ success: false, message: 'score is required.' });
     }
 
+    if (Number.isNaN(Number(durationSeconds))) {
+      return res.status(400).json({ success: false, message: 'duration_seconds must be a number.' });
+    }
+
     const row = await mindGamesService.insertScore(userId, {
       game_type: String(game_type).trim(),
       score: Number(score),
+      duration_seconds: Number(durationSeconds),
     });
 
     return res.json({ success: true, score: row });

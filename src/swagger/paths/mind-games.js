@@ -24,6 +24,10 @@
  *                 type: string
  *               score:
  *                 type: number
+ *               duration_seconds:
+ *                 type: number
+ *                 description: Seconds spent playing this round; used to compute the playTime stat
+ *                 default: 0
  *     responses:
  *       200:
  *         description: Score saved

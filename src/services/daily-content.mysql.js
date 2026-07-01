@@ -49,11 +49,6 @@ function mapInspirationRow(row) {
   };
 }
 
-function pickQuizByDayOfWeek(items) {
-  if (!items.length) return null;
-  return items[new Date().getDay() % items.length];
-}
-
 function getDailyIndex(length) {
   const now = new Date();
   const dateString = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
@@ -87,7 +82,8 @@ async function getActiveInspirations() {
 
 async function pickTodaysQuiz() {
   const questions = await getActiveQuizQuestions();
-  return pickQuizByDayOfWeek(questions);
+  if (!questions.length) return null;
+  return questions[getDailyIndex(questions.length)];
 }
 
 async function pickTodaysInspiration() {
