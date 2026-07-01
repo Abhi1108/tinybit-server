@@ -2,6 +2,9 @@ const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
 
 const MOOD_CATEGORIES = new Set(['bhajans', 'meditation', 'jokes_fun', 'nature_sounds']);
+const MOOD_MEDIA_TYPES = new Set(['audio', 'video', 'youtube']);
+const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+const YOUTUBE_URL_RE = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[a-zA-Z0-9_-]{11}(&.*)?$/i;
 
 function toIso(val) {
   if (!val) return val;
@@ -55,6 +58,28 @@ function requireHttpsMediaUrl(value, fieldName, { required = false } = {}) {
   }
 
   return raw;
+}
+
+function requireYoutubeRef(value, fieldName, { required = false } = {}) {
+  if (value == null || String(value).trim() === '') {
+    if (required) {
+      const err = new Error(`${fieldName} is required.`);
+      err.status = 400;
+      throw err;
+    }
+    return null;
+  }
+
+  const raw = String(value).trim();
+  if (YOUTUBE_URL_RE.test(raw) || YOUTUBE_ID_RE.test(raw)) {
+    return raw;
+  }
+
+  const err = new Error(
+    `${fieldName} must be a YouTube URL (youtube.com/watch?v=... or youtu.be/...) or an 11-character video id.`,
+  );
+  err.status = 400;
+  throw err;
 }
 
 // ── Doctors ─────────────────────────────────────────────────────────────────
@@ -232,8 +257,8 @@ async function listMoodMediaTracks({ page, limit, category, active, search }) {
 
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const rows = await query(
-    `SELECT id, category, title, subtitle, duration_seconds, duration_label,
-            icon_name, icon_url, audio_url, sort_order, is_active, created_at, updated_at
+    `SELECT id, category, media_type, title, subtitle, duration_seconds, duration_label,
+            icon_name, icon_url, audio_url, media_url, sort_order, is_active, created_at, updated_at
      FROM mood_media_tracks
      ${where}
      ORDER BY category ASC, sort_order ASC, title ASC
@@ -246,18 +271,38 @@ async function listMoodMediaTracks({ page, limit, category, active, search }) {
 
 async function getMoodMediaTrackById(id) {
   const rows = await query(
-    `SELECT id, category, title, subtitle, duration_seconds, duration_label,
-            icon_name, icon_url, audio_url, sort_order, is_active, created_at, updated_at
+    `SELECT id, category, media_type, title, subtitle, duration_seconds, duration_label,
+            icon_name, icon_url, audio_url, media_url, sort_order, is_active, created_at, updated_at
      FROM mood_media_tracks WHERE id = ? LIMIT 1`,
     [id],
   );
   return mapMoodTrack(rows[0] ?? null);
 }
 
+function validateMoodMediaUrls(mediaType, { audio_url, media_url }) {
+  if (mediaType === 'audio') {
+    return {
+      normalizedAudioUrl: requireHttpsMediaUrl(audio_url, 'audio_url', { required: true }),
+      normalizedMediaUrl: null,
+    };
+  }
+  if (mediaType === 'video') {
+    return {
+      normalizedAudioUrl: null,
+      normalizedMediaUrl: requireHttpsMediaUrl(media_url, 'media_url', { required: true }),
+    };
+  }
+  // youtube
+  return {
+    normalizedAudioUrl: null,
+    normalizedMediaUrl: requireYoutubeRef(media_url, 'media_url', { required: true }),
+  };
+}
+
 async function createMoodMediaTrack(body) {
   const {
-    category, title, subtitle, duration_seconds, duration_label,
-    icon_name, icon_url, audio_url, sort_order, is_active,
+    category, media_type, title, subtitle, duration_seconds, duration_label,
+    icon_name, icon_url, audio_url, media_url, sort_order, is_active,
   } = body ?? {};
 
   if (!category || !MOOD_CATEGORIES.has(category)) {
@@ -271,18 +316,26 @@ async function createMoodMediaTrack(body) {
     throw err;
   }
 
-  const normalizedAudioUrl = requireHttpsMediaUrl(audio_url, 'audio_url', { required: true });
+  const mediaType = media_type === undefined ? 'audio' : media_type;
+  if (!MOOD_MEDIA_TYPES.has(mediaType)) {
+    const err = new Error('media_type must be one of: audio, video, youtube');
+    err.status = 400;
+    throw err;
+  }
+
+  const { normalizedAudioUrl, normalizedMediaUrl } = validateMoodMediaUrls(mediaType, { audio_url, media_url });
   const normalizedIconUrl = requireHttpsMediaUrl(icon_url, 'icon_url');
 
   const id = randomUUID();
   await execute(
     `INSERT INTO mood_media_tracks
-       (id, category, title, subtitle, duration_seconds, duration_label,
-        icon_name, icon_url, audio_url, sort_order, is_active)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, category, media_type, title, subtitle, duration_seconds, duration_label,
+        icon_name, icon_url, audio_url, media_url, sort_order, is_active)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       category,
+      mediaType,
       title.trim(),
       subtitle?.trim() || null,
       duration_seconds ?? null,
@@ -290,6 +343,7 @@ async function createMoodMediaTrack(body) {
       icon_name?.trim() || null,
       normalizedIconUrl,
       normalizedAudioUrl,
+      normalizedMediaUrl,
       sort_order ?? 0,
       is_active === false || is_active === 0 ? 0 : 1,
     ],
@@ -306,13 +360,22 @@ async function updateMoodMediaTrack(id, body) {
     err.status = 400;
     throw err;
   }
+  if (body.media_type !== undefined && !MOOD_MEDIA_TYPES.has(body.media_type)) {
+    const err = new Error('media_type must be one of: audio, video, youtube');
+    err.status = 400;
+    throw err;
+  }
+
+  // Effective media_type after this update — used to validate whichever URL field(s) are present.
+  const effectiveMediaType = body.media_type !== undefined ? body.media_type : existing.media_type;
 
   const fields = [];
   const params = [];
   const allowed = [
-    'category', 'title', 'subtitle', 'duration_seconds', 'duration_label',
-    'icon_name', 'icon_url', 'audio_url', 'sort_order', 'is_active',
+    'category', 'media_type', 'title', 'subtitle', 'duration_seconds', 'duration_label',
+    'icon_name', 'icon_url', 'audio_url', 'media_url', 'sort_order', 'is_active',
   ];
+  const typeChanging = body.media_type !== undefined && body.media_type !== existing.media_type;
 
   for (const key of allowed) {
     if (body[key] === undefined) continue;
@@ -323,14 +386,51 @@ async function updateMoodMediaTrack(id, body) {
       fields.push(`${key} = ?`);
       params.push(body[key]);
     } else if (key === 'audio_url') {
+      if (effectiveMediaType !== 'audio') continue;
       fields.push('audio_url = ?');
       params.push(requireHttpsMediaUrl(body[key], 'audio_url', { required: true }));
+    } else if (key === 'media_url') {
+      if (effectiveMediaType === 'audio') continue;
+      fields.push('media_url = ?');
+      params.push(
+        effectiveMediaType === 'youtube'
+          ? requireYoutubeRef(body[key], 'media_url', { required: true })
+          : requireHttpsMediaUrl(body[key], 'media_url', { required: true }),
+      );
     } else if (key === 'icon_url') {
       fields.push('icon_url = ?');
       params.push(requireHttpsMediaUrl(body[key], 'icon_url'));
     } else {
       fields.push(`${key} = ?`);
       params.push(typeof body[key] === 'string' ? body[key].trim() : body[key]);
+    }
+  }
+
+  // If media_type is changing, make sure the matching URL field ends up populated — either
+  // supplied in this same request or already present on the existing row — otherwise the DB
+  // CHECK constraint would reject the row. Also null out the now-irrelevant column so stale
+  // data from the previous media_type doesn't linger on the row.
+  if (typeChanging) {
+    if (effectiveMediaType === 'audio') {
+      if (body.audio_url === undefined) {
+        requireHttpsMediaUrl(existing.audio_url, 'audio_url', { required: true });
+      }
+      if (body.media_url === undefined) {
+        fields.push('media_url = ?');
+        params.push(null);
+      }
+    } else {
+      if (body.media_url === undefined) {
+        if (effectiveMediaType === 'video') {
+          requireHttpsMediaUrl(existing.media_url, 'media_url', { required: true });
+        } else {
+          requireYoutubeRef(existing.media_url, 'media_url', { required: true });
+        }
+      }
+      if (body.audio_url === undefined) {
+        fields.push('audio_url = ?');
+        params.push(null);
+      }
     }
   }
 

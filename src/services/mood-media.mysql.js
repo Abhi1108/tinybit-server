@@ -1,8 +1,8 @@
 const { query, execute } = require('../config/mysql');
 
 const TRACK_SELECT = `
-  id, category, title, subtitle, duration_seconds, duration_label,
-  icon_name, icon_url, audio_url, sort_order, is_active, created_at, updated_at
+  id, category, media_type, title, subtitle, duration_seconds, duration_label,
+  icon_name, icon_url, audio_url, media_url, sort_order, is_active, created_at, updated_at
 `;
 
 const VALID_CATEGORIES = new Set(['bhajans', 'meditation', 'jokes_fun', 'nature_sounds']);
@@ -19,13 +19,15 @@ function mapTrackRow(row) {
   return {
     id: row.id,
     category: row.category,
+    media_type: row.media_type ?? 'audio',
     title: row.title,
     subtitle: row.subtitle ?? null,
     duration_seconds: row.duration_seconds == null ? null : Number(row.duration_seconds),
     duration_label: row.duration_label ?? null,
     icon_name: row.icon_name ?? null,
     icon_url: row.icon_url ?? null,
-    audio_url: row.audio_url,
+    audio_url: row.audio_url ?? null,
+    media_url: row.media_url ?? null,
     sort_order: Number(row.sort_order ?? 0),
     is_active: Boolean(row.is_active),
     created_at: toIsoString(row.created_at),
