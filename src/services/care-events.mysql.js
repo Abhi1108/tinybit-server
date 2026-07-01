@@ -88,6 +88,31 @@ async function create(userId, rawRow) {
     values
   );
 
+  // --- Send Notifications to Guardians ---
+  try {
+    const [elder] = await query('SELECT full_name FROM profiles WHERE id = ? LIMIT 1', [userId]);
+    const elderName = elder?.full_name || 'Elder';
+
+    const notifTitle = `New Event: ${fields.title}`;
+    const notifBody = `${elderName} has a new care event "${fields.title}" scheduled for ${fields.month} ${fields.date}, ${fields.year} at ${fields.time}.`;
+    
+    const guardians = await query(
+      `SELECT guardian_id FROM guardian_elder_links WHERE elder_id = ? AND status = 'connected'`,
+      [userId]
+    );
+
+    const dataJson = JSON.stringify({ source: 'calendar_event', event_id: id });
+    for (const g of guardians) {
+      await execute(
+        `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
+         VALUES (?, ?, ?, 'calendar_alert', ?, ?, ?, 0)`,
+        [randomUUID(), g.guardian_id, userId, notifTitle, notifBody, dataJson]
+      );
+    }
+  } catch (notifErr) {
+    console.error('[care-events] Failed to send creation notifications:', notifErr.message);
+  }
+
   return getById(userId, id);
 }
 
@@ -124,11 +149,42 @@ async function update(userId, id, rawRow) {
 }
 
 async function deleteEvent(userId, id) {
+  // Fetch event details before deletion
+  const [event] = await query('SELECT title FROM care_events WHERE id = ? AND user_id = ? LIMIT 1', [id, userId]);
+
   const result = await execute(
     `DELETE FROM care_events
      WHERE id = ? AND user_id = ?`,
     [id, userId]
   );
+
+  if (result.affectedRows && event) {
+    // --- Send Cancelled Notifications to Guardians ---
+    try {
+      const [elder] = await query('SELECT full_name FROM profiles WHERE id = ? LIMIT 1', [userId]);
+      const elderName = elder?.full_name || 'Elder';
+
+      const notifTitle = `Cancelled Event: ${event.title}`;
+      const notifBody = `The care event "${event.title}" for ${elderName} has been cancelled.`;
+
+      const guardians = await query(
+        `SELECT guardian_id FROM guardian_elder_links WHERE elder_id = ? AND status = 'connected'`,
+        [userId]
+      );
+
+      const dataJson = JSON.stringify({ source: 'calendar_event_deleted' });
+      for (const g of guardians) {
+        await execute(
+          `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
+           VALUES (?, ?, ?, 'calendar_alert', ?, ?, ?, 0)`,
+          [randomUUID(), g.guardian_id, userId, notifTitle, notifBody, dataJson]
+        );
+      }
+    } catch (notifErr) {
+      console.error('[care-events] Failed to send deletion notifications:', notifErr.message);
+    }
+  }
+
   return !!result.affectedRows;
 }
 

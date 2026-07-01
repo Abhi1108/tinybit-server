@@ -28,16 +28,16 @@ const options = {
     },
     servers: [
       {
+        url: '/',
+        description: 'Relative Path (Protocol Agnostic - Default)',
+      },
+      {
         url: getServerUrl(),
-        description: process.env.SERVER_URL ? 'Configured URL (Default)' : 'Local development',
+        description: process.env.SERVER_URL ? 'Configured URL' : 'Local development',
       },
       {
         url: getServerUrl().replace(/^https:/i, 'http:'),
         description: 'HTTP Fallback (Force HTTP)',
-      },
-      {
-        url: '/',
-        description: 'Relative Path (Protocol Agnostic)',
       },
     ],
     tags: [

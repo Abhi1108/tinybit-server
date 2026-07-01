@@ -232,7 +232,8 @@ async function toggleMedicineLog(req, res) {
     if (isTableMissing(err)) {
       return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
     }
-    return res.status(500).json({
+    const status = err.statusCode || 500;
+    return res.status(status).json({
       success: false,
       message: err.message || 'Could not update medicine log.',
     });

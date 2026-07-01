@@ -68,6 +68,17 @@ async function listForWeek(userId, baseDate = new Date()) {
 }
 
 async function setTakenForDay(userId, medicineId, taken, dateInput = new Date()) {
+  const medExists = await query(
+    `SELECT id FROM medicines WHERE id = ? LIMIT 1`,
+    [medicineId],
+  );
+  if (medExists.length === 0) {
+    const err = new Error('Medicine not found or has been deleted.');
+    err.statusCode = 404;
+    err.code = 'MEDICINE_NOT_FOUND';
+    throw err;
+  }
+
   const { start, end } = calendarDayBounds(dateInput);
 
   if (!taken) {
