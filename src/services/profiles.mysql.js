@@ -67,62 +67,6 @@ async function upsertProfile(row) {
   return getProfileById(row.id);
 }
 
-async function recalculateJournalStreak(userId) {
-  try {
-    const rows = await query(
-      `SELECT DISTINCT DATE(created_at) AS date_str 
-       FROM journal 
-       WHERE user_id = ? 
-       ORDER BY date_str DESC`,
-      [userId]
-    );
-
-    if (rows.length === 0) {
-      await execute('UPDATE profiles SET streak = 0 WHERE id = ?', [userId]);
-      return;
-    }
-
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
-    
-    const yesterday = new Date();
-    yesterday.setDate(today.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
-    const dates = rows.map(r => {
-      if (r.date_str instanceof Date) {
-        return r.date_str.toISOString().slice(0, 10);
-      }
-      return String(r.date_str).slice(0, 10);
-    });
-
-    const hasToday = dates.includes(todayStr);
-    const hasYesterday = dates.includes(yesterdayStr);
-
-    if (!hasToday && !hasYesterday) {
-      await execute('UPDATE profiles SET streak = 0 WHERE id = ?', [userId]);
-      return;
-    }
-
-    let streak = 0;
-    let currentCheck = hasToday ? today : yesterday;
-
-    while (true) {
-      const checkStr = currentCheck.toISOString().slice(0, 10);
-      if (dates.includes(checkStr)) {
-        streak++;
-        currentCheck.setDate(currentCheck.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-
-    await execute('UPDATE profiles SET streak = ? WHERE id = ?', [streak, userId]);
-  } catch (err) {
-    console.error('[profiles] Failed to recalculate journal streak:', err.message);
-  }
-}
-
 async function calculateMedicineStreak(userId) {
   try {
     const medicines = await query(
@@ -244,7 +188,6 @@ async function calculateMedicineStreak(userId) {
 }
 
 async function getProfileById(userId) {
-  await recalculateJournalStreak(userId);
   const medStreak = await calculateMedicineStreak(userId);
   const rows = await query('SELECT * FROM profiles WHERE id = ? LIMIT 1', [userId]);
   const profile = parseProfileRow(rows[0] ?? null);
@@ -265,12 +208,36 @@ async function updateProfile(userId, email, patch) {
   return upsertProfile(row);
 }
 
+/**
+ * Called on every authenticated request (see requireJwtAuth middleware).
+ * Streak now means "consecutive calendar days the app was opened" — same
+ * day as last_active is a no-op, exactly one day later increments, any
+ * larger gap (or first time) resets to 1. Day boundaries are UTC, matching
+ * the rest of this codebase's date-string comparisons.
+ */
 async function touchLastActive(userId) {
   if (!userId) return;
 
+  const rows = await query('SELECT streak, last_active FROM profiles WHERE id = ? LIMIT 1', [userId]);
+  const row = rows[0];
+  if (!row) return;
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const prevStr = row.last_active ? new Date(row.last_active).toISOString().slice(0, 10) : null;
+
+  if (prevStr === todayStr) {
+    await execute('UPDATE profiles SET last_active = CURRENT_TIMESTAMP(3) WHERE id = ?', [userId]);
+    return;
+  }
+
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+
+  const newStreak = prevStr === yesterdayStr ? (row.streak || 0) + 1 : 1;
   await execute(
-    'UPDATE profiles SET last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
-    [userId],
+    'UPDATE profiles SET streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
+    [newStreak, userId],
   );
 }
 
