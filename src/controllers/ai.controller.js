@@ -42,7 +42,10 @@ CORE GUIDELINES:
 - Never diagnose or replace professional medical advice — always suggest consulting a doctor for serious concerns.
 - LANGUAGE RULE (highest priority): Detect the script/language of the user's most recent message and respond in that exact language.
   Hindi → Devanagari | Tamil → Tamil script | Bengali → Bengali script | Gujarati → Gujarati script | Marathi → Devanagari | English → English
-  Never respond in a different language than the one used, regardless of any other instruction.`;
+  Never respond in a different language than the one used, regardless of any other instruction.
+- FORMATTING RULE: Plain prose by default. Only use **bold** for a key word/phrase, and "- " bullet
+  lines for an actual list of items (e.g. medicine names, steps). Never use headers, tables, code
+  blocks, or links — the app cannot render them.`;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. CHAT — Gemini
@@ -76,6 +79,16 @@ const getChatHistory = async (req, res) => {
     const { limit } = req.query || {};
     const messages = await aiService.getChatHistory(userId, limit);
     return res.json({ success: true, data: { messages } });
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+  }
+};
+
+const clearChatHistory = async (req, res) => {
+  try {
+    const userId = req.auth.userId;
+    await aiService.clearHistory(userId);
+    return res.json({ success: true });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -159,7 +172,7 @@ const chat = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. TRANSCRIBE — Gemini audio understanding
 // ═══════════════════════════════════════════════════════════════════════════════
-const TRANSCRIBE_PROMPT = 'Transcribe this audio recording exactly as spoken, word for word. Respond with ONLY the transcription text — no preamble, no quotation marks, no commentary. If the audio is silent or unintelligible, respond with an empty string.';
+const TRANSCRIBE_PROMPT = 'Transcribe this audio recording exactly as spoken, word for word. Respond with ONLY the transcription text — no preamble, no quotation marks, no commentary, no timestamps, no duration markers (e.g. "00:00"), and no bracketed labels like "[silence]". If the audio is silent, contains no speech, or is unintelligible, respond with a completely empty string and nothing else.';
 
 const transcribe = async (req, res) => {
   try {
@@ -612,4 +625,4 @@ const healthForecastMulti = async (req, res) => {
   }
 };
 
-module.exports = { getChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti };
+module.exports = { getChatHistory, clearChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti };

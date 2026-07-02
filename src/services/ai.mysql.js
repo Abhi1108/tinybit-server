@@ -39,7 +39,12 @@ async function saveMessage(userId, { role, content, provider = null }) {
   return mapRow(rows[0] ?? null);
 }
 
+async function clearHistory(userId) {
+  await execute(`DELETE FROM ai_conversations WHERE user_id = ?`, [userId]);
+}
+
 module.exports = {
   getChatHistory,
   saveMessage,
+  clearHistory,
 };

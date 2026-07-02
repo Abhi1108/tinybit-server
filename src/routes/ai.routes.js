@@ -4,6 +4,7 @@ const router = express.Router();
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
   getChatHistory,
+  clearChatHistory,
   chat,
   transcribe,
   analyzeReport,
@@ -17,6 +18,7 @@ const {
 // Sathi AI core
 router.get('/chat',             requireJwtAuth, getChatHistory);
 router.post('/chat',            requireJwtAuth, chat);
+router.delete('/chat',          requireJwtAuth, clearChatHistory);
 router.post('/transcribe',      requireJwtAuth, transcribe);
 
 // Health document analysis

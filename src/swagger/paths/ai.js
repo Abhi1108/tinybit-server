@@ -78,6 +78,23 @@
  *         description: Invalid messages array
  *       401:
  *         description: Unauthorized
+ *   delete:
+ *     tags: [AI]
+ *     summary: Clear Sathi AI chat history
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: History cleared
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *       401:
+ *         description: Unauthorized
  *
  * /api/ai/transcribe:
  *   post:
