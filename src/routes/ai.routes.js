@@ -6,7 +6,6 @@ const {
   getChatHistory,
   chat,
   transcribe,
-  tts,
   analyzeReport,
   analyzeFood,
   suggestClothing,
@@ -19,7 +18,6 @@ const {
 router.get('/chat',             requireJwtAuth, getChatHistory);
 router.post('/chat',            requireJwtAuth, chat);
 router.post('/transcribe',      requireJwtAuth, transcribe);
-router.post('/tts',             requireJwtAuth, tts);
 
 // Health document analysis
 router.post('/analyze-report',  requireJwtAuth, analyzeReport);

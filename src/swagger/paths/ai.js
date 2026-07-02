@@ -73,7 +73,7 @@
  *                       type: string
  *                 provider:
  *                   type: string
- *                   enum: [gemini, openai]
+ *                   enum: [gemini]
  *       400:
  *         description: Invalid messages array
  *       401:
@@ -82,7 +82,7 @@
  * /api/ai/transcribe:
  *   post:
  *     tags: [AI]
- *     summary: Transcribe audio (Whisper)
+ *     summary: Transcribe audio (Gemini)
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -117,44 +117,6 @@
  *                   properties:
  *                     text:
  *                       type: string
- *
- * /api/ai/tts:
- *   post:
- *     tags: [AI]
- *     summary: Text-to-speech
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [text]
- *             properties:
- *               text:
- *                 type: string
- *               voice:
- *                 type: string
- *                 default: nova
- *     responses:
- *       200:
- *         description: Audio as base64 MPEG
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     base64:
- *                       type: string
- *                     mimeType:
- *                       type: string
- *                       example: audio/mpeg
  *
  * /api/ai/analyze-report:
  *   post:

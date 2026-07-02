@@ -87,7 +87,6 @@ if (!process.env.VERCEL) {
     if ((process.env.DB_DRIVER || 'mysql') === 'mysql' && !process.env.MYSQL_URL && !process.env.MYSQL_HOST) {
       console.warn('⚠️  MYSQL_URL or MYSQL_HOST not set — database queries will fail');
     }
-    if (!process.env.OPENAI_API_KEY)              console.warn('⚠️  OPENAI_API_KEY not set');
     if (!process.env.GEMINI_API_KEY)              console.warn('⚠️  GEMINI_API_KEY not set');
     if (!process.env.OTP_TOKEN_SECRET)            console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
   });
