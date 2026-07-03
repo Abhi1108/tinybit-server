@@ -133,18 +133,22 @@ async function register(req, res) {
 async function refreshSession(req, res) {
   try {
     const { refresh_token: refreshToken } = req.body ?? {};
+    console.log('[auth/refresh] START - refreshToken received:', refreshToken ? `${refreshToken.slice(0, 16)}...` : 'EMPTY');
+
     if (!refreshToken) {
+      console.log('[auth/refresh] FAIL - refresh_token is missing');
       return res.status(400).json({ success: false, message: 'refresh_token is required' });
     }
 
     const session = await refreshSessionFromToken(refreshToken);
+    console.log('[auth/refresh] SUCCESS - new session issued for user:', session.user.email);
 
     return res.json({
       success: true,
       session,
     });
   } catch (err) {
-    console.error('[auth/refresh]', err);
+    console.error('[auth/refresh] FAIL - error:', err.message || err);
     const status = err.status === 401 ? 401 : 500;
     return res.status(status).json({ success: false, message: 'Session refresh failed' });
   }

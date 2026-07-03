@@ -69,11 +69,12 @@ async function findOrCreateByPhone(phoneE164, email) {
 
 async function storeRefreshToken(userId, refreshToken) {
   const expiresAt = new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
+  const expiresAtStr = expiresAt.toISOString().slice(0, 19).replace('T', ' ');
 
   await execute(
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
      VALUES (?, ?, ?)`,
-    [userId, hashRefreshToken(refreshToken), expiresAt],
+    [userId, hashRefreshToken(refreshToken), expiresAtStr],
   );
 }
 
@@ -120,6 +121,7 @@ async function createUserWithPassword({ phoneE164, email, password }) {
 
 async function validateRefreshToken(refreshToken) {
   const token_hash = hashRefreshToken(refreshToken);
+  console.log('[validateRefreshToken] START - token_hash:', token_hash.slice(0, 16) + '...');
 
   const rows = await query(
     `SELECT * FROM refresh_tokens
@@ -128,13 +130,29 @@ async function validateRefreshToken(refreshToken) {
     [token_hash],
   );
   const row = rows[0];
-  if (!row) return null;
-  if (new Date(row.expires_at).getTime() < Date.now()) return null;
+
+  if (!row) {
+    console.log('[validateRefreshToken] FAIL - token not found in DB or already revoked');
+    return null;
+  }
+
+  const expiresAtMs = new Date(row.expires_at + ' UTC').getTime();
+  const now = Date.now();
+  console.log('[validateRefreshToken] token found - expires_at:', new Date(expiresAtMs).toISOString(), 'now:', new Date(now).toISOString());
+
+  if (expiresAtMs < now) {
+    console.log('[validateRefreshToken] FAIL - token expired by', Math.floor((now - expiresAtMs) / 1000), 'seconds');
+    return null;
+  }
 
   const users = await query('SELECT * FROM app_users WHERE id = ? LIMIT 1', [row.user_id]);
   const user = users[0];
-  if (!user) return null;
+  if (!user) {
+    console.log('[validateRefreshToken] FAIL - user not found for user_id:', row.user_id);
+    return null;
+  }
 
+  console.log('[validateRefreshToken] SUCCESS - user:', user.email);
   return { row, user };
 }
 
