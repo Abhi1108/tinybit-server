@@ -285,6 +285,7 @@ Respond with ONLY valid JSON (no markdown, no extra text) using this exact struc
   "sugar": <grams of sugar as number>,
   "sodium": <milligrams of sodium as number>,
   "vitamins": ["<vitamin 1>", "<vitamin 2>"],
+  "minerals": ["<mineral 1>", "<mineral 2>"],
   "healthScore": <1-10 integer>,
   "healthRating": "<Excellent|Good|Moderate|Poor>",
   "portionSize": "<small|medium|large>",
@@ -625,4 +626,72 @@ const healthForecastMulti = async (req, res) => {
   }
 };
 
-module.exports = { getChatHistory, clearChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti };
+// ═══════════════════════════════════════════════════════════════════════════════
+// 9. SUGGEST MEAL — Gemini (Calorie Tracker "Eat Next" tab)
+// ═══════════════════════════════════════════════════════════════════════════════
+const MEAL_TYPES = new Set(['breakfast', 'lunch', 'dinner', 'snack']);
+
+const suggestMeal = async (req, res) => {
+  try {
+    const { meal_type: mealType, remaining_calories: remainingCalories, context } = req.body || {};
+    const safeMealType = String(mealType || '').toLowerCase();
+
+    if (!MEAL_TYPES.has(safeMealType)) {
+      return res.status(400).json({ success: false, message: `meal_type must be one of: ${[...MEAL_TYPES].join(', ')}` });
+    }
+
+    const prompt = `You are a certified nutrition expert AI helping an elderly user plan their next meal.
+
+Meal to plan: ${safeMealType}
+Remaining calories for today: ${remainingCalories ?? 'unknown'} kcal
+USER CONTEXT:
+${context ?? 'No context provided.'}
+
+Suggest 2-3 realistic, healthy meal options for a ${safeMealType} that fit within the remaining calories, taking into account any health context above.
+
+Respond with ONLY valid JSON (no markdown, no extra text) using this exact structure:
+{
+  "suggestions": [
+    {
+      "name": "<meal name>",
+      "calories": <calculated integer for this meal>,
+      "protein": <grams of protein as number>,
+      "carbohydrates": <grams of carbs as number>,
+      "fat": <grams of fat as number>,
+      "ingredients": ["<ingredient 1>", "<ingredient 2>"],
+      "instructions": ["<step 1>", "<step 2>"],
+      "healthNotes": "<short note on why this suits the user>"
+    }
+  ]
+}`;
+
+    try {
+      const geminiResp = await geminiFetch(GEMINI_MODEL_TEXT, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 1200, temperature: 0.6 },
+      }, 25_000);
+
+      if (geminiResp.ok) {
+        const json = await geminiResp.json();
+        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
+        try {
+          const result = JSON.parse(content);
+          return res.json({ success: true, data: result, provider: 'gemini' });
+        } catch {
+          return res.status(502).json({ success: false, message: 'Could not parse meal suggestions. Please try again.' });
+        }
+      }
+
+      const errBody = await geminiResp.text();
+      console.warn('[suggestMeal] Gemini error:', geminiResp.status, errBody);
+      return res.status(502).json({ success: false, message: 'Meal suggestions are currently unavailable.', detail: errBody });
+    } catch (geminiErr) {
+      console.warn('[suggestMeal] Gemini failed:', geminiErr.message);
+      return res.status(502).json({ success: false, message: 'Meal suggestions are currently unavailable.' });
+    }
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+  }
+};
+
+module.exports = { getChatHistory, clearChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti, suggestMeal };

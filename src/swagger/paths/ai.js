@@ -207,6 +207,51 @@
  *                 provider:
  *                   type: string
  *
+ * /api/ai/suggest-meal:
+ *   post:
+ *     tags: [AI]
+ *     summary: AI meal suggestions for the Calorie Tracker "Eat Next" tab
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [meal_type]
+ *             properties:
+ *               meal_type:
+ *                 type: string
+ *                 enum: [breakfast, lunch, dinner, snack]
+ *               remaining_calories:
+ *                 type: integer
+ *               context:
+ *                 type: string
+ *                 description: User health context injected into system prompt (age, conditions, allergies, etc.)
+ *     responses:
+ *       200:
+ *         description: Meal suggestions
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     suggestions:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         additionalProperties: true
+ *                 provider:
+ *                   type: string
+ *       400:
+ *         description: Invalid meal_type
+ *
  * /api/ai/suggest-clothing:
  *   post:
  *     tags: [AI]

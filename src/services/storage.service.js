@@ -9,7 +9,7 @@ const {
   buildPublicUrl,
 } = require('../config/storage');
 
-const VALID_PURPOSES = new Set(['health-vault', 'journal', 'profile', 'catalog']);
+const VALID_PURPOSES = new Set(['health-vault', 'journal', 'profile', 'catalog', 'calorie-tracker']);
 
 const PRESIGN_UPLOAD_TTL_SECONDS = 15 * 60;
 const PRESIGN_DOWNLOAD_TTL_SECONDS = 15 * 60;
