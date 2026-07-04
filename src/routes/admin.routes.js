@@ -21,6 +21,8 @@ const {
   broadcast,
   getHealthRecords,
   deleteHealthRecord,
+  getAuditLogs,
+  exportAuditLogs,
 } = require('../controllers/admin.controller');
 const {
   getDoctors,
@@ -101,6 +103,9 @@ router.post('/api/ai-forecast-multi', sessionAuth, async (req, res) => {
 });
 
 router.post('/api/broadcast', sessionAuth, broadcast);
+
+router.get('/api/audit-log/export', sessionAuth, exportAuditLogs);
+router.get('/api/audit-log', sessionAuth, getAuditLogs);
 
 router.post('/api/storage/presign-upload', sessionAuth, presignCatalogUpload);
 

@@ -680,6 +680,7 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
   target_type VARCHAR(32)  NOT NULL,
   target_id   CHAR(36)     NULL,
   details     JSON         NULL,
+  ip          VARCHAR(45)  NULL,
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_admin_audit_log_target (target_type, target_id),

@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const { FREQUENCY_LABELS, resolveMedicineTime } = require('../utils/health-labels');
 
 function toIso(val) {
   if (!val) return val;
@@ -102,24 +103,6 @@ async function listActiveMedicinesForHealthCard(userId) {
      LIMIT 20`,
     [userId],
   );
-}
-
-const FREQUENCY_LABELS = {
-  once: 'Daily',
-  twice: 'Twice Daily',
-  thrice: 'Three Times Daily',
-  four_times: 'Four Times Daily',
-  as_needed: 'As Needed',
-  weekly: 'Weekly',
-  monthly: 'Monthly',
-};
-
-function resolveMedicineTime(m) {
-  if (m.time) return m.time;
-  if (m.schedule_time === 'Morning') return '8:00 AM';
-  if (m.schedule_time === 'Afternoon') return '12:00 PM';
-  if (m.schedule_time === 'Night' || m.schedule_time === 'Evening') return '8:00 PM';
-  return '';
 }
 
 /** Builds the deterministic health-card ID shown on both the webpage and the PDF. */

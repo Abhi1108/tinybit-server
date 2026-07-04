@@ -2,6 +2,7 @@ const { Buffer } = require('buffer');
 const aiService = require('../services/ai.service');
 const { geminiFetch, geminiText, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
 const healthInsightsService = require('../services/health-insights.service');
+const sathiContextService = require('../services/sathi-context.service');
 
 // ── Sathi AI system prompt ────────────────────────────────────────────────────
 const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, intelligent AI health assistant for elderly users built into the TinyBit app.
@@ -10,7 +11,9 @@ Your role is to help users manage their health, remember medicines, stay connect
 CORE GUIDELINES:
 - Keep responses concise, warm, and reassuring — never clinical or overwhelming.
 - Use a calm, caring tone suitable for elderly users.
-- If asked about medicines or health data, reference the USER CONTEXT provided.
+- The USER CONTEXT below is live data from the app (profile, today's medicines and whether each was
+  taken, today's check-in, next appointment, emergency contact). Reference it when asked about any
+  of these. If something isn't listed there, say you don't have that on file — never invent it.
 - Never diagnose or replace professional medical advice — always suggest consulting a doctor for serious concerns.
 - LANGUAGE RULE (highest priority): Detect the script/language of the user's most recent message and respond in that exact language.
   Hindi → Devanagari | Tamil → Tamil script | Bengali → Bengali script | Gujarati → Gujarati script | Marathi → Devanagari | English → English
@@ -68,7 +71,7 @@ const clearChatHistory = async (req, res) => {
 
 const chat = async (req, res) => {
   try {
-    const { messages, context } = req.body || {};
+    const { messages } = req.body || {};
     if (!Array.isArray(messages)) {
       return res.status(400).json({ success: false, message: '`messages` must be an array' });
     }
@@ -94,7 +97,15 @@ const chat = async (req, res) => {
       return res.json({ success: true, data: { content: lastMsg.content }, provider: lastMsg.provider || 'unknown' });
     }
 
-    const systemPrompt = `${SATHI_SYSTEM}\n\nUSER CONTEXT:\n${context ?? 'No context provided.'}`;
+    let contextText;
+    try {
+      contextText = await sathiContextService.buildSathiContext(userId);
+    } catch (contextErr) {
+      console.warn('[Sathi] context build failed:', contextErr.message);
+      contextText = 'No context available.';
+    }
+
+    const systemPrompt = `${SATHI_SYSTEM}\n\nUSER CONTEXT:\n${contextText}`;
 
     let replyContent = '';
     const provider = 'gemini';

@@ -1,7 +1,19 @@
 const catalogService = require('../services/admin-catalog.mysql');
+const auditService = require('../services/admin-audit.mysql');
 
 function handleError(res, err) {
   return res.status(err.status || 500).json({ success: false, error: err.message });
+}
+
+function audit(req, action, targetType, targetId, details) {
+  return auditService.recordSafe({
+    actor: req.admin?.username ?? 'unknown',
+    action,
+    targetType,
+    targetId,
+    details,
+    ip: req.ip,
+  });
 }
 
 function listQuery(req) {
@@ -40,6 +52,7 @@ const getDoctor = async (req, res) => {
 const createDoctor = async (req, res) => {
   try {
     const doctor = await catalogService.createDoctor(req.body);
+    await audit(req, 'doctor.create', 'doctor', doctor.id, { name: doctor.name });
     return res.status(201).json({ success: true, doctor });
   } catch (err) {
     return handleError(res, err);
@@ -49,6 +62,7 @@ const createDoctor = async (req, res) => {
 const updateDoctor = async (req, res) => {
   try {
     const doctor = await catalogService.updateDoctor(req.params.id, req.body ?? {});
+    await audit(req, 'doctor.update', 'doctor', req.params.id, { fields: Object.keys(req.body ?? {}) });
     return res.json({ success: true, doctor });
   } catch (err) {
     return handleError(res, err);
@@ -58,6 +72,7 @@ const updateDoctor = async (req, res) => {
 const deleteDoctor = async (req, res) => {
   try {
     await catalogService.deleteDoctor(req.params.id);
+    await audit(req, 'doctor.delete', 'doctor', req.params.id);
     return res.json({ success: true });
   } catch (err) {
     return handleError(res, err);
@@ -91,6 +106,7 @@ const getMoodMediaTrack = async (req, res) => {
 const createMoodMediaTrack = async (req, res) => {
   try {
     const track = await catalogService.createMoodMediaTrack(req.body);
+    await audit(req, 'mood_media.create', 'mood_media', track.id, { title: track.title });
     return res.status(201).json({ success: true, track });
   } catch (err) {
     return handleError(res, err);
@@ -100,6 +116,7 @@ const createMoodMediaTrack = async (req, res) => {
 const updateMoodMediaTrack = async (req, res) => {
   try {
     const track = await catalogService.updateMoodMediaTrack(req.params.id, req.body ?? {});
+    await audit(req, 'mood_media.update', 'mood_media', req.params.id, { fields: Object.keys(req.body ?? {}) });
     return res.json({ success: true, track });
   } catch (err) {
     return handleError(res, err);
@@ -109,6 +126,7 @@ const updateMoodMediaTrack = async (req, res) => {
 const deleteMoodMediaTrack = async (req, res) => {
   try {
     await catalogService.deleteMoodMediaTrack(req.params.id);
+    await audit(req, 'mood_media.delete', 'mood_media', req.params.id);
     return res.json({ success: true });
   } catch (err) {
     return handleError(res, err);
@@ -139,6 +157,7 @@ const getQuizQuestion = async (req, res) => {
 const createQuizQuestion = async (req, res) => {
   try {
     const question = await catalogService.createQuizQuestion(req.body);
+    await audit(req, 'quiz.create', 'quiz_question', question.id);
     return res.status(201).json({ success: true, question });
   } catch (err) {
     return handleError(res, err);
@@ -148,6 +167,7 @@ const createQuizQuestion = async (req, res) => {
 const updateQuizQuestion = async (req, res) => {
   try {
     const question = await catalogService.updateQuizQuestion(req.params.id, req.body ?? {});
+    await audit(req, 'quiz.update', 'quiz_question', req.params.id, { fields: Object.keys(req.body ?? {}) });
     return res.json({ success: true, question });
   } catch (err) {
     return handleError(res, err);
@@ -157,6 +177,7 @@ const updateQuizQuestion = async (req, res) => {
 const deleteQuizQuestion = async (req, res) => {
   try {
     await catalogService.deleteQuizQuestion(req.params.id);
+    await audit(req, 'quiz.delete', 'quiz_question', req.params.id);
     return res.json({ success: true });
   } catch (err) {
     return handleError(res, err);
@@ -187,6 +208,7 @@ const getInspiration = async (req, res) => {
 const createInspiration = async (req, res) => {
   try {
     const inspiration = await catalogService.createInspiration(req.body);
+    await audit(req, 'inspiration.create', 'inspiration', inspiration.id, { author: inspiration.author });
     return res.status(201).json({ success: true, inspiration });
   } catch (err) {
     return handleError(res, err);
@@ -196,6 +218,7 @@ const createInspiration = async (req, res) => {
 const updateInspiration = async (req, res) => {
   try {
     const inspiration = await catalogService.updateInspiration(req.params.id, req.body ?? {});
+    await audit(req, 'inspiration.update', 'inspiration', req.params.id, { fields: Object.keys(req.body ?? {}) });
     return res.json({ success: true, inspiration });
   } catch (err) {
     return handleError(res, err);
@@ -205,6 +228,7 @@ const updateInspiration = async (req, res) => {
 const deleteInspiration = async (req, res) => {
   try {
     await catalogService.deleteInspiration(req.params.id);
+    await audit(req, 'inspiration.delete', 'inspiration', req.params.id);
     return res.json({ success: true });
   } catch (err) {
     return handleError(res, err);

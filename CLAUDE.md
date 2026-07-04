@@ -523,6 +523,27 @@ non-enforcement gap and was *not* fixed as part of this work — flagged as a re
 
 ---
 
+## Admin audit log
+
+`admin_audit_log` (`actor, action, target_type, target_id, details JSON, ip, created_at`) records
+every significant admin action, written via `src/services/admin-audit.mysql.js#recordSafe`
+(write failures warn but never block the underlying action). `req.admin.username` is the actor
+(attached by `sessionAuth`); `req.ip` is real thanks to `trust proxy`.
+
+**Actions logged:** `auth.login` / `auth.login_failed`, `user.create|update|ban|unban|trash|restore|purge`,
+`notification.broadcast`, and catalog CRUD (`doctor.*`, `mood_media.*`, `quiz.*`, `inspiration.*`).
+Cron purges log as actor `system:cron` (no ip). Get/list reads are not logged.
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `GET` | `/admin/api/audit-log` | Paginated (`page`, `limit` ≤500), filters: `action` (exact), `search` (LIKE over actor/action/target_id/ip). Newest first. |
+| `GET` | `/admin/api/audit-log/export` | CSV download (latest 5000 rows). |
+
+Consumed by tinybit-admin's `admin-management/logs` page. When adding a new admin mutation
+endpoint, add a `recordSafe` call with a dot-convention action name (`<domain>.<verb>`).
+
+---
+
 ## Fact-check cheatsheet
 
 | Question | Answer |

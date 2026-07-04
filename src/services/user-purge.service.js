@@ -52,7 +52,7 @@ async function sweepUserStorage(userId) {
  * endpoint and the grace-period cron script, so this is the single place the purge
  * logic lives.
  */
-async function purgeUserById(id, actor) {
+async function purgeUserById(id, actor, ip) {
   const trashed = await adminService.getDeletedProfile(id);
   if (!trashed || !trashed.deleted_at) {
     return { purged: false, reason: 'not_trashed' };
@@ -73,6 +73,7 @@ async function purgeUserById(id, actor) {
     targetType: 'user',
     targetId: id,
     details: { deletedObjectCount, s3Failures: s3Failures.length ? s3Failures : undefined },
+    ip,
   });
 
   return { purged: true, deletedObjectCount, s3Failures };

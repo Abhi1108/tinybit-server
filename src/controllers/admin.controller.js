@@ -50,8 +50,22 @@ const login = (req, res) => {
   const validPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
   if (username === validUser && password === validPass) {
     const token = signAdminToken(username);
+    void auditService.recordSafe({
+      actor: username,
+      action: 'auth.login',
+      targetType: 'auth',
+      details: { username },
+      ip: req.ip,
+    });
     return res.json({ success: true, token, user: { username, role: 'admin' } });
   }
+  void auditService.recordSafe({
+    actor: String(username ?? 'unknown'),
+    action: 'auth.login_failed',
+    targetType: 'auth',
+    details: { username: String(username ?? '') },
+    ip: req.ip,
+  });
   return res.status(401).json({ success: false, error: 'Invalid credentials' });
 };
 
@@ -219,6 +233,14 @@ const createUser = async (req, res) => {
     });
 
     const profile = await adminService.upsertProfile(profilePayload);
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'user.create',
+      targetType: 'user',
+      targetId: appUser.id,
+      details: { role, phone: phoneE164 },
+      ip: req.ip,
+    });
     return res.status(201).json({ success: true, profile, app_user: appUser });
   } catch (err) {
     if (err.code === 'USER_EXISTS') {
@@ -243,6 +265,14 @@ const updateUser = async (req, res) => {
 
   try {
     const profile = await adminService.updateProfile(id, patch);
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'user.update',
+      targetType: 'user',
+      targetId: id,
+      details: { fields: Object.keys(patch) },
+      ip: req.ip,
+    });
     return res.json({ success: true, profile });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -254,6 +284,13 @@ const banUser = async (req, res) => {
   const { banned } = req.body;
   try {
     await adminService.updateProfile(id, { is_banned: !!banned });
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: banned ? 'user.ban' : 'user.unban',
+      targetType: 'user',
+      targetId: id,
+      ip: req.ip,
+    });
     return res.json({ success: true });
   } catch (err) {
     return res.status(err.status || 500).json({
@@ -268,7 +305,7 @@ const deleteUser = async (req, res) => {
   const actor = req.admin?.username ?? 'unknown';
   try {
     await adminService.softDeleteProfile(id, actor);
-    await auditService.recordSafe({ actor, action: 'user.trash', targetType: 'user', targetId: id });
+    await auditService.recordSafe({ actor, action: 'user.trash', targetType: 'user', targetId: id, ip: req.ip });
     return res.json({ success: true });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -280,7 +317,7 @@ const restoreUser = async (req, res) => {
   const actor = req.admin?.username ?? 'unknown';
   try {
     await adminService.restoreProfile(id);
-    await auditService.recordSafe({ actor, action: 'user.restore', targetType: 'user', targetId: id });
+    await auditService.recordSafe({ actor, action: 'user.restore', targetType: 'user', targetId: id, ip: req.ip });
     return res.json({ success: true });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -299,7 +336,7 @@ const purgeUser = async (req, res) => {
       return res.status(409).json({ success: false, error: 'User must be moved to trash before it can be purged' });
     }
 
-    const result = await purgeUserById(id, actor);
+    const result = await purgeUserById(id, actor, req.ip);
     return res.json({ success: true, deletedObjectCount: result.deletedObjectCount, s3Failures: result.s3Failures });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -533,6 +570,13 @@ const broadcast = async (req, res) => {
 
   try {
     const sent = await adminService.broadcastNotification(title, body);
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'notification.broadcast',
+      targetType: 'notification',
+      details: { title, sent },
+      ip: req.ip,
+    });
     return res.json({ success: true, sent });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
@@ -568,6 +612,39 @@ const deleteHealthRecord = async (req, res) => {
   }
 };
 
+// ── Audit log ────────────────────────────────────────────────────────────────
+
+const getAuditLogs = async (req, res) => {
+  const { page = '1', limit = '50', action, search } = req.query;
+  try {
+    const result = await auditService.list({ page, limit, action, search });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const exportAuditLogs = async (req, res) => {
+  try {
+    const rows = await auditService.listAll();
+    const header = ['created_at', 'actor', 'action', 'target_type', 'target_id', 'ip', 'details'];
+    const escape = (v) => {
+      const s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      header.join(','),
+      ...rows.map((r) => header.map((k) => escape(r[k])).join(',')),
+    ];
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="tinybit-audit-log.csv"');
+    return res.send(lines.join('\n'));
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Serve dashboard ───────────────────────────────────────────────────────────
 
 const serveDashboard = (req, res) => {
@@ -593,4 +670,6 @@ module.exports = {
   broadcast,
   getHealthRecords,
   deleteHealthRecord,
+  getAuditLogs,
+  exportAuditLogs,
 };

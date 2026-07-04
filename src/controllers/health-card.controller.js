@@ -6,6 +6,7 @@ function getQRCode() {
 }
 
 const healthCardService = require('../services/health-card.service');
+const { CONDITION_LABELS } = require('../utils/health-labels');
 
 /** Public base URL for health-card QR links (must be reachable without Vercel Deployment Protection). */
 function getServerUrl() {
@@ -104,24 +105,6 @@ function calcAge(dobStr) {
     return '';
   }
 }
-
-const CONDITION_LABELS = {
-  none: null,
-  diabetes: 'Diabetes',
-  pre_diabetes: 'Pre-Diabetes',
-  cholesterol: 'High Cholesterol',
-  hypertension: 'Hypertension',
-  pcos: 'PCOS',
-  thyroid: 'Thyroid Disorder',
-  physical_injury: 'Physical Injury',
-  stress_anxiety: 'Stress / Anxiety',
-  sleep_issues: 'Sleep Issues',
-  depression: 'Depression',
-  anger_issues: 'Anger Issues',
-  loneliness: 'Loneliness',
-  relationship_stress: 'Relationship Stress',
-  others: 'Other',
-};
 
 const LEGAL_POLICY_URL = 'https://tinybit.cloud/privacy-policy/';
 
