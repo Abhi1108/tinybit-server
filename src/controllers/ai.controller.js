@@ -1,35 +1,7 @@
 const { Buffer } = require('buffer');
 const aiService = require('../services/ai.service');
-
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL_TEXT   = 'gemini-3.1-flash-lite';   // fast text + vision + audio
-const GEMINI_MODEL_VISION = 'gemini-3.1-flash-lite';   // supports image input
-
-// ── Key helpers ───────────────────────────────────────────────────────────────
-function getGeminiKey()  { return process.env.GEMINI_API_KEY; }
-
-// ── Gemini text helper ────────────────────────────────────────────────────────
-// systemPrompt is folded into the first user turn (Gemini supports systemInstruction
-// in v1beta but folding is simpler and equally effective for these tasks).
-async function geminiFetch(model, body, timeoutMs = 25_000) {
-  const apiKey = getGeminiKey();
-  if (!apiKey) {
-    const err = new Error('GEMINI_API_KEY is not configured. Add it to server/.env');
-    err.statusCode = 500;
-    throw err;
-  }
-  return fetch(`${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-// Extract text from a Gemini response JSON
-function geminiText(json) {
-  return json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-}
+const { geminiFetch, geminiText, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
+const healthInsightsService = require('../services/health-insights.service');
 
 // ── Sathi AI system prompt ────────────────────────────────────────────────────
 const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, intelligent AI health assistant for elderly users built into the TinyBit app.
@@ -226,9 +198,10 @@ const analyzeReport = async (req, res) => {
 
     const safeMime = mimeType?.trim() || 'image/jpeg';
     const isImage = safeMime.startsWith('image/');
+    const isPdf = safeMime === 'application/pdf';
 
-    // ── Try Gemini Vision for images ─────────────────────────────────────────
-    if (isImage) {
+    // ── Try Gemini Vision for images and PDFs ────────────────────────────────
+    if (isImage || isPdf) {
       try {
         const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
           contents: [{
@@ -260,7 +233,7 @@ const analyzeReport = async (req, res) => {
       }
     }
 
-    return res.status(502).json({ success: false, message: 'Document classification is only supported for images at this time.' });
+    return res.status(502).json({ success: false, message: 'Document classification is only supported for images and PDFs at this time.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -458,171 +431,34 @@ overallStatus must be: "Good", "Fair", or "Needs Attention". alertLevel must be:
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 7. HEALTH FORECAST — Gemini Vision
-//    Extracts health metrics from a report image/PDF and returns structured
-//    insights + recommendations tailored for elderly users.
+// 7. HEALTH FORECAST — Gemini Vision (single document)
+//    Core prompt/parsing logic lives in health-insights.service.js so it can be
+//    reused by the Health Vault per-record "AI Insights" endpoint.
 // ═══════════════════════════════════════════════════════════════════════════════
-const FORECAST_PROMPT = `You are a medical AI assistant analyzing a health document for an elderly patient. Extract every health metric and provide a clear, simple forecast.
-
-Respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "reportType": "Blood Test|Prescription|X-Ray|Scan|General Report|Unknown",
-  "summary": "1-2 sentences summarizing the overall health status from this report",
-  "alertLevel": "normal|caution|alert",
-  "metrics": [
-    {
-      "name": "Metric name (e.g. Hemoglobin, Blood Sugar, Cholesterol)",
-      "value": "Measured value with unit (e.g. 11.2 g/dL)",
-      "status": "normal|low|high|borderline",
-      "normalRange": "Normal reference range (e.g. 12-17 g/dL)",
-      "insight": "1 simple sentence relevant to elderly health"
-    }
-  ],
-  "riskFactors": ["Risk 1 identified from this report"],
-  "recommendations": ["Clear, actionable recommendation for elderly patient"],
-  "followUp": "When and what type of follow-up is suggested"
-}
-
-Rules:
-- Extract ALL numeric values visible (blood counts, glucose, cholesterol, BP, etc.)
-- For X-ray/MRI/CT: describe findings as metrics (e.g. name:"Bone Density", value:"Mild reduction")
-- For prescriptions: list key medications (name: drug name, value: dosage + frequency)
-- alertLevel: "normal"=all values in range, "caution"=borderline/mild abnormal, "alert"=significantly abnormal
-- Recommendations must be simple and appropriate for elderly users (65+)
-- If unreadable or no metrics found, respond: {"reportType":"Unknown","summary":"Could not extract health data from this document.","alertLevel":"normal","metrics":[],"riskFactors":[],"recommendations":["Please share a clearer image of your report"],"followUp":"Consult your doctor for interpretation"}`;
-
 const healthForecast = async (req, res) => {
   try {
     const { base64, mimeType, category, title } = req.body || {};
-
-    if (typeof base64 !== 'string' || base64.length < 100) {
-      return res.status(400).json({ success: false, message: 'base64 document content is required' });
-    }
-
-    const safeMime = mimeType?.trim() || 'image/jpeg';
-    const isImage  = safeMime.startsWith('image/');
-    // Gemini supports both images and PDFs via inlineData
-    const geminiSupported = isImage || safeMime === 'application/pdf';
-
-    const contextNote = [
-      title    ? `Document title: ${title}` : '',
-      category ? `Document category: ${category}` : '',
-    ].filter(Boolean).join('. ');
-    const prompt = contextNote ? `${FORECAST_PROMPT}\n\nContext: ${contextNote}` : FORECAST_PROMPT;
-
-    if (!geminiSupported) {
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-    }
-
-    try {
-      const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: safeMime, data: base64 } },
-            { text: prompt },
-          ],
-        }],
-        generationConfig: { maxOutputTokens: 1200, temperature: 0.2 },
-      }, 60_000);   // large PDFs need up to ~45 s
-
-      if (geminiResp.ok) {
-        const json    = await geminiResp.json();
-        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
-        try {
-          const result = JSON.parse(content);
-          return res.json({ success: true, data: result, provider: 'gemini' });
-        } catch {
-          return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-        }
-      }
-
-      const errBody = await geminiResp.text();
-      console.warn('[healthForecast] Gemini error:', geminiResp.status, errBody);
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.', detail: errBody });
-    } catch (geminiErr) {
-      console.warn('[healthForecast] Gemini failed:', geminiErr.message);
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-    }
+    const result = await healthInsightsService.runHealthForecast({ base64, mimeType, category, title });
+    return res.json({ success: true, data: result, provider: 'gemini' });
   } catch (error) {
-    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+    console.warn('[healthForecast] failed:', error?.message);
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error', detail: error?.detail });
   }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 8. HEALTH FORECAST MULTI — analyse several reports together in one Gemini call
+//    Core logic lives in health-insights.service.js so it can be reused by the
+//    Health Vault "Compare Reports" endpoint.
 // ═══════════════════════════════════════════════════════════════════════════════
-const MULTI_FORECAST_PROMPT = `You are a medical AI performing a comprehensive cross-report health analysis for an elderly patient. Multiple health documents are provided. Identify trends, improvements, and deteriorations across them.
-
-Respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "reportType": "Multi-Report Analysis",
-  "summary": "2-3 sentences summarising overall health trends across ALL provided documents",
-  "alertLevel": "normal|caution|alert",
-  "metrics": [
-    {
-      "name": "Metric name",
-      "value": "Latest or trended value with unit",
-      "status": "normal|low|high|borderline",
-      "normalRange": "Reference range",
-      "insight": "How this metric changed across the reports (improving / stable / worsening)"
-    }
-  ],
-  "riskFactors": ["Risk factor identified from cross-report comparison"],
-  "recommendations": ["Actionable recommendation based on multi-report trends for elderly patient"],
-  "followUp": "Specific follow-up suggested based on trends seen across the documents"
-}
-
-Rules:
-- Compare values across reports chronologically — always note if improving, stable, or declining.
-- alertLevel: "normal" = trends positive, "caution" = some borderline trends, "alert" = significant worsening.
-- If only one document is readable, still analyse it and note limited trend data.`;
-
 const healthForecastMulti = async (req, res) => {
   try {
     const { records } = req.body || {};
-    if (!Array.isArray(records) || records.length < 1) {
-      return res.status(400).json({ success: false, message: 'At least one record is required' });
-    }
-
-    // Build Gemini content parts — one inlineData block per document
-    const parts = [];
-    for (const rec of records) {
-      if (typeof rec.base64 !== 'string' || rec.base64.length < 100) continue;
-      parts.push({ inlineData: { mimeType: rec.mimeType || 'image/jpeg', data: rec.base64 } });
-      parts.push({ text: `[${rec.category || 'Document'}: "${rec.title || 'Record'}" — ${rec.date || 'Date unknown'}]` });
-    }
-
-    if (parts.length === 0) {
-      return res.status(400).json({ success: false, message: 'No readable documents found in the selection' });
-    }
-
-    parts.push({ text: MULTI_FORECAST_PROMPT });
-
-    // ── Try Gemini Vision ────────────────────────────────────────────────────
-    try {
-      const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
-        contents: [{ parts }],
-        generationConfig: { maxOutputTokens: 1500, temperature: 0.2 },
-      }, 90_000);   // larger timeout — processing N documents takes longer
-
-      if (geminiResp.ok) {
-        const json    = await geminiResp.json();
-        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
-        try {
-          const result = JSON.parse(content);
-          return res.json({ success: true, data: result, provider: 'gemini' });
-        } catch { /* fall through */ }
-      } else {
-        const errBody = await geminiResp.text();
-        console.warn('[healthForecastMulti] Gemini error:', geminiResp.status, errBody);
-      }
-    } catch (geminiErr) {
-      console.warn('[healthForecastMulti] Gemini failed:', geminiErr.message);
-    }
-
-    return res.status(502).json({ success: false, message: 'Multi-report trend analysis AI is currently unavailable.' });
+    const result = await healthInsightsService.runMultiHealthForecast(records);
+    return res.json({ success: true, data: result, provider: 'gemini' });
   } catch (error) {
-    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+    console.warn('[healthForecastMulti] failed:', error?.message);
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error', detail: error?.detail });
   }
 };
 

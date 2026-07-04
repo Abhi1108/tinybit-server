@@ -195,6 +195,37 @@ async function deleteObject(key, userId) {
   return { key: objectKey };
 }
 
+/** Extract the S3 object key from a stored virtual-host/CDN URL, or null if unparseable. */
+function extractObjectKey(url) {
+  try {
+    const key = new URL(String(url || '')).pathname.replace(/^\//, '');
+    return key ? decodeURIComponent(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Download an object's bytes and return them base64-encoded, for feeding to Gemini inlineData. */
+async function getObjectBase64(key) {
+  assertStorageConfigured();
+
+  const client = getS3Client();
+  const response = await client.send(new GetObjectCommand({
+    Bucket: getBucket(),
+    Key: key,
+  }));
+
+  const chunks = [];
+  for await (const chunk of response.Body) {
+    chunks.push(chunk);
+  }
+
+  return {
+    base64: Buffer.concat(chunks).toString('base64'),
+    contentType: response.ContentType || null,
+  };
+}
+
 module.exports = {
   VALID_PURPOSES,
   sanitizeFilename,
@@ -204,6 +235,8 @@ module.exports = {
   createPresignedUpload,
   createPresignedDownload,
   deleteObject,
+  extractObjectKey,
+  getObjectBase64,
   guessContentType,
   storageNotConfiguredError,
 };
