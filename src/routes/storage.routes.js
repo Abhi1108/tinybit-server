@@ -29,7 +29,7 @@ router.post('/presign-download', requireJwtAuth, presignDownload);
 // Only used when STORAGE_TYPE=filesystem
 // ─────────────────────────────────────────────────────────────────────────
 
-router.put('/files/:purpose/:userId/*', requireJwtAuth, async (req, res) => {
+router.put('/files/:purpose/:userId/*', async (req, res) => {
   try {
     const { purpose, userId } = req.params;
     const filename = req.params[0];  // Everything after userId/
