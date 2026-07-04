@@ -1,6 +1,9 @@
 .vercel
-.env*
+.env
+.env.local
+.env.*.local
 node_modules
+
 # Local file uploads (development only)
 uploads/
 uploads/*
