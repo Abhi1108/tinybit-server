@@ -146,7 +146,7 @@ public/admin/                # Bundled admin dashboard static files
 **Schema file:** `mysql/schema.sql`  
 **Driver:** `DB_DRIVER=mysql` (default). All active `*.service.js` files point to `*.mysql.js`.
 
-### Tables (27)
+### Tables (28)
 
 | Group | Tables |
 |-------|--------|
@@ -159,7 +159,7 @@ public/admin/                # Bundled admin dashboard static files
 | Social | `journal`, `family_messages` |
 | AI | `ai_conversations` |
 | Content | `mood_media_tracks`, `mood_media_favorites`, `mind_games_scores`, `daily_quiz_questions`, `daily_inspirations`, `doctors` |
-| System | `notifications` |
+| System | `notifications`, `admin_audit_log` |
 
 **FK pattern:** Most user-owned rows reference `profiles(id)` (which references `app_users(id)`).
 
@@ -461,7 +461,7 @@ Safe future task: delete Supabase files after final audit.
 | **P4** | **Daily check-in photos** | If app sends images, extend S3 `purpose` (e.g. `wellness`) + endpoint rules |
 | **P5** | **Supabase file cleanup** | Remove `*.supabase.js` and dead config after audit |
 | **P6** | **OpenAPI admin paths** | Optional — document `/admin/api/catalog/*` separately |
-| **P7** | **Health vault S3 delete** | Optionally delete S3 object on record DELETE |
+| ~~P7~~ | ~~Health vault S3 delete~~ | **Done** — `health-records.mysql.js#deleteById` already cleans up the S3 object on record DELETE. |
 | **P8** | **Rate limiting / WAF** | EC2 port 5002 currently open for HTTP testing — tighten for prod |
 | **Ops** | **tinybit-admin** | Separate app must call catalog + presign APIs (not in this repo) |
 | **Ops** | **Populate catalog** | Doctors, mood tracks, quiz, inspirations via admin — **no SQL seed** |
@@ -477,7 +477,70 @@ npm ci --omit=dev      # EC2 install
 
 # After schema change on RDS:
 mysql -h $MYSQL_HOST -u $MYSQL_USER -p $MYSQL_DATABASE < mysql/schema.sql
+
+# Manually purge users past their soft-delete grace period (normally run via cron, see below):
+node scripts/purge-deleted-users.js
 ```
+
+---
+
+## Scheduled jobs
+
+No in-process job scheduler exists in this stack — recurring work runs as a bare `node` script
+via the EC2 box's OS crontab.
+
+| Script | Purpose | Suggested schedule |
+|--------|---------|---------------------|
+| `scripts/purge-deleted-users.js` | Permanently purges any user whose admin soft-delete grace period (`USER_PURGE_GRACE_DAYS`, default 30) has elapsed — real S3 cleanup + cascading DB delete. See "Admin user deletion" below. | Daily |
+
+```cron
+15 3 * * * cd /path/to/tinybit-server && /usr/bin/node scripts/purge-deleted-users.js >> /var/log/tinybit-purge.log 2>&1
+```
+
+---
+
+## Admin user deletion (soft-delete / trash / purge)
+
+Deleting a user from the admin panel is a reversible **trash** flow, not an instant hard delete:
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `DELETE` | `/admin/api/users/:id` | Soft-deletes (`profiles.deleted_at`/`deleted_by`). Audit-logs `user.trash`. |
+| `PATCH` | `/admin/api/users/:id/restore` | Clears trash state. Audit-logs `user.restore`. 404 if not trashed. |
+| `DELETE` | `/admin/api/users/:id/purge` | Requires already-trashed (409 otherwise). Runs S3 cleanup (profile photo, health-vault files, journal audio, meal photos, check-in voice notes) + the real cascading delete. Audit-logs `user.purge`. |
+| `GET` | `/admin/api/users?deleted=only` | Lists trashed users (default listing excludes them). |
+
+Shared purge logic lives in `src/services/user-purge.service.js#purgeUserById` — used by both the
+manual purge endpoint and `scripts/purge-deleted-users.js`, so there's exactly one place the
+S3-sweep-then-cascade-delete logic lives. Every trash/restore/purge action writes to
+`admin_audit_log` via `src/services/admin-audit.mysql.js`.
+
+A soft-deleted user is blocked from logging in / refreshing their session (`isProfileDeleted` check
+in `auth.controller.js` and `auth-users.mysql.js#refreshSessionFromToken`) but **an already-issued
+access token keeps working until it expires** (stateless JWT, no per-request DB check) — acceptable
+for a 30-day reversible trash, not an emergency lockout feature. `is_banned` has this same
+non-enforcement gap and was *not* fixed as part of this work — flagged as a related follow-up.
+
+---
+
+## Admin audit log
+
+`admin_audit_log` (`actor, action, target_type, target_id, details JSON, ip, created_at`) records
+every significant admin action, written via `src/services/admin-audit.mysql.js#recordSafe`
+(write failures warn but never block the underlying action). `req.admin.username` is the actor
+(attached by `sessionAuth`); `req.ip` is real thanks to `trust proxy`.
+
+**Actions logged:** `auth.login` / `auth.login_failed`, `user.create|update|ban|unban|trash|restore|purge`,
+`notification.broadcast`, and catalog CRUD (`doctor.*`, `mood_media.*`, `quiz.*`, `inspiration.*`).
+Cron purges log as actor `system:cron` (no ip). Get/list reads are not logged.
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `GET` | `/admin/api/audit-log` | Paginated (`page`, `limit` ≤500), filters: `action` (exact), `search` (LIKE over actor/action/target_id/ip). Newest first. |
+| `GET` | `/admin/api/audit-log/export` | CSV download (latest 5000 rows). |
+
+Consumed by tinybit-admin's `admin-management/logs` page. When adding a new admin mutation
+endpoint, add a `recordSafe` call with a dot-convention action name (`<domain>.<verb>`).
 
 ---
 

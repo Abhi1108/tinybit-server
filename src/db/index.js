@@ -1,5 +1,5 @@
 /**
- * Shared database helpers for DB_DRIVER routing (supabase | mysql).
+ * Shared database helpers (DB_DRIVER, MySQL-only).
  */
 function getDriver() {
   return (process.env.DB_DRIVER || 'mysql').toLowerCase();

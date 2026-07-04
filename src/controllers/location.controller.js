@@ -16,7 +16,7 @@ function readBody(req) {
 /** GET /api/location — own elder_locations row */
 async function getLocation(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -38,7 +38,7 @@ async function getLocation(req, res) {
 /** PUT /api/location — upsert elder location (onConflict elder_id) */
 async function upsertLocation(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }

@@ -26,7 +26,7 @@ const STATIC_SAFE_ZONES = [
 // POST /api/guardian/invite
 const inviteParent = async (req, res) => {
   const { guardian_name, parent_name, relation, elder_email } = req.body;
-  const guardian_id = req.auth?.userId ?? req.supabase?.userId;
+  const guardian_id = req.auth?.userId;
 
   if (!guardian_id) {
     return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -40,7 +40,7 @@ const inviteParent = async (req, res) => {
     await guardianService.ensureGuardianProfile(
       guardian_id,
       guardian_name,
-      req.auth?.email ?? req.supabase?.email,
+      req.auth?.email,
     );
 
     const elderProfile = await guardianService.findProfileByEmail(elder_email);
@@ -83,7 +83,7 @@ const inviteParent = async (req, res) => {
 // POST /api/guardian/respond
 const respondToInvitation = async (req, res) => {
   const { link_id, action } = req.body;
-  const elder_id = req.auth?.userId ?? req.supabase?.userId;
+  const elder_id = req.auth?.userId;
 
   if (!link_id || !['accept', 'decline'].includes(action)) {
     return res.status(400).json({ success: false, message: 'Invalid request' });
@@ -100,7 +100,7 @@ const respondToInvitation = async (req, res) => {
 
 // GET /api/guardian/pending-invitations
 const getPendingInvitations = async (req, res) => {
-  const elder_email = req.auth?.email ?? req.supabase?.email;
+  const elder_email = req.auth?.email;
   if (!elder_email) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -114,7 +114,7 @@ const getPendingInvitations = async (req, res) => {
 
 // POST /api/guardian/save-push-token
 const savePushToken = async (req, res) => {
-  const user_id = req.auth?.userId ?? req.supabase?.userId;
+  const user_id = req.auth?.userId;
   const { push_token } = req.body;
 
   if (!user_id || !push_token) {
@@ -131,7 +131,7 @@ const savePushToken = async (req, res) => {
 
 // GET /api/guardian/elders
 const guardianElders = async (req, res) => {
-  const guardianId = req.auth?.userId ?? req.supabase?.userId;
+  const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -145,7 +145,7 @@ const guardianElders = async (req, res) => {
 
 // GET /api/guardian/alerts
 const guardianAlerts = async (req, res) => {
-  const guardianId = req.auth?.userId ?? req.supabase?.userId;
+  const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -159,7 +159,7 @@ const guardianAlerts = async (req, res) => {
 
 // GET /api/guardian/location
 const guardianLocation = async (req, res) => {
-  const guardianId = req.auth?.userId ?? req.supabase?.userId;
+  const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -179,7 +179,7 @@ const guardianLocation = async (req, res) => {
 
 // GET /api/guardian/reports?period=weekly|monthly|yearly
 const guardianReports = async (req, res) => {
-  const guardianId = req.auth?.userId ?? req.supabase?.userId;
+  const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -193,7 +193,7 @@ const guardianReports = async (req, res) => {
 
 // GET /api/guardian/connected-guardians
 const getConnectedGuardians = async (req, res) => {
-  const elderId = req.auth?.userId ?? req.supabase?.userId;
+  const elderId = req.auth?.userId;
   if (!elderId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
@@ -206,7 +206,7 @@ const getConnectedGuardians = async (req, res) => {
 };
 
 const getSentInvitations = async (req, res) => {
-  const guardianId = req.auth?.userId ?? req.supabase?.userId;
+  const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {

@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const { FREQUENCY_LABELS, resolveMedicineTime } = require('../utils/health-labels');
 
 function toIso(val) {
   if (!val) return val;
@@ -104,6 +105,17 @@ async function listActiveMedicinesForHealthCard(userId) {
   );
 }
 
+/** Builds the deterministic health-card ID shown on both the webpage and the PDF. */
+function buildHealthCardId(profileId) {
+  const raw = String(profileId || '').replace(/-/g, '').toUpperCase();
+  return `TBIT-${raw.slice(0, 4)}-${raw.slice(4, 5)}`;
+}
+
+/** "Generated" date shown on both the webpage and the PDF — single canonical format. */
+function formatGeneratedDate(date = new Date()) {
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
 async function getPrimaryEmergencyContact(userId) {
   const rows = await query(
     `SELECT name, phone, role
@@ -125,10 +137,8 @@ async function enrichProfileForHealthCard(profile) {
     profile.medications = meds.map((m) => ({
       name: m.name,
       dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
-      time: m.time,
-      schedule_time: m.schedule_time,
-      frequency: m.frequency,
-      timing: m.time || m.schedule_time || m.frequency || '',
+      frequency_label: FREQUENCY_LABELS[m.frequency] ?? m.frequency ?? 'Daily',
+      time: resolveMedicineTime(m),
     }));
   }
 
@@ -149,4 +159,6 @@ module.exports = {
   getOrCreateHealthQrToken,
   findProfileByHealthQrToken,
   enrichProfileForHealthCard,
+  buildHealthCardId,
+  formatGeneratedDate,
 };

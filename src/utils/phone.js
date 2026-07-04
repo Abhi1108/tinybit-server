@@ -6,7 +6,7 @@ function toE164(phone, countryCode = '+91') {
   return `+${cc}${digits}`;
 }
 
-/** Stable Supabase auth email from phone (server-side only). */
+/** Stable synthetic account email derived from phone, used to key app_users rows (server-side only). */
 function phoneToAuthEmail(phone, countryCode = '+91') {
   const cc = countryCode.replace(/\D/g, '');
   const digits = phone.replace(/\D/g, '');

@@ -121,7 +121,8 @@ async function getConnectedLinksForGuardian(guardianId) {
   return query(
     `SELECT elder_id, parent_name, relation, elder_email
      FROM guardian_elder_links
-     WHERE guardian_id = ? AND status = 'connected'`,
+     WHERE guardian_id = ? AND status = 'connected'
+       AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
     [guardianId],
   );
 }
@@ -207,7 +208,8 @@ async function getGuardianAlerts(guardianId) {
   const links = await query(
     `SELECT elder_id, parent_name
      FROM guardian_elder_links
-     WHERE guardian_id = ? AND status = 'connected'`,
+     WHERE guardian_id = ? AND status = 'connected'
+       AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
     [guardianId],
   );
 
@@ -298,7 +300,8 @@ async function getGuardianLocationElders(guardianId) {
   const links = await query(
     `SELECT elder_id, parent_name, relation
      FROM guardian_elder_links
-     WHERE guardian_id = ? AND status = 'connected'`,
+     WHERE guardian_id = ? AND status = 'connected'
+       AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
     [guardianId],
   );
 
@@ -338,6 +341,7 @@ async function getGuardianReports(guardianId) {
     `SELECT elder_id, parent_name
      FROM guardian_elder_links
      WHERE guardian_id = ? AND status = 'connected'
+       AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)
      LIMIT 1`,
     [guardianId],
   );
@@ -441,7 +445,8 @@ async function getConnectedGuardians(elderId) {
   const links = await query(
     `SELECT guardian_id, relation
      FROM guardian_elder_links
-     WHERE elder_id = ? AND status = 'connected'`,
+     WHERE elder_id = ? AND status = 'connected'
+       AND guardian_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
     [elderId],
   );
 

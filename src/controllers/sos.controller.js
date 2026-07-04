@@ -19,7 +19,7 @@ function readBody(req) {
 /** GET /api/sos/emergency-contacts */
 async function listEmergencyContacts(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -41,7 +41,7 @@ async function listEmergencyContacts(req, res) {
 /** POST /api/sos/emergency-contacts */
 async function createEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -76,7 +76,7 @@ async function createEmergencyContact(req, res) {
 /** PATCH /api/sos/emergency-contacts/:id */
 async function updateEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -118,7 +118,7 @@ async function updateEmergencyContact(req, res) {
 /** DELETE /api/sos/emergency-contacts/:id */
 async function deleteEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }

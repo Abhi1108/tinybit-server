@@ -167,11 +167,22 @@ async function revokeRefreshToken(refreshToken) {
   );
 }
 
+async function isProfileDeleted(userId) {
+  const rows = await query('SELECT deleted_at FROM profiles WHERE id = ? LIMIT 1', [userId]);
+  return !!rows[0]?.deleted_at;
+}
+
 async function refreshSessionFromToken(refreshToken) {
   const validated = await validateRefreshToken(refreshToken);
   if (!validated) {
     const err = new Error('Session refresh failed');
     err.status = 401;
+    throw err;
+  }
+
+  if (await isProfileDeleted(validated.user.id)) {
+    const err = new Error('This account has been deactivated.');
+    err.status = 403;
     throw err;
   }
 
@@ -263,4 +274,5 @@ module.exports = {
   findAppUserById,
   findByEmail,
   findOrCreateByGoogle,
+  isProfileDeleted,
 };
