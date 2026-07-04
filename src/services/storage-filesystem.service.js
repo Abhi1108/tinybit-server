@@ -136,7 +136,11 @@ async function createPresignedUpload({ purpose, userId, filename, contentType })
  */
 async function createPresignedDownload({ key, userId }) {
   assertKeyReadable(key, userId);
-  return buildFileUrl(key);
+  return {
+    downloadUrl: buildFileUrl(key),
+    key,
+    expiresIn: 900  // Same as S3
+  };
 }
 
 /**

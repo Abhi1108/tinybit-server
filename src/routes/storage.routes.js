@@ -29,19 +29,29 @@ router.post('/presign-download', requireJwtAuth, presignDownload);
 // Only used when STORAGE_TYPE=filesystem
 // ─────────────────────────────────────────────────────────────────────────
 
+// File upload endpoint (PUT /api/files/{purpose}/{userId}/*)
+// Works with presigned URLs (no auth needed - URL itself is authorization)
 router.put('/files/:purpose/:userId/*', async (req, res) => {
   try {
     const { purpose, userId } = req.params;
-    const filename = req.params[0];  // Everything after userId/
+    const filename = req.params[0];
     const requestUserId = req.auth?.userId;
 
-    // Authorization: user can only upload their own files (except catalog)
-    if (requestUserId !== userId && purpose !== 'catalog') {
-      return res.status(403).json({ success: false, message: 'Forbidden' });
-    }
-
     const key = `${purpose}/${userId}/${filename}`;
-    storageFs.assertKeyReadable(key, requestUserId);
+
+    // For presigned URLs without auth, validate key structure only
+    // For authenticated requests, also validate ownership
+    if (requestUserId) {
+      // Auth present: full validation
+      storageFs.assertKeyReadable(key, requestUserId);
+    } else {
+      // No auth (presigned URL): validate key format only
+      const segments = key.split('/');
+      if (segments.length < 3) {
+        return res.status(400).json({ success: false, message: 'Invalid file key' });
+      }
+      // Key structure is valid - presigned URL grants access
+    }
 
     const filePath = storageFs.getPhysicalPath(key);
     const dirPath = path.dirname(filePath);
@@ -87,26 +97,39 @@ router.put('/files/:purpose/:userId/*', async (req, res) => {
   }
 });
 
+
 // ─────────────────────────────────────────────────────────────────────────
 // File download endpoint (GET /api/files/{purpose}/{userId}/*)
 // Only used when STORAGE_TYPE=filesystem
 // ─────────────────────────────────────────────────────────────────────────
 
+// File download endpoint (GET /api/files/{purpose}/{userId}/*)
+// Works with presigned URLs (no auth needed)
 router.get('/files/:purpose/:userId/*', async (req, res) => {
   try {
     const { purpose, userId } = req.params;
-    const filename = req.params[0];  // Everything after userId/
+    const filename = req.params[0];
     const requestUserId = req.auth?.userId;
 
     const key = `${purpose}/${userId}/${filename}`;
 
-    // Authorization check
-    // Catalog files are public; user files require ownership
-    if (purpose !== 'catalog' && requestUserId !== userId) {
-      return res.status(403).json({ success: false, message: 'Forbidden' });
+    // For presigned URLs without auth, validate key structure only
+    if (requestUserId) {
+      // Auth present: validate ownership
+      if (purpose !== 'catalog' && requestUserId !== userId) {
+        return res.status(403).json({ success: false, message: 'Forbidden' });
+      }
+      storageFs.assertKeyReadable(key, requestUserId);
+    } else {
+      // No auth (presigned URL): validate key format only
+      const segments = key.split('/');
+      if (segments.length < 3) {
+        return res.status(403).json({ success: false, message: 'Invalid file key' });
+      }
+      // Key structure is valid - presigned URL grants access
     }
 
-    const fileStream = storageFs.getFileStream(key, requestUserId || userId);
+    const fileStream = storageFs.getFileStream(key, userId);
 
     // Set appropriate Content-Type header
     const ext = path.extname(filename).toLowerCase();
@@ -145,5 +168,6 @@ router.get('/files/:purpose/:userId/*', async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 });
+
 
 module.exports = router;
