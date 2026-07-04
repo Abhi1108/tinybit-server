@@ -104,6 +104,35 @@ async function listActiveMedicinesForHealthCard(userId) {
   );
 }
 
+const FREQUENCY_LABELS = {
+  once: 'Daily',
+  twice: 'Twice Daily',
+  thrice: 'Three Times Daily',
+  four_times: 'Four Times Daily',
+  as_needed: 'As Needed',
+  weekly: 'Weekly',
+  monthly: 'Monthly',
+};
+
+function resolveMedicineTime(m) {
+  if (m.time) return m.time;
+  if (m.schedule_time === 'Morning') return '8:00 AM';
+  if (m.schedule_time === 'Afternoon') return '12:00 PM';
+  if (m.schedule_time === 'Night' || m.schedule_time === 'Evening') return '8:00 PM';
+  return '';
+}
+
+/** Builds the deterministic health-card ID shown on both the webpage and the PDF. */
+function buildHealthCardId(profileId) {
+  const raw = String(profileId || '').replace(/-/g, '').toUpperCase();
+  return `TBIT-${raw.slice(0, 4)}-${raw.slice(4, 5)}`;
+}
+
+/** "Generated" date shown on both the webpage and the PDF — single canonical format. */
+function formatGeneratedDate(date = new Date()) {
+  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
 async function getPrimaryEmergencyContact(userId) {
   const rows = await query(
     `SELECT name, phone, role
@@ -125,10 +154,8 @@ async function enrichProfileForHealthCard(profile) {
     profile.medications = meds.map((m) => ({
       name: m.name,
       dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
-      time: m.time,
-      schedule_time: m.schedule_time,
-      frequency: m.frequency,
-      timing: m.time || m.schedule_time || m.frequency || '',
+      frequency_label: FREQUENCY_LABELS[m.frequency] ?? m.frequency ?? 'Daily',
+      time: resolveMedicineTime(m),
     }));
   }
 
@@ -149,4 +176,6 @@ module.exports = {
   getOrCreateHealthQrToken,
   findProfileByHealthQrToken,
   enrichProfileForHealthCard,
+  buildHealthCardId,
+  formatGeneratedDate,
 };

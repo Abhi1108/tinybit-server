@@ -25,7 +25,7 @@ function getServerUrl() {
 
 // POST /api/health-card/generate — requires auth
 const generateHealthCardToken = async (req, res) => {
-  const userId = req.supabase?.userId;
+  const userId = req.auth?.userId;
   if (!userId) return res.status(401).json({ success: false, message: 'Not authenticated' });
 
   try {
@@ -62,13 +62,15 @@ const getHealthCard = async (req, res) => {
     }
 
     const enriched = await healthCardService.enrichProfileForHealthCard({ ...profile });
+    const cardId = healthCardService.buildHealthCardId(enriched.id);
+    const generatedDate = healthCardService.formatGeneratedDate();
 
     if (format === 'json') {
       const { health_qr_expires_at, health_qr_token, ...safeData } = enriched;
-      return res.json({ success: true, data: safeData });
+      return res.json({ success: true, data: { ...safeData, card_id: cardId, generated_date: generatedDate } });
     }
 
-    return res.send(renderHealthCardHTML(enriched));
+    return res.send(renderHealthCardHTML(enriched, { cardId, generatedDate }));
   } catch (err) {
     console.error('[health-card] getHealthCard error:', err);
     return res.status(500).send(renderErrorHTML('Server error. Please try again.'));
@@ -121,15 +123,9 @@ const CONDITION_LABELS = {
   others: 'Other',
 };
 
-function formatMedicineTiming(m) {
-  if (m.time?.trim()) return m.time.trim();
-  if (m.schedule_time === 'Morning') return '8:00 AM';
-  if (m.schedule_time === 'Afternoon') return '12:00 PM';
-  if (m.schedule_time === 'Night' || m.schedule_time === 'Evening') return '8:00 PM';
-  return m.frequency || '';
-}
+const LEGAL_POLICY_URL = 'https://tinybit.cloud/privacy-policy/';
 
-function renderHealthCardHTML(p) {
+function renderHealthCardHTML(p, { cardId, generatedDate }) {
   const name = p.full_name
     || [p.first_name, p.last_name].filter(Boolean).join(' ')
     || 'Unknown';
@@ -201,24 +197,16 @@ function renderHealthCardHTML(p) {
         if (typeof m === 'string') {
           return `<div class="med-card"><div class="med-name">${escapeHtml(m)}</div></div>`;
         }
-        const timing = formatMedicineTiming(m);
+        const detail = [m.dosage, m.frequency_label].filter(Boolean).join(' — ');
         return `<div class="med-card">
           <div class="med-main">
             <div class="med-name">${escapeHtml(m.name || '')}</div>
-            <div class="med-detail">${[m.dosage, timing].filter(Boolean).map(escapeHtml).join(' · ')}</div>
+            <div class="med-detail">${escapeHtml(detail)}</div>
           </div>
-          ${timing ? `<div class="med-time">${escapeHtml(timing)}</div>` : ''}
+          ${m.time ? `<div class="med-time">${escapeHtml(m.time)}</div>` : ''}
         </div>`;
       }).join('')
     : `<div class="empty-state">No active medications on file</div>`;
-
-  const doctorBlock = p.doctor_name
-    ? `<div class="doctor-card">
-        <div class="doctor-label">Primary Doctor</div>
-        <div class="doctor-name">${escapeHtml(p.doctor_name)}</div>
-        ${p.doctor_contact ? `<a class="doctor-phone" href="tel:${escapeHtml(p.doctor_contact)}">${escapeHtml(p.doctor_contact)}</a>` : ''}
-      </div>`
-    : '';
 
   const stickyCallBar = p.emergency_phone
     ? `<a class="sticky-call" href="tel:${escapeHtml(p.emergency_phone)}">
@@ -264,6 +252,7 @@ function renderHealthCardHTML(p) {
     }
     .hero-title { font-size: 24px; font-weight: 800; color: #1a2030; }
     .hero-sub { margin-top: 6px; font-size: 13px; color: #6b7a8d; }
+    .hero-meta { display: flex; justify-content: center; gap: 16px; margin-top: 10px; font-size: 11px; color: #9aa5b4; }
     .patient-card {
       margin: 16px; padding: 16px; border: 1px solid #e8edf3; border-radius: 16px;
       display: flex; gap: 12px; align-items: flex-start;
@@ -333,18 +322,15 @@ function renderHealthCardHTML(p) {
       background: #f0f4f8; border-radius: 8px; padding: 8px 12px;
       font-size: 13px; font-weight: 700; color: #1a2030; white-space: nowrap;
     }
-    .doctor-card {
-      margin: 0 16px 16px; padding: 14px; border-radius: 12px; background: #f7f9fc; border: 1px solid #e8edf3;
-    }
-    .doctor-label { font-size: 10px; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; color: #6b7a8d; }
-    .doctor-name { margin-top: 6px; font-size: 15px; font-weight: 700; color: #1a2030; }
-    .doctor-phone { display: inline-block; margin-top: 6px; color: #2563eb; font-weight: 700; text-decoration: none; }
     .empty-state, .empty-inline { font-size: 13px; color: #b0bcc8; font-style: italic; }
     .footer {
       text-align: center; padding: 20px 18px 28px; font-size: 11px; color: #9aa5b4; line-height: 1.7;
       border-top: 1px solid #eef2f7;
     }
-    .footer strong { color: #2563eb; }
+    .footer-brand { font-size: 13px; font-weight: 700; color: #2563eb; margin-bottom: 8px; }
+    .footer-note { margin-bottom: 6px; }
+    .footer-disclaimer { color: #dc2626; margin-bottom: 10px; }
+    .footer-links a { color: #9aa5b4; text-decoration: underline; }
     .sticky-call {
       position: fixed; left: 0; right: 0; bottom: 0;
       display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -369,7 +355,11 @@ function renderHealthCardHTML(p) {
     <div class="hero">
       <div class="hero-badge">Emergency Health Card</div>
       <div class="hero-title">${escapeHtml(name)}</div>
-      <div class="hero-sub">Critical medical information for first responders</div>
+      <div class="hero-sub">Instant access to critical medical information</div>
+      <div class="hero-meta">
+        <span>Generated: ${escapeHtml(generatedDate)}</span>
+        <span>ID: ${escapeHtml(cardId)}</span>
+      </div>
     </div>
 
     <div class="patient-card">
@@ -400,16 +390,23 @@ function renderHealthCardHTML(p) {
       ${emergencyBlock}
     </div>
 
-    ${doctorBlock}
-
     <div class="section">
       <div class="section-kicker">Active Medications</div>
       ${medsBlock}
     </div>
 
     <div class="footer">
-      <strong>TinyBit Health</strong><br>
-      Self-reported data for emergency use only. Always consult a medical professional.
+      <div class="footer-brand">Generated by TinyBit</div>
+      <div class="footer-note">
+        Privacy protected note: This document contains sensitive medical information.
+        Only share with authorized emergency personnel.
+      </div>
+      <div class="footer-disclaimer">
+        Emergency use disclaimer: TinyBit is an information system and does not provide medical advice.
+      </div>
+      <div class="footer-links">
+        <a href="${LEGAL_POLICY_URL}">Privacy Policy</a> &nbsp;|&nbsp; <a href="${LEGAL_POLICY_URL}">Terms of Service</a>
+      </div>
     </div>
   </div>
   ${stickyCallBar}
@@ -454,7 +451,7 @@ function renderErrorHTML(message) {
 // GET /api/health-card/qr — auth required
 // Returns the QR as a base64 PNG data URL, auto-generating a token if needed
 const getHealthCardQR = async (req, res) => {
-  const userId = req.supabase?.userId;
+  const userId = req.auth?.userId;
   if (!userId) return res.status(401).json({ success: false, message: 'Not authenticated' });
 
   try {

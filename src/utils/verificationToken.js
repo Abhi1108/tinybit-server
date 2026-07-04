@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const TOKEN_TTL_MS = 15 * 60 * 1000;
 
 function getSecret() {
-  return process.env.OTP_TOKEN_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev-otp-secret';
+  return process.env.OTP_TOKEN_SECRET || process.env.JWT_SECRET || 'dev-otp-secret';
 }
 
 function signVerificationToken({ phone, countryCode }) {

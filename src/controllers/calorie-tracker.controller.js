@@ -10,7 +10,7 @@ function isTableMissing(error) {
 }
 
 function resolveUserId(req) {
-  return req.auth?.userId ?? req.supabase?.userId ?? null;
+  return req.auth?.userId ?? null;
 }
 
 function handleError(res, err, fallbackMessage) {

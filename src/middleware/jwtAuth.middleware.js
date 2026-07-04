@@ -28,7 +28,6 @@ function requireJwtAuth(req, res, next) {
       email: payload.email,
     };
     req.auth = auth;
-    req.supabase = auth;
     touchLastActiveSafe(auth.userId);
     return next();
   } catch (_error) {
