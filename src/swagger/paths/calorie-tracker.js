@@ -66,6 +66,8 @@
  *                     protein_g: { type: integer }
  *                     carbs_g: { type: integer }
  *                     fat_g: { type: integer }
+ *                     diet_type: { type: string, nullable: true }
+ *                     activity_level: { type: string, nullable: true }
  *       401:
  *         description: Unauthorized
  *   patch:
@@ -84,9 +86,17 @@
  *               protein_g: { type: integer }
  *               carbs_g: { type: integer }
  *               fat_g: { type: integer }
+ *               diet_type:
+ *                 type: string
+ *                 enum: [balanced, diabetic, heart-healthy, high-protein, vegetarian, low-sodium, weight-loss]
+ *               activity_level:
+ *                 type: string
+ *                 enum: [sedentary, light, moderate, active, very-active]
  *     responses:
  *       200:
  *         description: Updated goal
+ *       400:
+ *         description: Invalid diet_type or activity_level
  *       401:
  *         description: Unauthorized
  *

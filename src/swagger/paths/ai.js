@@ -252,6 +252,45 @@
  *       400:
  *         description: Invalid meal_type
  *
+ * /api/ai/suggest-calorie-goal:
+ *   post:
+ *     tags: [AI]
+ *     summary: AI-suggested daily calorie/macro goal for the Calorie Tracker "My Goals" tab
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               context:
+ *                 type: string
+ *                 description: User health context (age, weight, height, medical conditions, etc.)
+ *     responses:
+ *       200:
+ *         description: Suggested goal
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     daily_calories: { type: integer }
+ *                     protein_g: { type: integer }
+ *                     carbs_g: { type: integer }
+ *                     fat_g: { type: integer }
+ *                     diet_type: { type: string }
+ *                     activity_level: { type: string }
+ *                     reasoning: { type: string }
+ *                 provider:
+ *                   type: string
+ *
  * /api/ai/suggest-clothing:
  *   post:
  *     tags: [AI]

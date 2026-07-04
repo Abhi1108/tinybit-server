@@ -3,6 +3,8 @@ const { query, execute } = require('../config/mysql');
 
 const DEFAULT_GOAL = { daily_calories: 2000, protein_g: 60, carbs_g: 250, fat_g: 65 };
 const MEAL_TYPES = new Set(['breakfast', 'lunch', 'dinner', 'snack']);
+const DIET_TYPES = new Set(['balanced', 'diabetic', 'heart-healthy', 'high-protein', 'vegetarian', 'low-sodium', 'weight-loss']);
+const ACTIVITY_LEVELS = new Set(['sedentary', 'light', 'moderate', 'active', 'very-active']);
 
 function parseJson(value) {
   if (value == null) return value;
@@ -31,6 +33,8 @@ function mapGoalRow(row) {
     protein_g: Number(row.protein_g),
     carbs_g: Number(row.carbs_g),
     fat_g: Number(row.fat_g),
+    diet_type: row.diet_type,
+    activity_level: row.activity_level,
     updated_at: toIsoString(row.updated_at),
   };
 }
@@ -77,10 +81,30 @@ async function getGoal(userId) {
 async function updateGoal(userId, patch) {
   await getGoal(userId); // ensure a row exists
 
-  const fields = ['daily_calories', 'protein_g', 'carbs_g', 'fat_g'];
-  const entries = fields
+  const numericFields = ['daily_calories', 'protein_g', 'carbs_g', 'fat_g'];
+  const entries = numericFields
     .filter((f) => patch[f] !== undefined)
     .map((f) => [f, Number(patch[f])]);
+
+  if (patch.diet_type !== undefined) {
+    const value = patch.diet_type === null ? null : String(patch.diet_type).toLowerCase();
+    if (value !== null && !DIET_TYPES.has(value)) {
+      const err = new Error(`diet_type must be one of: ${[...DIET_TYPES].join(', ')}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    entries.push(['diet_type', value]);
+  }
+
+  if (patch.activity_level !== undefined) {
+    const value = patch.activity_level === null ? null : String(patch.activity_level).toLowerCase();
+    if (value !== null && !ACTIVITY_LEVELS.has(value)) {
+      const err = new Error(`activity_level must be one of: ${[...ACTIVITY_LEVELS].join(', ')}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    entries.push(['activity_level', value]);
+  }
 
   if (entries.length === 0) return getGoal(userId);
 

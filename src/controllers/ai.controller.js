@@ -658,9 +658,11 @@ Respond with ONLY valid JSON (no markdown, no extra text) using this exact struc
       "protein": <grams of protein as number>,
       "carbohydrates": <grams of carbs as number>,
       "fat": <grams of fat as number>,
+      "prepTimeMinutes": <estimated integer minutes to prepare>,
+      "tags": ["<e.g. Diabetic-friendly, Heart-healthy, High-protein>"],
       "ingredients": ["<ingredient 1>", "<ingredient 2>"],
       "instructions": ["<step 1>", "<step 2>"],
-      "healthNotes": "<short note on why this suits the user>"
+      "healthNotes": "<1-2 sentence description of the dish and why it suits the user>"
     }
   ]
 }`;
@@ -694,4 +696,56 @@ Respond with ONLY valid JSON (no markdown, no extra text) using this exact struc
   }
 };
 
-module.exports = { getChatHistory, clearChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti, suggestMeal };
+// ═══════════════════════════════════════════════════════════════════════════════
+// 10. SUGGEST CALORIE GOAL — Gemini (Calorie Tracker "My Goals" → AI Suggest)
+// ═══════════════════════════════════════════════════════════════════════════════
+const suggestCalorieGoal = async (req, res) => {
+  try {
+    const { context } = req.body || {};
+
+    const prompt = `You are a certified nutrition expert AI suggesting a daily calorie and macro goal for an elderly user, based on their health profile.
+
+USER CONTEXT:
+${context ?? 'No context provided.'}
+
+Respond with ONLY valid JSON (no markdown, no extra text) using this exact structure:
+{
+  "daily_calories": <calculated integer>,
+  "protein_g": <grams of protein as integer>,
+  "carbs_g": <grams of carbs as integer>,
+  "fat_g": <grams of fat as integer>,
+  "diet_type": "<one of: balanced, diabetic, heart-healthy, high-protein, vegetarian, low-sodium, weight-loss>",
+  "activity_level": "<one of: sedentary, light, moderate, active, very-active>",
+  "reasoning": "<1-2 sentence explanation tailored for an elderly user>"
+}`;
+
+    try {
+      const geminiResp = await geminiFetch(GEMINI_MODEL_TEXT, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 400, temperature: 0.4 },
+      }, 15_000);
+
+      if (geminiResp.ok) {
+        const json = await geminiResp.json();
+        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
+        try {
+          const result = JSON.parse(content);
+          return res.json({ success: true, data: result, provider: 'gemini' });
+        } catch {
+          return res.status(502).json({ success: false, message: 'Could not parse goal suggestion. Please try again.' });
+        }
+      }
+
+      const errBody = await geminiResp.text();
+      console.warn('[suggestCalorieGoal] Gemini error:', geminiResp.status, errBody);
+      return res.status(502).json({ success: false, message: 'Goal suggestion is currently unavailable.', detail: errBody });
+    } catch (geminiErr) {
+      console.warn('[suggestCalorieGoal] Gemini failed:', geminiErr.message);
+      return res.status(502).json({ success: false, message: 'Goal suggestion is currently unavailable.' });
+    }
+  } catch (error) {
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+  }
+};
+
+module.exports = { getChatHistory, clearChatHistory, chat, transcribe, analyzeReport, analyzeFood, suggestClothing, wellnessSummary, healthForecast, healthForecastMulti, suggestMeal, suggestCalorieGoal };

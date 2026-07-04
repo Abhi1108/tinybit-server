@@ -14,6 +14,7 @@ const {
   healthForecast,
   healthForecastMulti,
   suggestMeal,
+  suggestCalorieGoal,
 } = require('../controllers/ai.controller');
 
 // Sathi AI core
@@ -32,5 +33,6 @@ router.post('/wellness-summary',requireJwtAuth, wellnessSummary);   // Wellness 
 router.post('/health-forecast',       requireJwtAuth, healthForecast);       // Single record AI insights
 router.post('/health-forecast-multi', requireJwtAuth, healthForecastMulti);  // Multi-record trend analysis
 router.post('/suggest-meal',    requireJwtAuth, suggestMeal);       // Calorie Tracker "Eat Next" AI suggestions
+router.post('/suggest-calorie-goal', requireJwtAuth, suggestCalorieGoal); // Calorie Tracker "My Goals" AI suggestion
 
 module.exports = router;
