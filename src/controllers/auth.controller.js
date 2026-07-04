@@ -9,7 +9,10 @@ const {
   revokeRefreshToken,
   refreshSessionFromToken,
   findOrCreateByGoogle,
+  isProfileDeleted,
 } = require('../services/auth-users.service');
+
+const DEACTIVATED_MESSAGE = 'This account has been deactivated.';
 const {
   upsertProfile,
   getProfileById,
@@ -57,6 +60,10 @@ async function login(req, res) {
         message: 'Invalid password or account not found',
         code: 'AUTH_FAILED',
       });
+    }
+
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
     }
 
     const session = await issueSession(user);
@@ -149,6 +156,9 @@ async function refreshSession(req, res) {
     });
   } catch (err) {
     console.error('[auth/refresh] FAIL - error:', err.message || err);
+    if (err.status === 403) {
+      return res.status(403).json({ success: false, message: err.message });
+    }
     const status = err.status === 401 ? 401 : 500;
     return res.status(status).json({ success: false, message: 'Session refresh failed' });
   }
@@ -259,6 +269,10 @@ async function googleAuth(req, res) {
       });
     }
 
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+    }
+
     const session = await issueSession(user);
 
     return res.json({
@@ -345,6 +359,10 @@ async function phoneAuth(req, res) {
       });
     }
 
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+    }
+
     const session = await issueSession(user);
 
     return res.json({
@@ -358,11 +376,11 @@ async function phoneAuth(req, res) {
   }
 }
 
-/** PATCH /api/auth/profile — upsert onboarding / profile fields (service role, no Supabase JWT on client). */
+/** PATCH /api/auth/profile — upsert onboarding / profile fields (custom JWT auth, no client-side DB access). */
 async function updateProfile(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
-    const email = req.auth?.email ?? req.supabase?.email;
+    const userId = req.auth?.userId;
+    const email = req.auth?.email;
     const body = req.body ?? {};
 
     const allowed = [
@@ -413,13 +431,6 @@ async function updateProfile(req, res) {
       data = await saveProfile(userId, email, patch);
     } catch (error) {
       console.error('[auth/profile] upsert error:', error.message);
-      if (error.code === '23503' && /profiles_id_fkey/i.test(error.message ?? '')) {
-        return res.status(500).json({
-          success: false,
-          message:
-            'Database setup incomplete: profiles must reference app_users. Run migration 010_app_users_jwt.sql in Supabase.',
-        });
-      }
       if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.errno === 1452) {
         return res.status(500).json({
           success: false,
@@ -440,8 +451,8 @@ async function updateProfile(req, res) {
 /** GET /api/auth/me */
 async function getMe(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
-    const email = req.auth?.email ?? req.supabase?.email;
+    const userId = req.auth?.userId;
+    const email = req.auth?.email;
 
     let profile;
     try {

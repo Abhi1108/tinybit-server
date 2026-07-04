@@ -8,7 +8,7 @@ const {
   serveDashboard,
   getStats, getAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
-  banUser, deleteUser,
+  banUser, deleteUser, restoreUser, purgeUser,
   getConnections, updateConnection, deleteConnection,
   getMedicines,
   getCheckIns,
@@ -53,9 +53,11 @@ const sessionAuth = (req, res, next) => {
   if (!auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  if (!checkSession(auth.slice(7))) {
+  const payload = checkSession(auth.slice(7));
+  if (!payload) {
     return res.status(401).json({ error: 'Session expired. Please log in again.' });
   }
+  req.admin = payload;
   return next();
 };
 
@@ -75,6 +77,8 @@ router.get('/api/users/:id', sessionAuth, getUserById);
 router.patch('/api/users/:id', sessionAuth, updateUser);
 router.patch('/api/users/:id/ban', sessionAuth, banUser);
 router.delete('/api/users/:id', sessionAuth, deleteUser);
+router.patch('/api/users/:id/restore', sessionAuth, restoreUser);
+router.delete('/api/users/:id/purge', sessionAuth, purgeUser);
 
 router.get('/api/connections', sessionAuth, getConnections);
 router.patch('/api/connections/:id', sessionAuth, updateConnection);

@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   other_condition      TEXT          NULL,
   doctor_name          VARCHAR(255)  NULL,
   doctor_contact       VARCHAR(64)   NULL,
+  deleted_at           DATETIME(3)   NULL,
+  deleted_by           VARCHAR(255)  NULL,
   created_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uq_profiles_email (email),
@@ -132,6 +134,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   KEY idx_profiles_mobile (mobile),
   KEY idx_profiles_is_banned (is_banned),
   KEY idx_profiles_created_at (created_at),
+  KEY idx_profiles_deleted_at (deleted_at),
   CONSTRAINT chk_profiles_role
     CHECK (role IN ('elder', 'guardian', 'caregiver', 'admin')),
   CONSTRAINT fk_profiles_app_user
@@ -664,6 +667,23 @@ CREATE TABLE IF NOT EXISTS notifications (
   KEY idx_notifications_type (type),
   CONSTRAINT fk_notifications_user
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Admin audit log
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  actor       VARCHAR(255) NOT NULL,
+  action      VARCHAR(64)  NOT NULL,
+  target_type VARCHAR(32)  NOT NULL,
+  target_id   CHAR(36)     NULL,
+  details     JSON         NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_admin_audit_log_target (target_type, target_id),
+  KEY idx_admin_audit_log_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------

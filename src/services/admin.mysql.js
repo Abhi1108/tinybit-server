@@ -31,6 +31,7 @@ function normalizeProfile(row) {
     health_qr_expires_at: toIso(row.health_qr_expires_at),
     plan_started_at: toIso(row.plan_started_at),
     plan_expires_at: toIso(row.plan_expires_at),
+    deleted_at: toIso(row.deleted_at),
   };
 }
 
@@ -205,9 +206,16 @@ async function getAnalytics() {
   };
 }
 
-function buildUserFilters({ role, search, status }) {
+function buildUserFilters({ role, search, status, deleted }) {
   const clauses = [];
   const params = [];
+
+  if (deleted === 'only') {
+    clauses.push('deleted_at IS NOT NULL');
+  } else if (deleted !== 'include') {
+    // Default: hide trashed users from every existing listing/export caller.
+    clauses.push('deleted_at IS NULL');
+  }
 
   if (role) {
     clauses.push('role = ?');
@@ -229,18 +237,18 @@ function buildUserFilters({ role, search, status }) {
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
-async function getUsers({ role, search, status, page, limit }) {
+async function getUsers({ role, search, status, page, limit, deleted }) {
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
 
-  const { where, params } = buildUserFilters({ role, search, status });
+  const { where, params } = buildUserFilters({ role, search, status, deleted });
 
   const [totalRows, rows] = await Promise.all([
     query(`SELECT COUNT(*) AS cnt FROM profiles WHERE ${where}`, params),
     query(
       `SELECT id, full_name, email, mobile, role, country, age, biological_sex,
-              is_banned, last_active, created_at
+              is_banned, last_active, created_at, deleted_at, deleted_by
        FROM profiles
        WHERE ${where}
        ORDER BY created_at DESC
@@ -412,6 +420,42 @@ async function deleteProfile(id) {
     err.status = 404;
     throw err;
   }
+}
+
+// Deletion state is a dedicated action (its own audited endpoint), not a generic
+// admin-editable field — deliberately NOT routed through PROFILE_COLUMNS/updateProfile
+// so a stray PATCH body can never silently trash/restore a user outside the audit trail.
+async function softDeleteProfile(id, actor) {
+  const result = await execute(
+    `UPDATE profiles SET deleted_at = CURRENT_TIMESTAMP(3), deleted_by = ?
+     WHERE id = ? AND deleted_at IS NULL`,
+    [actor, id],
+  );
+  if (result.affectedRows === 0) {
+    const err = new Error('User not found or already deleted');
+    err.status = 404;
+    throw err;
+  }
+  return getProfileById(id);
+}
+
+async function restoreProfile(id) {
+  const result = await execute(
+    `UPDATE profiles SET deleted_at = NULL, deleted_by = NULL
+     WHERE id = ? AND deleted_at IS NOT NULL`,
+    [id],
+  );
+  if (result.affectedRows === 0) {
+    const err = new Error('User not found or not in trash');
+    err.status = 404;
+    throw err;
+  }
+  return getProfileById(id);
+}
+
+async function getDeletedProfile(id) {
+  const rows = await query('SELECT id, deleted_at FROM profiles WHERE id = ? LIMIT 1', [id]);
+  return rows[0] ?? null;
 }
 
 async function getConnections({ status, page, limit, search }) {
@@ -770,6 +814,9 @@ module.exports = {
   upsertProfile,
   updateProfile,
   deleteProfile,
+  softDeleteProfile,
+  restoreProfile,
+  getDeletedProfile,
   getConnections,
   updateConnection,
   deleteConnection,

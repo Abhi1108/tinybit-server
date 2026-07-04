@@ -3,12 +3,13 @@ const jwt = require('jsonwebtoken');
 const { toE164, phoneToAuthEmail } = require('../utils/phone');
 const {
   createUserWithPassword,
-  deleteAppUser,
   findAppUserById,
   findByPhone,
   findOrCreateByPhone,
 } = require('../services/auth-users.service');
 const adminService = require('../services/admin.service');
+const auditService = require('../services/admin-audit.mysql');
+const { purgeUserById } = require('../services/user-purge.service');
 
 const ADMIN_JWT_AUD = 'tinybit-admin';
 const ADMIN_SESSION_TTL = '24h';
@@ -37,10 +38,9 @@ const PROFILE_PATCH_FIELDS = [
 
 const checkSession = (token) => {
   try {
-    jwt.verify(token, getAdminJwtSecret(), { audience: ADMIN_JWT_AUD });
-    return true;
+    return jwt.verify(token, getAdminJwtSecret(), { audience: ADMIN_JWT_AUD });
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -82,10 +82,10 @@ const getAnalytics = async (req, res) => {
 // ── Users ───────────────────────────────────────────────────────────────────
 
 const getUsers = async (req, res) => {
-  const { role, search, status, page = '1', limit = '20' } = req.query;
+  const { role, search, status, page = '1', limit = '20', deleted } = req.query;
 
   try {
-    const result = await adminService.getUsers({ role, search, status, page, limit });
+    const result = await adminService.getUsers({ role, search, status, page, limit, deleted });
     return res.json({ success: true, ...result });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -265,15 +265,42 @@ const banUser = async (req, res) => {
 
 const deleteUser = async (req, res) => {
   const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
   try {
-    const appUser = await findAppUserById(id);
-    if (appUser) {
-      await deleteAppUser(id);
-      return res.json({ success: true });
+    await adminService.softDeleteProfile(id, actor);
+    await auditService.recordSafe({ actor, action: 'user.trash', targetType: 'user', targetId: id });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const restoreUser = async (req, res) => {
+  const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
+  try {
+    await adminService.restoreProfile(id);
+    await auditService.recordSafe({ actor, action: 'user.restore', targetType: 'user', targetId: id });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const purgeUser = async (req, res) => {
+  const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
+  try {
+    const trashed = await adminService.getDeletedProfile(id);
+    if (!trashed) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    if (!trashed.deleted_at) {
+      return res.status(409).json({ success: false, error: 'User must be moved to trash before it can be purged' });
     }
 
-    await adminService.deleteProfile(id);
-    return res.json({ success: true });
+    const result = await purgeUserById(id, actor);
+    return res.json({ success: true, deletedObjectCount: result.deletedObjectCount, s3Failures: result.s3Failures });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
   }
@@ -553,7 +580,7 @@ module.exports = {
   serveDashboard,
   getStats, getAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
-  banUser, deleteUser,
+  banUser, deleteUser, restoreUser, purgeUser,
   getConnections, updateConnection, deleteConnection,
   getMedicines,
   getCheckIns,
