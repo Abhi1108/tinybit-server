@@ -294,6 +294,58 @@ CREATE TABLE IF NOT EXISTS medicine_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- Calorie Tracker
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS calorie_goals (
+  id             CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id        CHAR(36)     NOT NULL,
+  daily_calories INT          NOT NULL DEFAULT 2000,
+  protein_g      INT          NOT NULL DEFAULT 60,
+  carbs_g        INT          NOT NULL DEFAULT 250,
+  fat_g          INT          NOT NULL DEFAULT 65,
+  diet_type      VARCHAR(24)  NULL,
+  activity_level VARCHAR(24)  NULL,
+  created_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_calorie_goals_user (user_id),
+  CONSTRAINT fk_calorie_goals_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS meal_logs (
+  id            CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id       CHAR(36)     NOT NULL,
+  meal_type     VARCHAR(16)  NOT NULL,
+  food_items    JSON         NULL,
+  calories      INT          NOT NULL DEFAULT 0,
+  protein_g     DECIMAL(6,1) NULL,
+  carbs_g       DECIMAL(6,1) NULL,
+  fat_g         DECIMAL(6,1) NULL,
+  fiber_g       DECIMAL(6,1) NULL,
+  sugar_g       DECIMAL(6,1) NULL,
+  sodium_mg     DECIMAL(7,1) NULL,
+  vitamins      JSON         NULL,
+  minerals      JSON         NULL,
+  health_score  INT          NULL,
+  health_rating VARCHAR(16)  NULL,
+  portion_size  VARCHAR(16)  NULL,
+  serving_info  VARCHAR(128) NULL,
+  image_url     TEXT         NULL,
+  logged_at     DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  logged_date   DATE         GENERATED ALWAYS AS (DATE(logged_at)) STORED,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_meal_logs_user_date (user_id, logged_date),
+  KEY idx_meal_logs_user (user_id, logged_at DESC),
+  CONSTRAINT fk_meal_logs_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE,
+  CONSTRAINT chk_meal_logs_type
+    CHECK (meal_type IN ('breakfast', 'lunch', 'dinner', 'snack'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- Wellness & vitals
 -- -----------------------------------------------------------------------------
 
@@ -423,7 +475,7 @@ CREATE TABLE IF NOT EXISTS care_events (
   KEY idx_care_events_user_ts (user_id, timestamp),
   KEY idx_care_events_user_date (user_id, year, month, date),
   CONSTRAINT chk_care_events_type
-    CHECK (`type` IN ('Doctor', 'Family', 'Medicine', 'Wellness')),
+    CHECK (`type` IN ('Doctor', 'Family', 'Therapy', 'Activity', 'Medicine', 'Wellness')),
   CONSTRAINT fk_care_events_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -488,13 +540,15 @@ CREATE TABLE IF NOT EXISTS ai_conversations (
 CREATE TABLE IF NOT EXISTS mood_media_tracks (
   id               CHAR(36)     NOT NULL DEFAULT (UUID()),
   category         VARCHAR(32)  NOT NULL,
+  media_type       ENUM('audio', 'video', 'youtube') NOT NULL DEFAULT 'audio',
   title            VARCHAR(255) NOT NULL,
   subtitle         VARCHAR(255) NULL,
   duration_seconds INT          NULL,
   duration_label   VARCHAR(32)  NULL,
   icon_name        VARCHAR(64)  NULL,
   icon_url         TEXT         NULL,
-  audio_url        TEXT         NOT NULL,
+  audio_url        TEXT         NULL,
+  media_url        TEXT         NULL,
   sort_order       INT          NOT NULL DEFAULT 0,
   is_active        TINYINT(1)   NOT NULL DEFAULT 1,
   created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -505,7 +559,12 @@ CREATE TABLE IF NOT EXISTS mood_media_tracks (
   CONSTRAINT chk_mood_media_category
     CHECK (category IN ('bhajans', 'meditation', 'jokes_fun', 'nature_sounds')),
   CONSTRAINT chk_mood_media_duration
-    CHECK (duration_seconds IS NULL OR duration_seconds > 0)
+    CHECK (duration_seconds IS NULL OR duration_seconds > 0),
+  CONSTRAINT chk_mood_media_url_by_type
+    CHECK (
+      (media_type = 'audio' AND audio_url IS NOT NULL) OR
+      (media_type IN ('video', 'youtube') AND media_url IS NOT NULL)
+    )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS mood_media_favorites (
@@ -525,16 +584,19 @@ CREATE TABLE IF NOT EXISTS mood_media_favorites (
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS mind_games_scores (
-  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
-  user_id    CHAR(36)     NOT NULL,
-  game_type  VARCHAR(64)  NOT NULL,
-  score      INT          NOT NULL DEFAULT 0,
-  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  id               CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id          CHAR(36)     NOT NULL,
+  game_type        VARCHAR(64)  NOT NULL,
+  score            INT          NOT NULL DEFAULT 0,
+  duration_seconds INT          NOT NULL DEFAULT 0,
+  created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_mind_games_user_created (user_id, created_at DESC),
   KEY idx_mind_games_score (score DESC),
   CONSTRAINT chk_mind_games_score
     CHECK (score >= 0),
+  CONSTRAINT chk_mind_games_duration
+    CHECK (duration_seconds >= 0),
   CONSTRAINT fk_mind_games_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -598,6 +660,10 @@ CREATE TABLE IF NOT EXISTS doctors (
   specialty   VARCHAR(128)  NOT NULL,
   rating      DECIMAL(2,1)  NOT NULL DEFAULT 4.5,
   experience  VARCHAR(64)   NOT NULL,
+  hospital    VARCHAR(255)  NULL,
+  phone       VARCHAR(32)   NULL,
+  email       VARCHAR(255)  NULL,
+  about       TEXT          NULL,
   fee         VARCHAR(32)   NOT NULL,
   address     TEXT          NULL,
   image_url   TEXT          NULL,
@@ -615,7 +681,7 @@ CREATE TABLE IF NOT EXISTS doctors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 27 tables
+-- End of schema — 29 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
 -- profiles, guardian_elder_links, user_settings, elder_locations
