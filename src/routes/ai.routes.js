@@ -3,21 +3,25 @@ const router = express.Router();
 
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
+  getChatHistory,
+  clearChatHistory,
   chat,
   transcribe,
-  tts,
   analyzeReport,
   analyzeFood,
   suggestClothing,
   wellnessSummary,
   healthForecast,
   healthForecastMulti,
+  suggestMeal,
+  suggestCalorieGoal,
 } = require('../controllers/ai.controller');
 
 // Sathi AI core
+router.get('/chat',             requireJwtAuth, getChatHistory);
 router.post('/chat',            requireJwtAuth, chat);
+router.delete('/chat',          requireJwtAuth, clearChatHistory);
 router.post('/transcribe',      requireJwtAuth, transcribe);
-router.post('/tts',             requireJwtAuth, tts);
 
 // Health document analysis
 router.post('/analyze-report',  requireJwtAuth, analyzeReport);
@@ -28,5 +32,7 @@ router.post('/suggest-clothing',requireJwtAuth, suggestClothing);   // Weather A
 router.post('/wellness-summary',requireJwtAuth, wellnessSummary);   // Wellness log AI summary
 router.post('/health-forecast',       requireJwtAuth, healthForecast);       // Single record AI insights
 router.post('/health-forecast-multi', requireJwtAuth, healthForecastMulti);  // Multi-record trend analysis
+router.post('/suggest-meal',    requireJwtAuth, suggestMeal);       // Calorie Tracker "Eat Next" AI suggestions
+router.post('/suggest-calorie-goal', requireJwtAuth, suggestCalorieGoal); // Calorie Tracker "My Goals" AI suggestion
 
 module.exports = router;

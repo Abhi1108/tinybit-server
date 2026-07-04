@@ -5,7 +5,7 @@ const jwksClient = require('jwks-rsa');
 let jwks = null;
 
 /** Mobile app Firebase project (google-services.json → project_info.project_id). */
-const EXPECTED_FIREBASE_PROJECT_ID = process.env.EXPECTED_FIREBASE_PROJECT_ID || 'tinybit-eldercare';
+const EXPECTED_FIREBASE_PROJECT_ID = process.env.EXPECTED_FIREBASE_PROJECT_ID || 'tinybit-d52e3';
 
 /** JWKS endpoint for Firebase securetoken public keys (more reliable than x509 on Vercel). */
 const FIREBASE_JWKS_URI =

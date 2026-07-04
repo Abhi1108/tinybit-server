@@ -1,9 +1,15 @@
-const { supabaseClient } = require('../config/supabase');
+const emergencyContactsService = require('../services/emergency-contacts.service');
+const sosService = require('../services/sos.service');
 
 const DEFAULT_COLOR = '#F0F4FF';
 
 function isTableMissing(error) {
-  return error?.code === '42P01' || error?.code === 'PGRST205';
+  return (
+    error?.code === '42P01'
+    || error?.code === 'PGRST205'
+    || error?.code === 'ER_NO_SUCH_TABLE'
+    || error?.errno === 1146
+  );
 }
 
 function readBody(req) {
@@ -18,27 +24,17 @@ async function listEmergencyContacts(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('emergency_contacts')
-      .select('id, name, role, phone, color')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: true });
-
-    if (error) {
-      console.error('[sos/emergency-contacts] list:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not load emergency contacts.' });
-    }
-
-    return res.json({ success: true, contacts: data ?? [] });
+    const contacts = await emergencyContactsService.listByUserId(userId);
+    return res.json({ success: true, contacts });
   } catch (err) {
-    console.error('[sos/emergency-contacts] list', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not load emergency contacts.' });
+    console.error('[sos/emergency-contacts] list:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
+      });
+    }
+    return res.status(500).json({ success: false, message: 'Could not load emergency contacts.' });
   }
 }
 
@@ -63,33 +59,17 @@ async function createEmergencyContact(req, res) {
       return res.status(400).json({ success: false, message: 'Phone number is required.' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('emergency_contacts')
-      .insert({
-        user_id: userId,
-        name,
-        role,
-        phone,
-        color,
-      })
-      .select('id, name, role, phone, color')
-      .single();
-
-    if (error) {
-      console.error('[sos/emergency-contacts] insert:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not save emergency contact.' });
-    }
-
-    return res.json({ success: true, contact: data });
+    const contact = await emergencyContactsService.create(userId, { name, role, phone, color });
+    return res.json({ success: true, contact });
   } catch (err) {
-    console.error('[sos/emergency-contacts] create', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not save emergency contact.' });
+    console.error('[sos/emergency-contacts] insert:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
+      });
+    }
+    return res.status(500).json({ success: false, message: 'Could not save emergency contact.' });
   }
 }
 
@@ -116,33 +96,22 @@ async function updateEmergencyContact(req, res) {
       return res.status(400).json({ success: false, message: 'No fields to update.' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('emergency_contacts')
-      .update(patch)
-      .eq('id', contactId)
-      .eq('user_id', userId)
-      .select('id, name, role, phone, color')
-      .single();
+    const contact = await emergencyContactsService.update(userId, contactId, patch);
 
-    if (error) {
-      console.error('[sos/emergency-contacts] update:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not update emergency contact.' });
-    }
-
-    if (!data) {
+    if (!contact) {
       return res.status(404).json({ success: false, message: 'Emergency contact not found.' });
     }
 
-    return res.json({ success: true, contact: data });
+    return res.json({ success: true, contact });
   } catch (err) {
-    console.error('[sos/emergency-contacts] update', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not update emergency contact.' });
+    console.error('[sos/emergency-contacts] update:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
+      });
+    }
+    return res.status(500).json({ success: false, message: 'Could not update emergency contact.' });
   }
 }
 
@@ -155,33 +124,22 @@ async function deleteEmergencyContact(req, res) {
     }
 
     const contactId = req.params.id;
-    const { data, error } = await supabaseClient
-      .from('emergency_contacts')
-      .delete()
-      .eq('id', contactId)
-      .eq('user_id', userId)
-      .select('id')
-      .single();
+    const deleted = await emergencyContactsService.remove(userId, contactId);
 
-    if (error) {
-      console.error('[sos/emergency-contacts] delete:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not delete emergency contact.' });
-    }
-
-    if (!data) {
+    if (!deleted) {
       return res.status(404).json({ success: false, message: 'Emergency contact not found.' });
     }
 
     return res.json({ success: true });
   } catch (err) {
-    console.error('[sos/emergency-contacts] delete', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not delete emergency contact.' });
+    console.error('[sos/emergency-contacts] delete:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'emergency_contacts table is not deployed. Run migration 055_emergency_contacts.sql.',
+      });
+    }
+    return res.status(500).json({ success: false, message: 'Could not delete emergency contact.' });
   }
 }
 
@@ -190,21 +148,18 @@ async function triggerSos(req, res) {
   try {
     const userId = req.auth.userId;
 
-    const { data: profile, error: profileErr } = await supabaseClient
-      .from('profiles')
-      .select('full_name, emergency_name, emergency_phone, mobile')
-      .eq('id', userId)
-      .single();
-
-    if (profileErr) {
-      console.error('[sos/trigger] profile:', profileErr.message);
+    const profile = await sosService.getProfileForTrigger(userId);
+    if (!profile) {
       return res.status(500).json({ success: false, message: 'Could not load profile' });
     }
+
+    const alert = await sosService.createAlert(userId);
 
     const elderName = profile.full_name || profile.emergency_name || 'A TinyBit user';
 
     console.log('[sos/trigger]', {
       userId,
+      alertId: alert.id,
       elderName,
       emergency_phone: profile.emergency_phone ?? null,
       channel: 'call-only',
@@ -215,7 +170,7 @@ async function triggerSos(req, res) {
       message: 'SOS logged. Use the dialer to call your emergency contact.',
     });
   } catch (err) {
-    console.error('[sos/trigger]', err);
+    console.error('[sos/trigger]', err.message || err);
     return res.status(500).json({ success: false, message: err.message || 'SOS trigger failed' });
   }
 }

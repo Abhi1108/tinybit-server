@@ -1,99 +1,81 @@
-const { supabaseClient } = require('../config/supabase');
+const medicinesService = require('../services/medicines.service');
+const medicineLogsService = require('../services/medicine-logs.service');
 
 function isTableMissing(error) {
-  return error?.code === '42P01' || error?.code === 'PGRST205';
+  return (
+    error?.code === '42P01'
+    || error?.code === 'PGRST205'
+    || error?.code === 'ER_NO_SUCH_TABLE'
+    || error?.errno === 1146
+  );
 }
 
 function readBody(req) {
   return req.body ?? {};
 }
 
-const MEDICINE_COLUMNS = [
-  'id', 'user_id', 'name', 'generic_name', 'dosage', 'dosage_unit',
-  'schedule_time', 'time', 'days_of_week', 'instruction', 'notes',
-  'prescribed_by', 'frequency', 'start_date', 'end_date', 'is_recurring',
-  'priority', 'category', 'stock', 'total_stock', 'is_active',
-  'snooze_minutes', 'meal_timing', 'created_at',
-].join(', ');
+function resolveUserId(req) {
+  return req.auth?.userId ?? req.supabase?.userId ?? null;
+}
 
 /** GET /api/medicines */
 async function listMedicines(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
     const activeOnly = String(req.query.active ?? 'true').toLowerCase() !== 'false';
+    const medicines = await medicinesService.listByUser(userId, { activeOnly });
 
-    let query = supabaseClient
-      .from('medicines')
-      .select(MEDICINE_COLUMNS)
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-
-    if (activeOnly) {
-      query = query.eq('is_active', true);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('[medicines] list:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'medicines table is not deployed.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not load medicines.' });
-    }
-
-    return res.json({ success: true, medicines: data ?? [] });
+    return res.json({ success: true, medicines });
   } catch (err) {
     console.error('[medicines] list', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not load medicines.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'medicines table is not deployed.',
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not load medicines.',
+    });
   }
 }
 
 /** GET /api/medicines/:id */
 async function getMedicine(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('medicines')
-      .select(MEDICINE_COLUMNS)
-      .eq('id', req.params.id)
-      .eq('user_id', userId)
-      .maybeSingle();
+    const medicine = await medicinesService.getById(userId, req.params.id);
 
-    if (error) {
-      console.error('[medicines] get:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
-      }
-      return res.status(500).json({ success: false, message: 'Could not load medicine.' });
-    }
-
-    if (!data) {
+    if (!medicine) {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
-    return res.json({ success: true, medicine: data });
+    return res.json({ success: true, medicine });
   } catch (err) {
     console.error('[medicines] get', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not load medicine.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not load medicine.',
+    });
   }
 }
 
 /** POST /api/medicines — body: single row or { medicines: [...] } */
 async function createMedicines(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -101,39 +83,29 @@ async function createMedicines(req, res) {
     const body = readBody(req);
     const rawRows = Array.isArray(body.medicines) ? body.medicines : [body];
 
-    const rows = rawRows.map((row) => {
-      const { user_id: _ignored, id: _id, created_at: _ca, ...fields } = row ?? {};
-      return { ...fields, user_id: userId };
-    });
-
-    if (rows.length === 0 || !rows[0]?.name?.trim()) {
+    if (rawRows.length === 0 || !rawRows[0]?.name?.trim()) {
       return res.status(400).json({ success: false, message: 'Medicine name is required.' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('medicines')
-      .insert(rows)
-      .select(MEDICINE_COLUMNS);
+    const medicines = await medicinesService.create(userId, rawRows);
 
-    if (error) {
-      console.error('[medicines] insert:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
-      }
-      return res.status(500).json({ success: false, message: 'Could not save medicine.' });
-    }
-
-    return res.json({ success: true, medicines: data ?? [] });
+    return res.json({ success: true, medicines });
   } catch (err) {
     console.error('[medicines] create', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not save medicine.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not save medicine.',
+    });
   }
 }
 
 /** PATCH /api/medicines/:id */
 async function updateMedicine(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -143,6 +115,7 @@ async function updateMedicine(req, res) {
       user_id: _ignoredUserId,
       id: _ignoredId,
       created_at: _ignoredCreatedAt,
+      updated_at: _ignoredUpdatedAt,
       ...patch
     } = body;
 
@@ -150,117 +123,92 @@ async function updateMedicine(req, res) {
       return res.status(400).json({ success: false, message: 'No fields to update.' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('medicines')
-      .update(patch)
-      .eq('id', req.params.id)
-      .eq('user_id', userId)
-      .select(MEDICINE_COLUMNS)
-      .single();
+    const medicine = await medicinesService.update(userId, req.params.id, patch);
 
-    if (error) {
-      console.error('[medicines] update:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
-      }
-      return res.status(500).json({ success: false, message: 'Could not update medicine.' });
-    }
-
-    if (!data) {
+    if (!medicine) {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
-    return res.json({ success: true, medicine: data });
+    return res.json({ success: true, medicine });
   } catch (err) {
     console.error('[medicines] update', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not update medicine.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not update medicine.',
+    });
   }
 }
 
-function dayRange(date) {
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(date);
-  end.setHours(23, 59, 59, 999);
-  return { start: start.toISOString(), end: end.toISOString() };
-}
+/** DELETE /api/medicines/:id */
+async function deleteMedicine(req, res) {
+  try {
+    const userId = resolveUserId(req);
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
 
-/** Bounds for YYYY-MM-DD calendar date (matches DB unique index on UTC date). */
-function calendarDayBoundsUtc(dateInput) {
-  const normalized = String(dateInput ?? '').trim().slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
-    return {
-      start: `${normalized}T00:00:00.000Z`,
-      end:   `${normalized}T23:59:59.999Z`,
-    };
+    const deleted = await medicinesService.delete(userId, req.params.id);
+
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Medicine not found.' });
+    }
+
+    return res.json({ success: true, id: deleted.id });
+  } catch (err) {
+    console.error('[medicines] delete', err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicines table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not delete medicine.',
+    });
   }
-  return dayRange(new Date(dateInput));
 }
 
-function startOfWeek(date) {
-  const d = new Date(date);
-  d.setDate(d.getDate() - d.getDay());
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-function endOfWeek(date) {
-  const d = startOfWeek(date);
-  d.setDate(d.getDate() + 7);
-  d.setMilliseconds(-1);
-  return d;
-}
-
-/** GET /api/medicines/logs — ?from=&to= ISO or ?scope=day|week */
+/** GET /api/medicines/logs — ?scope=day|week or ?from=&to= ISO */
 async function listMedicineLogs(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
     const scope = String(req.query.scope ?? '').toLowerCase();
-    let from = req.query.from ? String(req.query.from) : null;
-    let to = req.query.to ? String(req.query.to) : null;
 
-    if (!from || !to) {
-      const base = new Date();
-      if (scope === 'week') {
-        from = startOfWeek(base).toISOString();
-        to = endOfWeek(base).toISOString();
-      } else {
-        const range = dayRange(base);
-        from = range.start;
-        to = range.end;
-      }
+    let logs;
+    if (scope === 'week') {
+      logs = await medicineLogsService.listForWeek(userId);
+    } else if (req.query.from && req.query.to) {
+      logs = await medicineLogsService.listInRange(
+        userId,
+        new Date(String(req.query.from)),
+        new Date(String(req.query.to)),
+      );
+    } else {
+      logs = await medicineLogsService.listForDay(userId);
     }
 
-    const { data, error } = await supabaseClient
-      .from('medicine_logs')
-      .select('*')
-      .eq('user_id', userId)
-      .gte('taken_at', from)
-      .lte('taken_at', to);
-
-    if (error) {
-      console.error('[medicines] logs list:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
-      }
-      return res.status(500).json({ success: false, message: 'Could not load medicine logs.' });
-    }
-
-    return res.json({ success: true, logs: data ?? [] });
+    return res.json({ success: true, logs });
   } catch (err) {
     console.error('[medicines] logs list', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not load medicine logs.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not load medicine logs.',
+    });
   }
 }
 
-/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? } */
+/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? YYYY-MM-DD } */
 async function toggleMedicineLog(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -268,7 +216,7 @@ async function toggleMedicineLog(req, res) {
     const body = readBody(req);
     const medicineId = String(body.medicine_id ?? '').trim();
     const taken = body.taken === true || body.taken === 'true';
-    const dateStr = body.date
+    const dateInput = body.date
       ? String(body.date).trim().slice(0, 10)
       : new Date().toISOString().slice(0, 10);
 
@@ -276,68 +224,19 @@ async function toggleMedicineLog(req, res) {
       return res.status(400).json({ success: false, message: 'medicine_id is required.' });
     }
 
-    const { start, end } = calendarDayBoundsUtc(dateStr);
+    const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dateInput);
 
-    if (taken) {
-      const { data: existing, error: existingError } = await supabaseClient
-        .from('medicine_logs')
-        .select('*')
-        .eq('user_id', userId)
-        .eq('medicine_id', medicineId)
-        .gte('taken_at', start)
-        .lte('taken_at', end)
-        .maybeSingle();
-
-      if (existingError) {
-        console.error('[medicines] logs toggle existing:', existingError.message);
-        return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
-      }
-
-      if (existing) {
-        return res.json({ success: true, log: existing });
-      }
-
-      const { data, error } = await supabaseClient
-        .from('medicine_logs')
-        .insert({
-          user_id:     userId,
-          medicine_id: medicineId,
-          taken_at:    new Date().toISOString(),
-        })
-        .select('*')
-        .single();
-
-      if (error) {
-        console.error('[medicines] logs toggle insert:', error.message);
-        if (isTableMissing(error)) {
-          return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
-        }
-        return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
-      }
-
-      return res.json({ success: true, log: data });
-    }
-
-    const { error } = await supabaseClient
-      .from('medicine_logs')
-      .delete()
-      .eq('user_id', userId)
-      .eq('medicine_id', medicineId)
-      .gte('taken_at', start)
-      .lte('taken_at', end);
-
-    if (error) {
-      console.error('[medicines] logs toggle delete:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
-      }
-      return res.status(500).json({ success: false, message: 'Could not update medicine log.' });
-    }
-
-    return res.json({ success: true, log: null });
+    return res.json({ success: true, log });
   } catch (err) {
     console.error('[medicines] logs toggle', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not update medicine log.' });
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'medicine_logs table is not deployed.' });
+    }
+    const status = err.statusCode || 500;
+    return res.status(status).json({
+      success: false,
+      message: err.message || 'Could not update medicine log.',
+    });
   }
 }
 
@@ -346,6 +245,7 @@ module.exports = {
   getMedicine,
   createMedicines,
   updateMedicine,
+  deleteMedicine,
   listMedicineLogs,
   toggleMedicineLog,
 };

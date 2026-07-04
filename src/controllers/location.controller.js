@@ -1,7 +1,12 @@
-const { supabaseClient } = require('../config/supabase');
+const elderLocationsService = require('../services/elder-locations.service');
 
 function isTableMissing(error) {
-  return error?.code === '42P01' || error?.code === 'PGRST205';
+  return (
+    error?.code === '42P01'
+    || error?.code === 'PGRST205'
+    || error?.code === 'ER_NO_SUCH_TABLE'
+    || error?.errno === 1146
+  );
 }
 
 function readBody(req) {
@@ -16,27 +21,17 @@ async function getLocation(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const { data, error } = await supabaseClient
-      .from('elder_locations')
-      .select('elder_id, latitude, longitude, accuracy, address, is_sharing, updated_at')
-      .eq('elder_id', userId)
-      .maybeSingle();
-
-    if (error) {
-      console.error('[location] get:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'elder_locations table is not deployed. Run migration 011_elder_locations.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: 'Could not load location.' });
-    }
-
-    return res.json({ success: true, location: data ?? null });
+    const location = await elderLocationsService.getByElderId(userId);
+    return res.json({ success: true, location });
   } catch (err) {
-    console.error('[location] get', err);
-    return res.status(500).json({ success: false, message: err.message || 'Could not load location.' });
+    console.error('[location] get:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'elder_locations table is not deployed. Run migration 011_elder_locations.sql.',
+      });
+    }
+    return res.status(500).json({ success: false, message: 'Could not load location.' });
   }
 }
 
@@ -56,12 +51,7 @@ async function upsertLocation(req, res) {
       return res.status(400).json({ success: false, message: 'latitude and longitude are required.' });
     }
 
-    const payload = {
-      elder_id: userId,
-      latitude,
-      longitude,
-      updated_at: new Date().toISOString(),
-    };
+    const payload = { latitude, longitude };
 
     if (body.accuracy !== undefined && body.accuracy !== null) {
       const accuracy = Number(body.accuracy);
@@ -76,26 +66,16 @@ async function upsertLocation(req, res) {
       payload.is_sharing = Boolean(body.is_sharing);
     }
 
-    const { data, error } = await supabaseClient
-      .from('elder_locations')
-      .upsert(payload, { onConflict: 'elder_id' })
-      .select('elder_id, latitude, longitude, accuracy, address, is_sharing, updated_at')
-      .single();
-
-    if (error) {
-      console.error('[location] upsert:', error.message);
-      if (isTableMissing(error)) {
-        return res.status(501).json({
-          success: false,
-          message: 'elder_locations table is not deployed. Run migration 011_elder_locations.sql.',
-        });
-      }
-      return res.status(500).json({ success: false, message: error.message || 'Could not save location.' });
-    }
-
-    return res.json({ success: true, location: data });
+    const location = await elderLocationsService.upsert(userId, payload);
+    return res.json({ success: true, location });
   } catch (err) {
-    console.error('[location] upsert', err);
+    console.error('[location] upsert:', err.message || err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({
+        success: false,
+        message: 'elder_locations table is not deployed. Run migration 011_elder_locations.sql.',
+      });
+    }
     return res.status(500).json({ success: false, message: err.message || 'Could not save location.' });
   }
 }

@@ -6,6 +6,7 @@ const {
   getMedicine,
   createMedicines,
   updateMedicine,
+  deleteMedicine,
   listMedicineLogs,
   toggleMedicineLog,
 } = require('../controllers/medicine.controller');
@@ -16,5 +17,6 @@ router.get('/', requireJwtAuth, listMedicines);
 router.get('/:id', requireJwtAuth, getMedicine);
 router.post('/', requireJwtAuth, createMedicines);
 router.patch('/:id', requireJwtAuth, updateMedicine);
+router.delete('/:id', requireJwtAuth, deleteMedicine);
 
 module.exports = router;

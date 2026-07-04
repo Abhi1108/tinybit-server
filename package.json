@@ -14,7 +14,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.105.4",
+    "@aws-sdk/client-s3": "^3.1075.0",
+    "@aws-sdk/s3-request-presigner": "^3.1075.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
@@ -22,7 +23,11 @@
     "firebase-admin": "^14.0.0",
     "jsonwebtoken": "^9.0.3",
     "jwks-rsa": "^3.2.2",
-    "qrcode": "^1.5.4"
+    "mysql2": "^3.22.5",
+    "qrcode": "^1.5.4",
+    "swagger-jsdoc": "^6.2.8",
+    "swagger-ui-express": "^5.0.1",
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
