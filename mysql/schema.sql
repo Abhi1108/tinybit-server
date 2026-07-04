@@ -426,6 +426,8 @@ CREATE TABLE IF NOT EXISTS health_records (
   uri         TEXT         NULL,
   mime_type   VARCHAR(128) NULL,
   ai_read     TINYINT(1)   NOT NULL DEFAULT 0,
+  ai_insights JSON         NULL,
+  ai_insights_at DATETIME(3) NULL,
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_health_records_user_ts (user_id, timestamp DESC),
@@ -433,6 +435,20 @@ CREATE TABLE IF NOT EXISTS health_records (
   CONSTRAINT chk_health_records_category
     CHECK (category IN ('Reports', 'Prescriptions', 'Prescription', 'X-Rays', 'Blood Tests', 'Blood Test')),
   CONSTRAINT fk_health_records_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- "My Doctors" — a user's own saved contacts (Health Records screen), distinct
+-- from the admin-managed public `doctors` catalog used for appointment booking.
+CREATE TABLE IF NOT EXISTS saved_doctors (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id     CHAR(36)     NOT NULL,
+  name        VARCHAR(255) NOT NULL,
+  phone       VARCHAR(32)  NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_saved_doctors_user (user_id, created_at),
+  CONSTRAINT fk_saved_doctors_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -681,7 +697,7 @@ CREATE TABLE IF NOT EXISTS doctors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 29 tables
+-- End of schema — 30 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
 -- profiles, guardian_elder_links, user_settings, elder_locations
