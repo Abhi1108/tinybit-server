@@ -4,6 +4,14 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
+// ─── Initialize Filesystem Storage ────────────────────────────────────────
+// If using local filesystem storage, create uploads directory
+if (process.env.STORAGE_TYPE !== 's3') {
+  const storageFs = require('./services/storage-filesystem.service');
+  storageFs.ensureUploadsDir();
+  console.log('[Storage] Initialized filesystem storage');
+}
+
 const app = express();
 app.set('trust proxy', true);
 app.use(cors());
@@ -31,6 +39,8 @@ app.get('/api/health', async (req, res) => {
     message: 'TinyBit API is running',
     db,
     dbOk,
+    storage: process.env.STORAGE_TYPE || 'filesystem',
+    timestamp: new Date().toISOString()
   });
 });
 
