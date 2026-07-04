@@ -53,7 +53,7 @@ function buildObjectKey(purpose, userId, filename) {
 
 /**
  * Build file URL from storage key
- * Returns: http://localhost:5000/api/files/health-vault/user-123/uuid.pdf
+ * Returns: ${BASE_URL}/files/health-vault/user-123/uuid.pdf
  */
 function buildFileUrl(key) {
   return `${BASE_URL}/files/${key}`;
@@ -125,7 +125,7 @@ async function createPresignedUpload({ purpose, userId, filename, contentType })
 
   return {
     key,
-    uploadUrl: `http://localhost:5000/api/files/${key}`,
+    uploadUrl: buildFileUrl(key),
     fileUrl
   };
 }
