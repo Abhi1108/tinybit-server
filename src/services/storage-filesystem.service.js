@@ -56,7 +56,7 @@ function buildObjectKey(purpose, userId, filename) {
  * Returns: ${BASE_URL}/files/health-vault/user-123/uuid.pdf
  */
 function buildFileUrl(key) {
-  return `${BASE_URL}/files/${key}`;
+  return `${BASE_URL}/storage/files/${key}`;
 }
 
 /**
