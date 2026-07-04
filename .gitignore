@@ -1,3 +1,7 @@
 .vercel
 .env*
 node_modules
+# Local file uploads (development only)
+uploads/
+uploads/*
+!uploads/.gitkeep
