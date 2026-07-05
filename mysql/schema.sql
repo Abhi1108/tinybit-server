@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   plan_currency        VARCHAR(8)    NOT NULL DEFAULT 'INR',
   plan_interval        VARCHAR(16)   NULL,
   streak               INT           NOT NULL DEFAULT 0,
+  best_streak          INT           NOT NULL DEFAULT 0,
   is_banned            TINYINT(1)    NOT NULL DEFAULT 0,
   last_active          DATETIME(3)   NULL,
   health_qr_token      VARCHAR(64)   NULL,
@@ -139,6 +140,24 @@ CREATE TABLE IF NOT EXISTS profiles (
     CHECK (role IN ('elder', 'guardian', 'caregiver', 'admin')),
   CONSTRAINT fk_profiles_app_user
     FOREIGN KEY (id) REFERENCES app_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Streak activity log — one row per user per UTC calendar day the app was
+-- opened. Backs the "This Week" / "This Month" streak calendar views and the
+-- lifetime "Total Days" count.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS streak_activity_log (
+  id            CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id       CHAR(36)     NOT NULL,
+  activity_date DATE         NOT NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_streak_activity_user_date (user_id, activity_date),
+  KEY idx_streak_activity_user (user_id, activity_date DESC),
+  CONSTRAINT fk_streak_activity_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -718,10 +737,10 @@ CREATE TABLE IF NOT EXISTS doctors (
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 30 tables
+-- End of schema — 32 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
--- profiles, guardian_elder_links, user_settings, elder_locations
+-- profiles, streak_activity_log, guardian_elder_links, user_settings, elder_locations
 -- emergency_contacts, sos_alerts
 -- medicines, medicine_logs
 -- daily_checkins, mood_entries, health_readings, health_records

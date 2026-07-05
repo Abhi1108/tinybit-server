@@ -64,7 +64,6 @@ async function buildSathiContext(userId) {
 
   lines.push(`Name: ${profile?.full_name || 'Friend'}`);
   lines.push(`Role: ${profile?.role || 'unknown'}`);
-  lines.push(`Preferred Language: ${profile?.preferred_language || 'en'}`);
   if (profile?.age) lines.push(`Age: ${profile.age}`);
   if (profile?.biological_sex) lines.push(`Sex: ${profile.biological_sex}`);
   if (profile?.blood_group) lines.push(`Blood Group: ${profile.blood_group}`);

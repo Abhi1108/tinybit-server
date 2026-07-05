@@ -457,7 +457,7 @@ async function getConnectedGuardians(elderId) {
 
   const profiles = guardianIds.length > 0
     ? await query(
-      `SELECT id, full_name, location, mobile
+      `SELECT id, full_name, location, mobile, push_token
        FROM profiles
        WHERE id IN (${inSql})`,
       inParams,
@@ -473,6 +473,7 @@ async function getConnectedGuardians(elderId) {
     relation: link.relation,
     location: profileMap[link.guardian_id]?.location ?? null,
     phone: profileMap[link.guardian_id]?.mobile ?? null,
+    push_token: profileMap[link.guardian_id]?.push_token ?? null,
   }));
 }
 
