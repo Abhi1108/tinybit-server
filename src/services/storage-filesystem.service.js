@@ -160,16 +160,56 @@ function deleteFile(key, userId) {
  */
 function getFileStream(key, userId) {
   assertKeyReadable(key, userId);
-  
+
   const filePath = getPhysicalPath(key);
-  
+
   if (!fs.existsSync(filePath)) {
     const err = new Error('File not found');
     err.code = 'ENOENT';
     throw err;
   }
-  
+
   return fs.createReadStream(filePath);
+}
+
+/**
+ * Extract the storage object key from a stored file URL, or null if unparseable.
+ * Filesystem URLs look like `${BASE_URL}/storage/files/{key}`, so we strip the
+ * `/storage/files/` prefix to recover the key. Falls back to the leading-slash
+ * strip (S3 virtual-host style) so keys stored by the S3 backend still resolve.
+ */
+function extractObjectKey(url) {
+  try {
+    const pathname = new URL(String(url || '')).pathname;
+    const marker = '/storage/files/';
+    const idx = pathname.indexOf(marker);
+    const raw = idx >= 0
+      ? pathname.slice(idx + marker.length)
+      : pathname.replace(/^\//, '');
+    return raw ? decodeURIComponent(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read an object's bytes and return them base64-encoded, for feeding to Gemini
+ * inlineData. Mirrors the S3 backend's getObjectBase64 contract.
+ */
+async function getObjectBase64(key) {
+  const filePath = getPhysicalPath(key);
+
+  if (!fs.existsSync(filePath)) {
+    const err = new Error('File not found');
+    err.code = 'ENOENT';
+    throw err;
+  }
+
+  const buffer = await fs.promises.readFile(filePath);
+  return {
+    base64: buffer.toString('base64'),
+    contentType: null,
+  };
 }
 
 module.exports = {
@@ -181,5 +221,7 @@ module.exports = {
   createPresignedUpload,
   createPresignedDownload,
   deleteFile,
-  getFileStream
+  getFileStream,
+  extractObjectKey,
+  getObjectBase64
 };
