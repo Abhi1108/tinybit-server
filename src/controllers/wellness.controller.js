@@ -5,6 +5,8 @@ const {
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
 const medicineLogsService = require('../services/medicine-logs.service');
 const familyMessagesService = require('../services/family-messages.service');
+const profilesService = require('../services/profiles.service');
+const { notifyGuardiansOfElder } = require('../services/notifications.service');
 
 function isTableMissing(error) {
   return (
@@ -94,6 +96,19 @@ async function upsertDailyCheckInHandler(req, res) {
     }
 
     const checkIn = await upsertDailyCheckIn(userId, upsertFields);
+
+    try {
+      const elder = await profilesService.getProfileById(userId);
+      const elderName = elder?.full_name || 'Your family member';
+      await notifyGuardiansOfElder(userId, {
+        type: 'daily_checkin',
+        title: 'Daily Check-in Completed',
+        body: `${elderName} completed today's health check-in.`,
+        data: { source: 'daily_checkin', mood: upsertFields.mood },
+      });
+    } catch (notifyErr) {
+      console.warn('[wellness/daily-checkin] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({ success: true, checkIn });
   } catch (err) {

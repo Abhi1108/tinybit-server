@@ -1,18 +1,11 @@
-const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
-
 const guardianService = require('../services/guardian.service');
+const { sendExpoPush } = require('../services/notifications.service');
 
 async function sendPushNotification(token, guardianName, relation) {
-  await fetch(EXPO_PUSH_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      to: token,
-      title: 'Guardian Connection Request',
-      body: `${guardianName} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
-      data: { type: 'guardian_invite' },
-      sound: 'default',
-    }),
+  await sendExpoPush(token, {
+    title: 'Guardian Connection Request',
+    body: `${guardianName} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
+    data: { type: 'guardian_invite' },
   });
 }
 

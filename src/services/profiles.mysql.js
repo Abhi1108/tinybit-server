@@ -2,13 +2,6 @@ const { query, execute } = require('../config/mysql');
 
 const PROFILE_JSON_COLUMNS = new Set(['medical_conditions', 'allergies']);
 
-const PROFILE_UPDATE_DEFAULTS = {
-  plan_type: 'free',
-  plan_status: 'active',
-  plan_currency: 'INR',
-  streak: 0,
-};
-
 function serializeProfileValue(key, value) {
   if (value === undefined) return undefined;
   if (PROFILE_JSON_COLUMNS.has(key) && value !== null && typeof value === 'object') {
@@ -200,8 +193,7 @@ async function getProfileById(userId) {
 async function updateProfile(userId, email, patch) {
   const row = {
     id: userId,
-    email: email ?? null,
-    ...PROFILE_UPDATE_DEFAULTS,
+    email: email ?? undefined,
     ...patch,
   };
 
@@ -210,34 +202,64 @@ async function updateProfile(userId, email, patch) {
 
 /**
  * Called on every authenticated request (see requireJwtAuth middleware).
- * Streak now means "consecutive calendar days the app was opened" — same
- * day as last_active is a no-op, exactly one day later increments, any
- * larger gap (or first time) resets to 1. Day boundaries are UTC, matching
- * the rest of this codebase's date-string comparisons.
+ * Streak is a resilience score, not a hard reset: +1 for each new UTC
+ * calendar day the app is opened; if a day (or more) was missed, -5 for the
+ * first missed day and -5 for each additional missed day, floored at 0,
+ * then +1 for today. Backed by streak_activity_log (one row per active day)
+ * so "This Week" / "This Month" / lifetime total-days can be rendered
+ * without re-deriving history from a single last_active timestamp.
  */
 async function touchLastActive(userId) {
   if (!userId) return;
 
-  const rows = await query('SELECT streak, last_active FROM profiles WHERE id = ? LIMIT 1', [userId]);
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const rows = await query('SELECT streak, best_streak FROM profiles WHERE id = ? LIMIT 1', [userId]);
   const row = rows[0];
   if (!row) return;
 
-  const todayStr = new Date().toISOString().slice(0, 10);
-  const prevStr = row.last_active ? new Date(row.last_active).toISOString().slice(0, 10) : null;
-
-  if (prevStr === todayStr) {
+  const alreadyToday = await query(
+    'SELECT id FROM streak_activity_log WHERE user_id = ? AND activity_date = ? LIMIT 1',
+    [userId, todayStr],
+  );
+  if (alreadyToday.length > 0) {
     await execute('UPDATE profiles SET last_active = CURRENT_TIMESTAMP(3) WHERE id = ?', [userId]);
     return;
   }
 
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  const lastRows = await query(
+    'SELECT activity_date FROM streak_activity_log WHERE user_id = ? ORDER BY activity_date DESC LIMIT 1',
+    [userId],
+  );
+  const lastDateStr = lastRows[0]
+    ? new Date(lastRows[0].activity_date).toISOString().slice(0, 10)
+    : null;
 
-  const newStreak = prevStr === yesterdayStr ? (row.streak || 0) + 1 : 1;
+  let newStreak;
+  if (!lastDateStr) {
+    newStreak = 1;
+  } else {
+    const gapDays = Math.round(
+      (Date.parse(`${todayStr}T00:00:00.000Z`) - Date.parse(`${lastDateStr}T00:00:00.000Z`))
+        / (24 * 60 * 60 * 1000),
+    );
+    if (gapDays <= 1) {
+      newStreak = (row.streak || 0) + 1;
+    } else {
+      const missedDays = gapDays - 1;
+      newStreak = Math.max(0, (row.streak || 0) - 5 * missedDays) + 1;
+    }
+  }
+
+  const newBest = Math.max(row.best_streak || 0, newStreak);
+
   await execute(
-    'UPDATE profiles SET streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
-    [newStreak, userId],
+    'INSERT IGNORE INTO streak_activity_log (id, user_id, activity_date) VALUES (UUID(), ?, ?)',
+    [userId, todayStr],
+  );
+  await execute(
+    'UPDATE profiles SET streak = ?, best_streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
+    [newStreak, newBest, userId],
   );
 }
 
