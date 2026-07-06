@@ -380,6 +380,17 @@
  *                 type: array
  *                 items:
  *                   type: string
+ *               other_condition:
+ *                 type: string
+ *                 description: Free-text condition when "Others" is selected
+ *               allergies:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               doctor_name:
+ *                 type: string
+ *               doctor_contact:
+ *                 type: string
  *               emergency_name:
  *                 type: string
  *               emergency_phone:

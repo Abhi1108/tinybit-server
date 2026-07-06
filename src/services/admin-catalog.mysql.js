@@ -1,5 +1,9 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const storageService = require('./storage.service');
+
+/** Catalog objects are admin-owned, not tied to one user — any truthy actor id works. */
+const CATALOG_DELETE_ACTOR = 'admin-catalog';
 
 const MOOD_CATEGORIES = new Set(['bhajans', 'meditation', 'jokes_fun', 'nature_sounds']);
 const MOOD_MEDIA_TYPES = new Set(['audio', 'video', 'youtube']);
@@ -219,6 +223,9 @@ async function deleteDoctor(id) {
   const existing = await getDoctorById(id);
   if (!existing) throw notFound('Doctor', id);
   await execute('DELETE FROM doctors WHERE id = ?', [id]);
+  if (existing.image_url) {
+    await storageService.deleteObjectByUrl(existing.image_url, CATALOG_DELETE_ACTOR);
+  }
   return { id };
 }
 
@@ -445,6 +452,9 @@ async function deleteMoodMediaTrack(id) {
   const existing = await getMoodMediaTrackById(id);
   if (!existing) throw notFound('Mood media track', id);
   await execute('DELETE FROM mood_media_tracks WHERE id = ?', [id]);
+  for (const url of [existing.audio_url, existing.media_url, existing.icon_url]) {
+    if (url) await storageService.deleteObjectByUrl(url, CATALOG_DELETE_ACTOR);
+  }
   return { id };
 }
 
