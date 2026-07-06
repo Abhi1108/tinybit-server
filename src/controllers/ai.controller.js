@@ -3,6 +3,7 @@ const aiService = require('../services/ai.service');
 const { geminiFetch, geminiText, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
 const healthInsightsService = require('../services/health-insights.service');
 const sathiContextService = require('../services/sathi-context.service');
+const helpService = require('../services/help.service');
 
 // ── Sathi AI system prompt ────────────────────────────────────────────────────
 const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, intelligent AI health assistant for elderly users built into the TinyBit app.
@@ -14,6 +15,9 @@ CORE GUIDELINES:
 - The USER CONTEXT below is live data from the app (profile, today's medicines and whether each was
   taken, today's check-in, next appointment, emergency contact). Reference it when asked about any
   of these. If something isn't listed there, say you don't have that on file — never invent it.
+- The APP HELP FAQ below is the official, admin-maintained answer set for "how do I..." questions
+  about using the app. When a user asks something matching one of these, answer from it directly
+  rather than guessing at app behavior.
 - Never diagnose or replace professional medical advice — always suggest consulting a doctor for serious concerns.
 - LANGUAGE RULE (highest priority, overrides everything else including USER CONTEXT): Detect the
   script/language of the user's most recent message ONLY — ignore any language field elsewhere —
@@ -107,7 +111,17 @@ const chat = async (req, res) => {
       contextText = 'No context available.';
     }
 
-    const systemPrompt = `${SATHI_SYSTEM}\n\nUSER CONTEXT:\n${contextText}`;
+    let faqText = 'No FAQ content available.';
+    try {
+      const faqs = await helpService.listActiveFaqs();
+      if (faqs.length > 0) {
+        faqText = faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
+      }
+    } catch (faqErr) {
+      console.warn('[Sathi] FAQ fetch failed:', faqErr.message);
+    }
+
+    const systemPrompt = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}\n\nUSER CONTEXT:\n${contextText}`;
 
     let replyContent = '';
     const provider = 'gemini';
