@@ -205,6 +205,29 @@ function extractObjectKey(url) {
   }
 }
 
+/**
+ * Best-effort delete of a stored media URL — resolves the S3 key, validates it looks
+ * like one of ours, and deletes it. Never throws: a failed/skipped S3 cleanup should
+ * never block the caller's own DB delete. Returns true only if an object was actually
+ * deleted. `actorId` just needs to be a truthy id — required by the ownership check,
+ * but bypassed entirely for `catalog/...` keys (admin-owned, not user-owned).
+ */
+async function deleteObjectByUrl(url, actorId) {
+  if (!url || !isStorageConfigured()) return false;
+
+  const key = extractObjectKey(url);
+  const segments = key ? key.split('/') : [];
+  if (segments.length < 3 || !VALID_PURPOSES.has(segments[0])) return false;
+
+  try {
+    await deleteObject(key, actorId);
+    return true;
+  } catch (err) {
+    console.warn('[storage] deleteObjectByUrl failed:', err.message);
+    return false;
+  }
+}
+
 /** Download an object's bytes and return them base64-encoded, for feeding to Gemini inlineData. */
 async function getObjectBase64(key) {
   assertStorageConfigured();
@@ -235,6 +258,7 @@ module.exports = {
   createPresignedUpload,
   createPresignedDownload,
   deleteObject,
+  deleteObjectByUrl,
   extractObjectKey,
   getObjectBase64,
   guessContentType,

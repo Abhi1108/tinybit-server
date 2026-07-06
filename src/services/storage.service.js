@@ -1,18 +1,18 @@
 // src/services/storage.service.js
 /**
  * Storage service facade
- * 
+ *
  * Automatically selects storage implementation based on STORAGE_TYPE env var:
- * 
+ *
  * STORAGE_TYPE=filesystem → Local filesystem storage (development)
  * STORAGE_TYPE=s3        → AWS S3 storage (production)
- * 
+ *
  * Both implementations export the same API:
  * - createPresignedUpload(params)
  * - createPresignedDownload(params)
  * - deleteFile(key, userId)
  * - getFileStream(key, userId)
- * 
+ *
  * This allows the rest of the codebase to work without knowing
  * which storage backend is being used.
  */
