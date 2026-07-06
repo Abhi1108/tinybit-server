@@ -235,6 +235,111 @@ const deleteInspiration = async (req, res) => {
   }
 };
 
+// ── Help & Guide — tutorials ────────────────────────────────────────────────
+
+const getHelpTutorials = async (req, res) => {
+  try {
+    const tutorials = await catalogService.listHelpTutorials({
+      ...listQuery(req),
+      category: req.query.category,
+    });
+    return res.json({ success: true, tutorials });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const getHelpTutorial = async (req, res) => {
+  try {
+    const tutorial = await catalogService.getHelpTutorialById(req.params.id);
+    if (!tutorial) return res.status(404).json({ success: false, error: 'Help tutorial not found' });
+    return res.json({ success: true, tutorial });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const createHelpTutorial = async (req, res) => {
+  try {
+    const tutorial = await catalogService.createHelpTutorial(req.body);
+    await audit(req, 'help_tutorial.create', 'help_tutorial', tutorial.id, { title: tutorial.title });
+    return res.status(201).json({ success: true, tutorial });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const updateHelpTutorial = async (req, res) => {
+  try {
+    const tutorial = await catalogService.updateHelpTutorial(req.params.id, req.body ?? {});
+    await audit(req, 'help_tutorial.update', 'help_tutorial', req.params.id, { fields: Object.keys(req.body ?? {}) });
+    return res.json({ success: true, tutorial });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const deleteHelpTutorial = async (req, res) => {
+  try {
+    await catalogService.deleteHelpTutorial(req.params.id);
+    await audit(req, 'help_tutorial.delete', 'help_tutorial', req.params.id);
+    return res.json({ success: true });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+// ── Help & Guide — FAQs ─────────────────────────────────────────────────────
+
+const getHelpFaqs = async (req, res) => {
+  try {
+    const faqs = await catalogService.listHelpFaqs(listQuery(req));
+    return res.json({ success: true, faqs });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const getHelpFaq = async (req, res) => {
+  try {
+    const faq = await catalogService.getHelpFaqById(req.params.id);
+    if (!faq) return res.status(404).json({ success: false, error: 'Help FAQ not found' });
+    return res.json({ success: true, faq });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const createHelpFaq = async (req, res) => {
+  try {
+    const faq = await catalogService.createHelpFaq(req.body);
+    await audit(req, 'help_faq.create', 'help_faq', faq.id);
+    return res.status(201).json({ success: true, faq });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const updateHelpFaq = async (req, res) => {
+  try {
+    const faq = await catalogService.updateHelpFaq(req.params.id, req.body ?? {});
+    await audit(req, 'help_faq.update', 'help_faq', req.params.id, { fields: Object.keys(req.body ?? {}) });
+    return res.json({ success: true, faq });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+const deleteHelpFaq = async (req, res) => {
+  try {
+    await catalogService.deleteHelpFaq(req.params.id);
+    await audit(req, 'help_faq.delete', 'help_faq', req.params.id);
+    return res.json({ success: true });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
 module.exports = {
   getDoctors,
   getDoctor,
@@ -256,4 +361,14 @@ module.exports = {
   createInspiration,
   updateInspiration,
   deleteInspiration,
+  getHelpTutorials,
+  getHelpTutorial,
+  createHelpTutorial,
+  updateHelpTutorial,
+  deleteHelpTutorial,
+  getHelpFaqs,
+  getHelpFaq,
+  createHelpFaq,
+  updateHelpFaq,
+  deleteHelpFaq,
 };

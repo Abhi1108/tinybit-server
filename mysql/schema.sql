@@ -734,10 +734,47 @@ CREATE TABLE IF NOT EXISTS doctors (
     CHECK (rating >= 0 AND rating <= 5)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- -----------------------------------------------------------------------------
+-- Help & Guide catalog (admin-managed, no seed data)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS help_tutorials (
+  id               CHAR(36)     NOT NULL DEFAULT (UUID()),
+  category         VARCHAR(32)  NOT NULL,
+  title            VARCHAR(255) NOT NULL,
+  description      TEXT         NULL,
+  video_url        TEXT         NULL,
+  thumbnail_url    TEXT         NULL,
+  difficulty       VARCHAR(16)  NOT NULL DEFAULT 'beginner',
+  duration_seconds INT          NULL,
+  sort_order       INT          NOT NULL DEFAULT 0,
+  is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_help_tutorials_category (category, is_active, sort_order),
+  CONSTRAINT chk_help_tutorials_category
+    CHECK (category IN ('getting_started', 'health_tracking', 'medicine_management', 'talking_with_sathi', 'emergency_features', 'family_features')),
+  CONSTRAINT chk_help_tutorials_difficulty
+    CHECK (difficulty IN ('beginner', 'intermediate', 'advanced'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS help_faqs (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  question    VARCHAR(500) NOT NULL,
+  answer      TEXT         NOT NULL,
+  sort_order  INT          NOT NULL DEFAULT 0,
+  is_active   TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_help_faqs_active_sort (is_active, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 32 tables
+-- End of schema — 34 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
 -- profiles, streak_activity_log, guardian_elder_links, user_settings, elder_locations
@@ -750,5 +787,5 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- mood_media_tracks, mood_media_favorites
 -- mind_games_scores, daily_quiz_questions, daily_inspirations
 -- notifications
--- doctors
+-- doctors, help_tutorials, help_faqs
 -- =============================================================================
