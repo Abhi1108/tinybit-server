@@ -156,9 +156,14 @@ function deleteFile(key, userId) {
 }
 
 /**
- * Get readable stream for file download
+ * Get readable stream for file download.
+ *
+ * @param {string} key
+ * @param {string} userId
+ * @param {{ start?: number, end?: number }} [range] - byte range for HTTP
+ *   Range requests (inclusive `end`, `fs.createReadStream` semantics).
  */
-function getFileStream(key, userId) {
+function getFileStream(key, userId, range) {
   assertKeyReadable(key, userId);
 
   const filePath = getPhysicalPath(key);
@@ -169,7 +174,28 @@ function getFileStream(key, userId) {
     throw err;
   }
 
+  if (range) {
+    return fs.createReadStream(filePath, range);
+  }
   return fs.createReadStream(filePath);
+}
+
+/**
+ * Get file size in bytes for a storage key — needed to answer `Content-Length`
+ * and validate/compute `Content-Range` for HTTP Range requests.
+ */
+function getFileSize(key, userId) {
+  assertKeyReadable(key, userId);
+
+  const filePath = getPhysicalPath(key);
+
+  if (!fs.existsSync(filePath)) {
+    const err = new Error('File not found');
+    err.code = 'ENOENT';
+    throw err;
+  }
+
+  return fs.statSync(filePath).size;
 }
 
 /**
@@ -222,6 +248,7 @@ module.exports = {
   createPresignedDownload,
   deleteFile,
   getFileStream,
+  getFileSize,
   extractObjectKey,
   getObjectBase64
 };

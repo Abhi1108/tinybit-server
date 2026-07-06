@@ -129,8 +129,6 @@ router.get('/files/:purpose/:userId/*', async (req, res) => {
       // Key structure is valid - presigned URL grants access
     }
 
-    const fileStream = storageFs.getFileStream(key, userId);
-
     // Set appropriate Content-Type header
     const ext = path.extname(filename).toLowerCase();
     const mimeTypes = {
@@ -147,8 +145,37 @@ router.get('/files/:purpose/:userId/*', async (req, res) => {
     };
 
     const contentType = mimeTypes[ext] || 'application/octet-stream';
+    const fileSize = storageFs.getFileSize(key, userId);
+
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    // Media players (audio/video) need Content-Length + Range/206 support to
+    // determine duration and enable seeking — without these, native players
+    // treat the file as an unbounded/live stream and show no duration or
+    // scrubber at all.
+    const range = req.headers.range;
+    let fileStream;
+
+    if (range) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+      const start = match && match[1] ? parseInt(match[1], 10) : 0;
+      const end = match && match[2] ? parseInt(match[2], 10) : fileSize - 1;
+
+      if (!match || start > end || end >= fileSize) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.status(416).json({ success: false, message: 'Range not satisfiable' });
+      }
+
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.setHeader('Content-Length', end - start + 1);
+      fileStream = storageFs.getFileStream(key, userId, { start, end });
+    } else {
+      res.setHeader('Content-Length', fileSize);
+      fileStream = storageFs.getFileStream(key, userId);
+    }
 
     // Stream file to client
     fileStream.pipe(res);
@@ -164,6 +191,9 @@ router.get('/files/:purpose/:userId/*', async (req, res) => {
     console.error('[storage] file download:', err);
     if (err.code === 'FORBIDDEN_KEY') {
       return res.status(403).json({ success: false, message: err.message });
+    }
+    if (err.code === 'ENOENT') {
+      return res.status(404).json({ success: false, message: 'File not found' });
     }
     res.status(500).json({ success: false, message: err.message });
   }
