@@ -694,7 +694,7 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
     memoriesCount, mindStats,
   ] = await Promise.all([
     query('SELECT id, full_name, age, location, profile_image, mobile, streak FROM profiles WHERE id = ? LIMIT 1', [elderId]),
-    query('SELECT id, name, dosage, time, schedule_time, instruction FROM medicines WHERE user_id = ? AND is_active = 1', [elderId]),
+    query('SELECT id, name, dosage, time, schedule_time, instruction, priority FROM medicines WHERE user_id = ? AND is_active = 1', [elderId]),
     query('SELECT medicine_id, taken_at FROM medicine_logs WHERE user_id = ? AND taken_date = ?', [elderId, today]),
     query(
       `SELECT mood, sleep_hours, created_at FROM daily_checkins WHERE user_id = ? AND check_in_date = ? LIMIT 1`,
@@ -741,6 +741,7 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
       time:         m.time,
       scheduleTime: m.schedule_time,
       instruction:  m.instruction,
+      priority:     m.priority,
       takenToday:   loggedMedIds.has(m.id),
     })),
     adherencePercent,
