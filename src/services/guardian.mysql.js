@@ -1,4 +1,6 @@
 const { query, execute } = require('../config/mysql');
+const journalService = require('./journal.service');
+const mindGamesService = require('./mind-games.service');
 
 function todayISO() {
   return new Date().toISOString().split('T')[0];
@@ -150,7 +152,7 @@ async function getGuardianEldersDashboard(guardianId) {
 
   const [profiles, checkins, meds, logs] = await Promise.all([
     query(
-      `SELECT id, full_name, age, location
+      `SELECT id, full_name, age, location, mobile
        FROM profiles
        WHERE id IN (${inSql})`,
       inParams,
@@ -195,7 +197,7 @@ async function getGuardianEldersDashboard(guardianId) {
       relation: link.relation,
       elderEmail: link.elder_email,
       profile: profile
-        ? { fullName: profile.full_name, age: profile.age, location: profile.location }
+        ? { fullName: profile.full_name, age: profile.age, location: profile.location, mobile: profile.mobile }
         : null,
       checkedInToday: checkinIds.has(link.elder_id),
       medicineCount: userMeds.length,
@@ -206,10 +208,11 @@ async function getGuardianEldersDashboard(guardianId) {
 
 async function getGuardianAlerts(guardianId) {
   const links = await query(
-    `SELECT elder_id, parent_name
-     FROM guardian_elder_links
-     WHERE guardian_id = ? AND status = 'connected'
-       AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
+    `SELECT l.elder_id, l.parent_name, p.mobile AS elder_mobile
+     FROM guardian_elder_links l
+     LEFT JOIN profiles p ON p.id = l.elder_id
+     WHERE l.guardian_id = ? AND l.status = 'connected'
+       AND l.elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)`,
     [guardianId],
   );
 
@@ -241,6 +244,8 @@ async function getGuardianAlerts(guardianId) {
     if (!checkinRows[0] && hour >= 9) {
       generated.push({
         id: `checkin_${eid}`,
+        elderId: eid,
+        elderPhone: link.elder_mobile ?? null,
         tag: { text: 'Urgent', bg: '#FCEEEF', fg: '#DC2626' },
         who: name,
         title: 'Morning Check-In Not Completed',
@@ -263,6 +268,8 @@ async function getGuardianAlerts(guardianId) {
         const names = missed.slice(0, 2).map((m) => m.name).join(', ');
         generated.push({
           id: `med_${eid}`,
+          elderId: eid,
+          elderPhone: link.elder_mobile ?? null,
           tag: { text: 'Attention', bg: '#FFF3E0', fg: '#F59E0B' },
           who: name,
           title: `${missed.length} Medicine${missed.length > 1 ? 's' : ''} Not Taken`,
@@ -272,6 +279,8 @@ async function getGuardianAlerts(guardianId) {
       } else {
         generated.push({
           id: `med_ok_${eid}`,
+          elderId: eid,
+          elderPhone: link.elder_mobile ?? null,
           tag: { text: 'Good Going', bg: '#D1FADF', fg: '#16A34A' },
           who: name,
           title: 'All Medicines Taken Today',
@@ -343,7 +352,31 @@ async function getGuardianLocationElders(guardianId) {
   });
 }
 
-async function getGuardianReports(guardianId) {
+const PERIOD_DAYS = { weekly: 7, monthly: 30, yearly: 365 };
+
+function isoDateOnly(d) {
+  return d.toISOString().split('T')[0];
+}
+
+/** Groups `windowDays` days ending today into `bucketCount` roughly-equal buckets,
+ *  returning [{ startIso, endIso }] oldest-first — used to build the bar chart at
+ *  weekly (7 daily bars), monthly (~4 weekly bars), or yearly (12 monthly bars)
+ *  granularity from the same underlying per-day data. */
+function buildBuckets(windowDays, bucketCount) {
+  const today = new Date();
+  const buckets = [];
+  const daysPerBucket = windowDays / bucketCount;
+  for (let i = 0; i < bucketCount; i++) {
+    const endOffset = Math.round(windowDays - i * daysPerBucket) - 1;
+    const startOffset = Math.round(windowDays - (i + 1) * daysPerBucket);
+    const start = new Date(today); start.setDate(start.getDate() - Math.max(startOffset, 0));
+    const end = new Date(today); end.setDate(end.getDate() - endOffset);
+    buckets.push({ startIso: isoDateOnly(start), endIso: isoDateOnly(end) });
+  }
+  return buckets;
+}
+
+async function getGuardianReports(guardianId, period = 'weekly') {
   const emptyMetrics = {
     medAdherence: '--',
     medTrend: '--',
@@ -352,6 +385,8 @@ async function getGuardianReports(guardianId) {
     checkinStreak: '--',
     avgSleep: '--',
   };
+  const bucketCount = period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12;
+  const emptyBars = Array.from({ length: bucketCount }, () => 0);
 
   const links = await query(
     `SELECT elder_id, parent_name
@@ -363,26 +398,29 @@ async function getGuardianReports(guardianId) {
   );
 
   if (!links[0]) {
-    return { elderName: 'Elder', bars: [0, 0, 0, 0, 0, 0, 0], metrics: emptyMetrics };
+    return { elderName: 'Elder', bars: emptyBars, metrics: emptyMetrics };
   }
 
   const elderId = links[0].elder_id;
   const elderName = links[0].parent_name.split(' ')[0].toUpperCase();
 
-  const dates = Array.from({ length: 7 }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (6 - i));
-    return d.toISOString().split('T')[0];
-  });
-  const weekStart = dates[0];
-  const weekStartTs = `${weekStart} 00:00:00.000`;
+  const windowDays = PERIOD_DAYS[period] ?? PERIOD_DAYS.weekly;
+  const windowStart = new Date();
+  windowStart.setDate(windowStart.getDate() - (windowDays - 1));
+  const windowStartIso = isoDateOnly(windowStart);
+  const windowStartTs = `${windowStartIso} 00:00:00.000`;
 
-  const [moods, activeMedRows, logRows, checkinRows, sleepRows] = await Promise.all([
+  // Streak is always "consecutive days ending today", independent of the selected period.
+  const streakWindowStart = new Date();
+  streakWindowStart.setDate(streakWindowStart.getDate() - 29);
+  const streakWindowStartIso = isoDateOnly(streakWindowStart);
+
+  const [moods, activeMedRows, logRows, sleepRows, streakCheckinRows] = await Promise.all([
     query(
       `SELECT created_at, mood_score
        FROM mood_entries
        WHERE user_id = ? AND created_at >= ?`,
-      [elderId, weekStartTs],
+      [elderId, windowStartTs],
     ),
     query(
       `SELECT id FROM medicines
@@ -392,50 +430,62 @@ async function getGuardianReports(guardianId) {
     query(
       `SELECT medicine_id FROM medicine_logs
        WHERE user_id = ? AND taken_at >= ?`,
-      [elderId, weekStartTs],
-    ),
-    query(
-      `SELECT check_in_date, created_at
-       FROM daily_checkins
-       WHERE user_id = ? AND check_in_date >= ?`,
-      [elderId, weekStart],
+      [elderId, windowStartTs],
     ),
     query(
       `SELECT sleep_hours
        FROM daily_checkins
        WHERE user_id = ? AND check_in_date >= ? AND sleep_hours IS NOT NULL`,
-      [elderId, weekStart],
+      [elderId, windowStartIso],
+    ),
+    query(
+      `SELECT check_in_date FROM daily_checkins
+       WHERE user_id = ? AND check_in_date >= ?`,
+      [elderId, streakWindowStartIso],
     ),
   ]);
 
-  const moodMap = {};
+  const moodByDate = {};
   moods.forEach((m) => {
     const dateKey = m.created_at instanceof Date
       ? m.created_at.toISOString().slice(0, 10)
       : String(m.created_at).slice(0, 10);
-    moodMap[dateKey] = m.mood_score;
+    if (!moodByDate[dateKey]) moodByDate[dateKey] = [];
+    moodByDate[dateKey].push(m.mood_score);
   });
-  const bars = dates.map((d) => (moodMap[d] ? moodMap[d] * 20 : 0));
+
+  const buckets = buildBuckets(windowDays, bucketCount);
+  const bars = buckets.map(({ startIso, endIso }) => {
+    const scores = [];
+    Object.keys(moodByDate).forEach((dateKey) => {
+      if (dateKey >= startIso && dateKey <= endIso) scores.push(...moodByDate[dateKey]);
+    });
+    if (scores.length === 0) return 0;
+    const avg = scores.reduce((s, v) => s + v, 0) / scores.length;
+    return Math.round(avg * 20);
+  });
 
   const activeMeds = activeMedRows.length;
   const logCount = logRows.length;
-  const maxPossible = activeMeds * 7;
+  const maxPossible = activeMeds * windowDays;
   const adherence = maxPossible > 0 ? Math.round((logCount / maxPossible) * 100) : null;
 
   const avgMoodScore = moods.length > 0
     ? (moods.reduce((s, m) => s + m.mood_score, 0) / moods.length).toFixed(1)
     : null;
 
-  const checkinDates = new Set(
-    checkinRows.map((c) => (
+  const streakCheckinDates = new Set(
+    streakCheckinRows.map((c) => (
       c.check_in_date instanceof Date
         ? c.check_in_date.toISOString().slice(0, 10)
         : String(c.check_in_date).slice(0, 10)
     )),
   );
   let streak = 0;
-  for (let i = dates.length - 1; i >= 0; i--) {
-    if (checkinDates.has(dates[i])) streak++;
+  for (let i = 0; i < 30; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    if (streakCheckinDates.has(isoDateOnly(d))) streak++;
     else break;
   }
 
@@ -578,6 +628,129 @@ async function getElderSummaryForGuardian(guardianId, elderId) {
   };
 }
 
+/** Builds the merged, real-data "Today's Activity" feed for the guardian home dashboard —
+ *  no fabricated entries; anything with no rows today just contributes nothing. */
+function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameById, today }) {
+  const items = [];
+
+  journalEntries
+    .filter((j) => (j.created_at ?? '').slice(0, 10) === today)
+    .forEach((j) => {
+      items.push({
+        type:      'journal',
+        title:     j.type === 'Voice' ? 'Recorded a memory in journal' : 'Wrote a journal entry',
+        subtitle:  j.content ? String(j.content).slice(0, 120) : (j.prompt ?? ''),
+        timestamp: j.created_at,
+      });
+    });
+
+  moods
+    .filter((m) => (m.created_at ?? '').slice(0, 10) === today)
+    .forEach((m) => {
+      items.push({
+        type:      'mood',
+        title:     `Logged mood: ${m.mood ?? '—'}`,
+        subtitle:  m.note ?? '',
+        timestamp: m.created_at,
+      });
+    });
+
+  if (checkin) {
+    items.push({
+      type:      'checkin',
+      title:     'Completed daily check-in',
+      subtitle:  [checkin.mood, checkin.sleep_hours != null ? `${checkin.sleep_hours}h sleep` : null]
+        .filter(Boolean).join(' · '),
+      timestamp: checkin.created_at,
+    });
+  }
+
+  medLogs.forEach((log) => {
+    items.push({
+      type:      'medicine',
+      title:     'Confirmed medicine taken',
+      subtitle:  medNameById[log.medicine_id] ?? '',
+      timestamp: log.taken_at,
+    });
+  });
+
+  return items
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+    .slice(0, 8);
+}
+
+async function getElderDashboardForGuardian(guardianId, elderId) {
+  const connected = await isConnectedToElder(guardianId, elderId);
+  if (!connected) {
+    const error = new Error('You are not connected to this elder.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const today = todayISO();
+
+  const [
+    profileRows, medicines, medLogsToday, checkinToday, moods, journalEntries,
+    memoriesCount, mindStats,
+  ] = await Promise.all([
+    query('SELECT id, full_name, age, location, profile_image, mobile, streak FROM profiles WHERE id = ? LIMIT 1', [elderId]),
+    query('SELECT id, name, dosage, time, schedule_time, instruction FROM medicines WHERE user_id = ? AND is_active = 1', [elderId]),
+    query('SELECT medicine_id, taken_at FROM medicine_logs WHERE user_id = ? AND taken_date = ?', [elderId, today]),
+    query(
+      `SELECT mood, sleep_hours, created_at FROM daily_checkins WHERE user_id = ? AND check_in_date = ? LIMIT 1`,
+      [elderId, today],
+    ),
+    query('SELECT mood, note, created_at FROM mood_entries WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 10', [elderId, `${today} 00:00:00.000`]),
+    journalService.listByUser(elderId),
+    journalService.countByUser(elderId),
+    mindGamesService.getUserStats(elderId),
+  ]);
+
+  const profile = profileRows[0] ?? null;
+  const loggedMedIds = new Set(medLogsToday.map((l) => l.medicine_id));
+  const medNameById = {};
+  medicines.forEach((m) => { medNameById[m.id] = m.name; });
+
+  const activity = buildActivityFeed({
+    journalEntries: journalEntries.slice(0, 10),
+    moods,
+    checkin: checkinToday[0] ?? null,
+    medLogs: medLogsToday,
+    medNameById,
+    today,
+  });
+
+  const activeMedCount = medicines.length;
+  const takenMedCount = medicines.filter((m) => loggedMedIds.has(m.id)).length;
+  const adherencePercent = activeMedCount > 0 ? Math.round((takenMedCount / activeMedCount) * 100) : null;
+
+  return {
+    elderId,
+    profile: profile ? {
+      fullName:     profile.full_name,
+      age:          profile.age,
+      location:     profile.location,
+      profileImage: profile.profile_image,
+      mobile:       profile.mobile,
+      streak:       profile.streak ?? 0,
+    } : null,
+    medicines: medicines.map((m) => ({
+      id:           m.id,
+      name:         m.name,
+      dosage:       m.dosage,
+      time:         m.time,
+      scheduleTime: m.schedule_time,
+      instruction:  m.instruction,
+      takenToday:   loggedMedIds.has(m.id),
+    })),
+    adherencePercent,
+    memoriesCount,
+    mindGamesScore: mindStats.totalScore ?? 0,
+    checkedInToday: !!checkinToday[0],
+    activity,
+  };
+}
+
 async function listSentInvitations(guardianId) {
   const rows = await query(
     `SELECT id, guardian_id, elder_id, elder_email, parent_name, relation, status, created_at, updated_at
@@ -611,4 +784,5 @@ module.exports = {
   unlinkElder,
   getElderPushToken,
   getElderSummaryForGuardian,
+  getElderDashboardForGuardian,
 };

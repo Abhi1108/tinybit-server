@@ -14,7 +14,14 @@ const {
   getConnectedGuardians,
   removeElder,
   getElderSummary,
+  getElderDashboard,
+  getElderCoGuardians,
+  notifyOtherGuardians,
+  listElderEmergencyContacts,
+  createElderEmergencyContact,
+  sendElderReminder,
   listElderMedicines,
+  getElderMedicine,
   createElderMedicine,
   updateElderMedicine,
   deleteElderMedicine,
@@ -38,13 +45,22 @@ router.delete('/elders/:elderId',    requireJwtAuth, removeElder);
 router.get('/alerts',                requireJwtAuth, guardianAlerts);
 router.get('/location',              requireJwtAuth, guardianLocation);
 router.get('/reports',               requireJwtAuth, guardianReports);
-router.get('/elders/:elderId/summary', requireJwtAuth, getElderSummary);
+router.get('/elders/:elderId/summary',   requireJwtAuth, getElderSummary);
+router.get('/elders/:elderId/dashboard', requireJwtAuth, getElderDashboard);
+router.get('/elders/:elderId/co-guardians', requireJwtAuth, getElderCoGuardians);
+router.post('/elders/:elderId/notify-guardians', requireJwtAuth, notifyOtherGuardians);
+router.get('/elders/:elderId/emergency-contacts',  requireJwtAuth, listElderEmergencyContacts);
+router.post('/elders/:elderId/emergency-contacts', requireJwtAuth, createElderEmergencyContact);
+router.post('/elders/:elderId/send-reminder',       requireJwtAuth, sendElderReminder);
 
 router.get('/elders/:elderId/medicines',        requireJwtAuth, listElderMedicines);
 router.post('/elders/:elderId/medicines',       requireJwtAuth, createElderMedicine);
+router.get('/elders/:elderId/medicines/logs',   requireJwtAuth, listElderMedicineLogs);
+// NOTE: /medicines/:id must be registered after the /medicines/logs literal route above,
+// or a request to .../medicines/logs would match :id="logs" here instead.
+router.get('/elders/:elderId/medicines/:id',    requireJwtAuth, getElderMedicine);
 router.patch('/elders/:elderId/medicines/:id',  requireJwtAuth, updateElderMedicine);
 router.delete('/elders/:elderId/medicines/:id', requireJwtAuth, deleteElderMedicine);
-router.get('/elders/:elderId/medicines/logs',   requireJwtAuth, listElderMedicineLogs);
 
 router.get('/elders/:elderId/health-records',        requireJwtAuth, listElderHealthRecords);
 router.post('/elders/:elderId/health-records',       requireJwtAuth, createElderHealthRecord);

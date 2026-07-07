@@ -332,7 +332,35 @@ Requires `OPENAI_API_KEY` / `GEMINI_API_KEY` per implementation branch in contro
 
 ### Guardian — `/api/guardian`
 
-Invites, connections, elder list, alerts, location, reports.
+Invites, connections, elder list (+ `DELETE /elders/:elderId` to unlink), alerts, location
+(now backed by real `elder_locations` GPS rows, gated by the elder's `is_sharing` flag — not the
+old `profiles.location` text field), reports, and per-elder detail (`GET /elders/:elderId/summary`
+— mood + check-in history).
+
+**Elder-scoped write endpoints** (guardian manages a connected elder's own data; every route is
+gated by `guardianService.isConnectedToElder(guardianId, elderId)`; none of these touch the
+elder-facing `/api/medicines`, `/api/health-vault/*`, or `/api/storage/*` routes):
+
+| Method | Path | Notes |
+|--------|------|-------|
+| GET/POST | `/elders/:elderId/medicines` | List / create — mirrors `/api/medicines`, notifies the elder via push on change |
+| GET | `/elders/:elderId/medicines/:id` | Single fetch — used by `add-medicine.tsx` in guardian mode |
+| PATCH/DELETE | `/elders/:elderId/medicines/:id` | Update / delete |
+| GET | `/elders/:elderId/medicines/logs` | Read-only — guardian never marks a dose "taken" on the elder's behalf |
+| GET/POST | `/elders/:elderId/health-records` | Mirrors `/api/health-vault/records` |
+| DELETE | `/elders/:elderId/health-records/:id` | |
+| POST | `/elders/:elderId/storage/presign-upload` | Keys the S3 object under the **elder's** id (not the guardian's), so the elder can read it back via the normal `/api/storage/presign-download` |
+| POST | `/elders/:elderId/storage/presign-download` | For the guardian to re-read a file keyed under the elder's id |
+| GET | `/elders/:elderId/dashboard` | Guardian Home Dashboard — profile, medicines+adherence, memories count, mind-games score, real "Today's Activity" feed |
+| GET | `/elders/:elderId/co-guardians` | Other guardians also connected to this elder (Family Circle screen) |
+| GET/POST | `/elders/:elderId/emergency-contacts` | Elder's emergency contacts (Quick Actions screen) |
+| POST | `/elders/:elderId/notify-guardians` | Push-notifies the elder's *other* connected guardians (Alerts "Notify Caregiver", Quick Actions "SOS Alert") |
+| POST | `/elders/:elderId/send-reminder` | One-off push notification to the elder (Quick Actions "Send Reminders") |
+
+`GET /reports?period=weekly|monthly|yearly` is now period-aware (was previously hardcoded to a
+7-day window regardless of the query param) — weekly returns 7 daily bars, monthly ~4 weekly bars
+over the last 30 days, yearly 12 monthly bars over the last 365 days. Check-in streak is always
+"consecutive days ending today" over a fixed 30-day lookback, independent of the selected period.
 
 ### SOS — `/api/sos`
 
@@ -348,7 +376,14 @@ QR generation (uses `SERVER_URL`) + public read by token.
 
 ### Family messages — `/api/family/messages`
 
-Latest, count, create — accepts `content` or `message` alias; default date today.
+Latest, count, create — accepts `content` or `message` alias; default date today. Create also
+accepts an optional `audio_url` (voice message; requires migration below). `POST
+/presign-download` `{ audio_url }` lets either the sender or receiver play a voice message back —
+needed because the object is keyed under the *sender's* id, so the generic
+`/api/storage/presign-download` would reject the receiver.
+
+**Pending manual migration**: `mysql/add_family_messages_audio.sql` adds `family_messages.audio_url`
+— run it against RDS before voice messages go live.
 
 ---
 

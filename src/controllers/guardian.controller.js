@@ -2,6 +2,7 @@ const guardianService = require('../services/guardian.service');
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
 const healthRecordsService = require('../services/health-records.service');
+const emergencyContactsService = require('../services/emergency-contacts.service');
 const { normalizeCreatePayload } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
@@ -210,13 +211,18 @@ const guardianLocation = async (req, res) => {
   }
 };
 
+const VALID_REPORT_PERIODS = new Set(['weekly', 'monthly', 'yearly']);
+
 // GET /api/guardian/reports?period=weekly|monthly|yearly
 const guardianReports = async (req, res) => {
   const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
+  const periodRaw = String(req.query.period ?? 'weekly').toLowerCase();
+  const period = VALID_REPORT_PERIODS.has(periodRaw) ? periodRaw : 'weekly';
+
   try {
-    const data = await guardianService.getGuardianReports(guardianId);
+    const data = await guardianService.getGuardianReports(guardianId, period);
     return res.json({ success: true, data });
   } catch (err) {
     console.error('guardianReports error:', err);
@@ -235,6 +241,125 @@ const getConnectedGuardians = async (req, res) => {
   } catch (err) {
     console.error('getConnectedGuardians error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/co-guardians — other guardians also watching this elder
+const getElderCoGuardians = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+  const guardianId = req.auth?.userId;
+
+  try {
+    const all = await guardianService.getConnectedGuardians(elderId);
+    const others = all.filter((g) => g.id !== guardianId);
+    return res.json({ success: true, data: others });
+  } catch (err) {
+    console.error('getElderCoGuardians error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/notify-guardians — { message }
+const notifyOtherGuardians = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+  const guardianId = req.auth?.userId;
+
+  try {
+    const message = String(req.body?.message ?? '').trim() || 'Please check on this alert.';
+    const allGuardians = await guardianService.getConnectedGuardians(elderId);
+    const others = allGuardians.filter((g) => g.id !== guardianId);
+
+    await Promise.all(
+      others
+        .filter((g) => g.push_token)
+        .map((g) => sendExpoPush(g.push_token, {
+          title: 'Care Alert',
+          body: message,
+          data: { type: 'guardian_alert_notify' },
+        }).catch(() => {})),
+    );
+
+    return res.json({ success: true, notified: others.length });
+  } catch (err) {
+    console.error('notifyOtherGuardians error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/emergency-contacts
+const listElderEmergencyContacts = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const contacts = await emergencyContactsService.listByUserId(elderId);
+    return res.json({ success: true, contacts });
+  } catch (err) {
+    console.error('listElderEmergencyContacts error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load emergency contacts.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/emergency-contacts
+const createElderEmergencyContact = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const { name, role, phone, color } = req.body ?? {};
+    if (!name || !phone) {
+      return res.status(400).json({ success: false, message: 'name and phone are required.' });
+    }
+    const contact = await emergencyContactsService.create(elderId, { name, role: role ?? null, phone, color: color ?? null });
+    return res.json({ success: true, contact });
+  } catch (err) {
+    console.error('createElderEmergencyContact error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not save emergency contact.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/send-reminder — { message }
+const sendElderReminder = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const message = String(req.body?.message ?? '').trim();
+    if (!message) {
+      return res.status(400).json({ success: false, message: 'message is required.' });
+    }
+    const token = await guardianService.getElderPushToken(elderId);
+    if (!token) {
+      return res.status(404).json({ success: false, message: 'This elder has no device registered for notifications.' });
+    }
+    await sendExpoPush(token, {
+      title: 'Reminder from your family',
+      body: message,
+      data: { type: 'guardian_reminder' },
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('sendElderReminder error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not send reminder.' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/dashboard
+const getElderDashboard = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!elderId) return res.status(400).json({ success: false, message: 'elderId is required' });
+
+  try {
+    const data = await guardianService.getElderDashboardForGuardian(guardianId, elderId);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('getElderDashboard error:', err);
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Server error' });
   }
 };
 
@@ -286,6 +411,23 @@ const listElderMedicines = async (req, res) => {
   } catch (err) {
     console.error('listElderMedicines error:', err);
     return res.status(500).json({ success: false, message: err.message || 'Could not load medicines.' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/medicines/:id
+const getElderMedicine = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const medicine = await medicinesService.getById(elderId, req.params.id);
+    if (!medicine) {
+      return res.status(404).json({ success: false, message: 'Medicine not found.' });
+    }
+    return res.json({ success: true, medicine });
+  } catch (err) {
+    console.error('getElderMedicine error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load medicine.' });
   }
 };
 
@@ -529,7 +671,14 @@ module.exports = {
   getConnectedGuardians,
   removeElder,
   getElderSummary,
+  getElderDashboard,
+  getElderCoGuardians,
+  notifyOtherGuardians,
+  listElderEmergencyContacts,
+  createElderEmergencyContact,
+  sendElderReminder,
   listElderMedicines,
+  getElderMedicine,
   createElderMedicine,
   updateElderMedicine,
   deleteElderMedicine,
