@@ -307,24 +307,40 @@ async function getGuardianLocationElders(guardianId) {
 
   const ids = links.map((l) => l.elder_id).filter(Boolean);
   const pMap = {};
+  const locMap = {};
 
   if (ids.length > 0) {
     const { sql: inSql, params: inParams } = inClause(ids);
-    const profiles = await query(
-      `SELECT id, full_name, location
-       FROM profiles
-       WHERE id IN (${inSql})`,
-      inParams,
-    );
+    const [profiles, locations] = await Promise.all([
+      query(`SELECT id, full_name FROM profiles WHERE id IN (${inSql})`, inParams),
+      query(
+        `SELECT elder_id, latitude, longitude, accuracy, address, is_sharing, updated_at
+         FROM elder_locations
+         WHERE elder_id IN (${inSql})`,
+        inParams,
+      ),
+    ]);
     profiles.forEach((p) => { pMap[p.id] = p; });
+    locations.forEach((l) => { locMap[l.elder_id] = l; });
   }
 
-  return links.map((link) => ({
-    elderId: link.elder_id,
-    name: pMap[link.elder_id]?.full_name || link.parent_name,
-    relation: link.relation,
-    location: pMap[link.elder_id]?.location || null,
-  }));
+  return links.map((link) => {
+    const loc = locMap[link.elder_id];
+    const isSharing = !!loc?.is_sharing;
+    return {
+      elderId:    link.elder_id,
+      name:       pMap[link.elder_id]?.full_name || link.parent_name,
+      relation:   link.relation,
+      isSharing,
+      latitude:   isSharing ? loc.latitude : null,
+      longitude:  isSharing ? loc.longitude : null,
+      accuracy:   isSharing ? loc.accuracy : null,
+      address:    isSharing ? loc.address : null,
+      updatedAt:  isSharing && loc.updated_at
+        ? (loc.updated_at instanceof Date ? loc.updated_at.toISOString() : loc.updated_at)
+        : null,
+    };
+  });
 }
 
 async function getGuardianReports(guardianId) {
@@ -477,6 +493,91 @@ async function getConnectedGuardians(elderId) {
   }));
 }
 
+async function isConnectedToElder(guardianId, elderId) {
+  const rows = await query(
+    `SELECT id FROM guardian_elder_links
+     WHERE guardian_id = ? AND elder_id = ? AND status = 'connected'
+     LIMIT 1`,
+    [guardianId, elderId],
+  );
+  return rows.length > 0;
+}
+
+async function unlinkElder(guardianId, elderId) {
+  const result = await execute(
+    `DELETE FROM guardian_elder_links
+     WHERE guardian_id = ? AND elder_id = ? AND status = 'connected'`,
+    [guardianId, elderId],
+  );
+  return result.affectedRows > 0;
+}
+
+async function getElderPushToken(elderId) {
+  const rows = await query('SELECT push_token FROM profiles WHERE id = ? LIMIT 1', [elderId]);
+  return rows[0]?.push_token ?? null;
+}
+
+function isoDate(value) {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : String(value);
+}
+
+async function getElderSummaryForGuardian(guardianId, elderId) {
+  const connected = await isConnectedToElder(guardianId, elderId);
+  if (!connected) {
+    const error = new Error('You are not connected to this elder.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const [profileRows, checkins, moods] = await Promise.all([
+    query('SELECT id, full_name, age, location FROM profiles WHERE id = ? LIMIT 1', [elderId]),
+    query(
+      `SELECT check_in_date, mood, mood_score, sleep_hours, sleep_quality, energy_level,
+              pain_level, physical_activity, notes
+       FROM daily_checkins
+       WHERE user_id = ?
+       ORDER BY check_in_date DESC
+       LIMIT 14`,
+      [elderId],
+    ),
+    query(
+      `SELECT mood, mood_score, note, created_at
+       FROM mood_entries
+       WHERE user_id = ?
+       ORDER BY created_at DESC
+       LIMIT 14`,
+      [elderId],
+    ),
+  ]);
+
+  const profile = profileRows[0] ?? null;
+
+  return {
+    elderId,
+    profile: profile
+      ? { fullName: profile.full_name, age: profile.age, location: profile.location }
+      : null,
+    checkins: checkins.map((c) => ({
+      date:             isoDate(c.check_in_date),
+      mood:             c.mood,
+      moodScore:        c.mood_score,
+      sleepHours:       c.sleep_hours != null ? Number(c.sleep_hours) : null,
+      sleepQuality:     c.sleep_quality,
+      energyLevel:      c.energy_level,
+      painLevel:        c.pain_level,
+      physicalActivity: c.physical_activity,
+      notes:            c.notes,
+    })),
+    moods: moods.map((m) => ({
+      mood:      m.mood,
+      moodScore: m.mood_score,
+      note:      m.note,
+      createdAt: isoDate(m.created_at),
+    })),
+  };
+}
+
 async function listSentInvitations(guardianId) {
   const rows = await query(
     `SELECT id, guardian_id, elder_id, elder_email, parent_name, relation, status, created_at, updated_at
@@ -506,4 +607,8 @@ module.exports = {
   getGuardianReports,
   getConnectedGuardians,
   listSentInvitations,
+  isConnectedToElder,
+  unlinkElder,
+  getElderPushToken,
+  getElderSummaryForGuardian,
 };

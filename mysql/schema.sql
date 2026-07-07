@@ -543,6 +543,7 @@ CREATE TABLE IF NOT EXISTS family_messages (
   sender_id   CHAR(36)     NOT NULL,
   receiver_id CHAR(36)     NOT NULL,
   message     TEXT         NOT NULL,
+  audio_url   TEXT         NULL,
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_family_messages_receiver (receiver_id, created_at DESC),

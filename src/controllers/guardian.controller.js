@@ -1,5 +1,45 @@
 const guardianService = require('../services/guardian.service');
+const medicinesService = require('../services/medicines.service');
+const medicineLogsService = require('../services/medicine-logs.service');
+const healthRecordsService = require('../services/health-records.service');
+const { normalizeCreatePayload } = require('./health-vault.controller');
+const storageService = require('../services/storage.service');
+const { mapStorageError } = require('./storage.controller');
 const { sendExpoPush } = require('../services/notifications.service');
+
+async function notifyElderOfMedicineChange(elderId, message) {
+  try {
+    const token = await guardianService.getElderPushToken(elderId);
+    if (token) {
+      await sendExpoPush(token, {
+        title: 'Medicine Updated',
+        body: message,
+        data: { type: 'guardian_medicine_update' },
+      });
+    }
+  } catch (err) {
+    console.error('notifyElderOfMedicineChange error:', err);
+  }
+}
+
+async function requireElderConnection(req, res) {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) {
+    res.status(401).json({ success: false, message: 'Unauthorized' });
+    return null;
+  }
+  if (!elderId) {
+    res.status(400).json({ success: false, message: 'elderId is required' });
+    return null;
+  }
+  const connected = await guardianService.isConnectedToElder(guardianId, elderId);
+  if (!connected) {
+    res.status(403).json({ success: false, message: 'You are not connected to this elder.' });
+    return null;
+  }
+  return elderId;
+}
 
 async function sendPushNotification(token, guardianName, relation) {
   await sendExpoPush(token, {
@@ -198,6 +238,271 @@ const getConnectedGuardians = async (req, res) => {
   }
 };
 
+// DELETE /api/guardian/elders/:elderId
+const removeElder = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!elderId) return res.status(400).json({ success: false, message: 'elderId is required' });
+
+  try {
+    const removed = await guardianService.unlinkElder(guardianId, elderId);
+    if (!removed) {
+      return res.status(404).json({ success: false, message: 'Connection not found.' });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('removeElder error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/summary
+const getElderSummary = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!elderId) return res.status(400).json({ success: false, message: 'elderId is required' });
+
+  try {
+    const data = await guardianService.getElderSummaryForGuardian(guardianId, elderId);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('getElderSummary error:', err);
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/medicines
+const listElderMedicines = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const activeOnly = String(req.query.active ?? 'true').toLowerCase() !== 'false';
+    const medicines = await medicinesService.listByUser(elderId, { activeOnly });
+    return res.json({ success: true, medicines });
+  } catch (err) {
+    console.error('listElderMedicines error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load medicines.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/medicines
+const createElderMedicine = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const body = req.body ?? {};
+    const rawRows = Array.isArray(body.medicines) ? body.medicines : [body];
+
+    if (rawRows.length === 0 || !rawRows[0]?.name?.trim()) {
+      return res.status(400).json({ success: false, message: 'Medicine name is required.' });
+    }
+
+    const medicines = await medicinesService.create(elderId, rawRows);
+    await notifyElderOfMedicineChange(elderId, 'Your guardian added a new medicine to your schedule.');
+    return res.json({ success: true, medicines });
+  } catch (err) {
+    console.error('createElderMedicine error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not save medicine.' });
+  }
+};
+
+// PATCH /api/guardian/elders/:elderId/medicines/:id
+const updateElderMedicine = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const {
+      user_id: _ignoredUserId,
+      id: _ignoredId,
+      created_at: _ignoredCreatedAt,
+      updated_at: _ignoredUpdatedAt,
+      ...patch
+    } = req.body ?? {};
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ success: false, message: 'No fields to update.' });
+    }
+
+    const medicine = await medicinesService.update(elderId, req.params.id, patch);
+    if (!medicine) {
+      return res.status(404).json({ success: false, message: 'Medicine not found.' });
+    }
+
+    await notifyElderOfMedicineChange(elderId, 'Your guardian updated a medicine in your schedule.');
+    return res.json({ success: true, medicine });
+  } catch (err) {
+    console.error('updateElderMedicine error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not update medicine.' });
+  }
+};
+
+// DELETE /api/guardian/elders/:elderId/medicines/:id
+const deleteElderMedicine = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const deleted = await medicinesService.delete(elderId, req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Medicine not found.' });
+    }
+
+    await notifyElderOfMedicineChange(elderId, 'Your guardian removed a medicine from your schedule.');
+    return res.json({ success: true, id: deleted.id });
+  } catch (err) {
+    console.error('deleteElderMedicine error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not delete medicine.' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/medicines/logs
+const listElderMedicineLogs = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const scope = String(req.query.scope ?? '').toLowerCase();
+    let logs;
+    if (scope === 'week') {
+      logs = await medicineLogsService.listForWeek(elderId);
+    } else if (req.query.from && req.query.to) {
+      logs = await medicineLogsService.listInRange(
+        elderId,
+        new Date(String(req.query.from)),
+        new Date(String(req.query.to)),
+      );
+    } else {
+      logs = await medicineLogsService.listForDay(elderId);
+    }
+    return res.json({ success: true, logs });
+  } catch (err) {
+    console.error('listElderMedicineLogs error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load medicine logs.' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/health-records
+const listElderHealthRecords = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const { category, date_range: dateRange } = req.query ?? {};
+    const records = await healthRecordsService.listByUser(elderId, { category, dateRange });
+    return res.json({ success: true, records });
+  } catch (err) {
+    console.error('listElderHealthRecords error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load health records.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/health-records
+const createElderHealthRecord = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const payload = normalizeCreatePayload(req.body ?? {});
+
+    if (!payload.title) {
+      return res.status(400).json({ success: false, message: 'Record title is required.' });
+    }
+    if (!payload.uri || !/^https?:\/\//i.test(payload.uri)) {
+      return res.status(400).json({
+        success: false,
+        message: 'file_url is required. Upload the file via POST /api/storage/presign-upload first.',
+      });
+    }
+
+    const record = await healthRecordsService.create(elderId, payload);
+    return res.json({ success: true, record });
+  } catch (err) {
+    console.error('createElderHealthRecord error:', err);
+    if (err?.code === 'ER_CHECK_CONSTRAINT_VIOLATED' || err?.errno === 3819) {
+      return res.status(400).json({ success: false, message: 'Invalid health record category.' });
+    }
+    return res.status(500).json({ success: false, message: err.message || 'Could not save health record.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/storage/presign-upload
+const presignElderUpload = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const body = req.body ?? {};
+    const filename = body.filename ?? body.file_name ?? body.fileName;
+    const contentType = body.content_type ?? body.contentType ?? body.mime_type ?? body.mimeType;
+
+    if (!filename || !String(filename).trim()) {
+      return res.status(400).json({ success: false, message: 'filename is required.' });
+    }
+
+    const result = await storageService.createPresignedUpload({
+      purpose: body.purpose,
+      userId: elderId,
+      filename: String(filename).trim(),
+      contentType,
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('presignElderUpload error:', err);
+    const mapped = mapStorageError(err, res);
+    if (mapped) return mapped;
+    return res.status(500).json({ success: false, message: err.message || 'Could not create upload URL.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/storage/presign-download
+const presignElderDownload = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const key = req.body?.key ?? req.query?.key;
+    if (!key || !String(key).trim()) {
+      return res.status(400).json({ success: false, message: 'key is required.' });
+    }
+
+    const result = await storageService.createPresignedDownload({
+      key: String(key).trim(),
+      userId: elderId,
+    });
+
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('presignElderDownload error:', err);
+    const mapped = mapStorageError(err, res);
+    if (mapped) return mapped;
+    return res.status(500).json({ success: false, message: err.message || 'Could not create download URL.' });
+  }
+};
+
+// DELETE /api/guardian/elders/:elderId/health-records/:id
+const deleteElderHealthRecord = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const deleted = await healthRecordsService.deleteById(elderId, req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Health record not found.' });
+    }
+    return res.json({ success: true, id: deleted.id });
+  } catch (err) {
+    console.error('deleteElderHealthRecord error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not delete health record.' });
+  }
+};
+
 const getSentInvitations = async (req, res) => {
   const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -222,4 +527,16 @@ module.exports = {
   guardianLocation,
   guardianReports,
   getConnectedGuardians,
+  removeElder,
+  getElderSummary,
+  listElderMedicines,
+  createElderMedicine,
+  updateElderMedicine,
+  deleteElderMedicine,
+  listElderMedicineLogs,
+  listElderHealthRecords,
+  createElderHealthRecord,
+  deleteElderHealthRecord,
+  presignElderUpload,
+  presignElderDownload,
 };

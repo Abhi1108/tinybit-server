@@ -92,4 +92,5 @@ async function presignDownload(req, res) {
 module.exports = {
   presignUpload,
   presignDownload,
+  mapStorageError,
 };
