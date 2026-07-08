@@ -1,4 +1,6 @@
 const familyMessagesService = require('../services/family-messages.service');
+const storageService = require('../services/storage.service');
+const { mapStorageError } = require('./storage.controller');
 
 function isTableMissing(error) {
   return (
@@ -80,15 +82,20 @@ async function createMessage(req, res) {
     const body = readBody(req);
     const receiverId = String(body.receiver_id ?? body.receiverId ?? '').trim();
     const message = String(body.message ?? body.content ?? '').trim();
+    const audioUrlRaw = body.audio_url ?? body.audioUrl;
+    const audioUrl = audioUrlRaw != null ? String(audioUrlRaw).trim() : null;
 
     if (!receiverId) {
       return res.status(400).json({ success: false, message: 'receiver_id is required.' });
     }
-    if (!message) {
-      return res.status(400).json({ success: false, message: 'message or content is required.' });
+    if (!message && !audioUrl) {
+      return res.status(400).json({ success: false, message: 'message, content, or audio_url is required.' });
+    }
+    if (audioUrl && !/^https?:\/\//i.test(audioUrl)) {
+      return res.status(400).json({ success: false, message: 'audio_url must be an HTTPS URL.' });
     }
 
-    const created = await familyMessagesService.create(senderId, receiverId, message);
+    const created = await familyMessagesService.create(senderId, receiverId, message, audioUrl || null);
     return res.json({ success: true, message: created });
   } catch (err) {
     console.error('[family/messages] create', err);
@@ -102,8 +109,43 @@ async function createMessage(req, res) {
   }
 }
 
+/** POST /api/family/messages/presign-download — { audio_url } of a voice message you sent or received */
+async function presignAudioDownload(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const audioUrl = String(req.body?.audio_url ?? '').trim();
+    if (!audioUrl) {
+      return res.status(400).json({ success: false, message: 'audio_url is required.' });
+    }
+
+    const isParticipant = await familyMessagesService.isParticipantInAudioMessage(userId, audioUrl);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this voice message.' });
+    }
+
+    const key = storageService.extractObjectKey(audioUrl);
+    if (!key) {
+      return res.status(400).json({ success: false, message: 'Invalid audio_url.' });
+    }
+    const ownerId = key.split('/')[1];
+
+    const result = await storageService.createPresignedDownload({ key, userId: ownerId });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[family/messages] presign-download', err);
+    const mapped = mapStorageError(err, res);
+    if (mapped) return mapped;
+    return res.status(500).json({ success: false, message: err.message || 'Could not create download URL.' });
+  }
+}
+
 module.exports = {
   getLatestMessage,
   getMessageCount,
   createMessage,
+  presignAudioDownload,
 };

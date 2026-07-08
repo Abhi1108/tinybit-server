@@ -45,6 +45,16 @@ const {
   createInspiration,
   updateInspiration,
   deleteInspiration,
+  getHelpTutorials,
+  getHelpTutorial,
+  createHelpTutorial,
+  updateHelpTutorial,
+  deleteHelpTutorial,
+  getHelpFaqs,
+  getHelpFaq,
+  createHelpFaq,
+  updateHelpFaq,
+  deleteHelpFaq,
 } = require('../controllers/admin-catalog.controller');
 const { presignCatalogUpload } = require('../controllers/admin-storage.controller');
 
@@ -133,5 +143,17 @@ router.post('/api/inspirations', sessionAuth, createInspiration);
 router.get('/api/inspirations/:id', sessionAuth, getInspiration);
 router.patch('/api/inspirations/:id', sessionAuth, updateInspiration);
 router.delete('/api/inspirations/:id', sessionAuth, deleteInspiration);
+
+router.get('/api/help-tutorials', sessionAuth, getHelpTutorials);
+router.post('/api/help-tutorials', sessionAuth, createHelpTutorial);
+router.get('/api/help-tutorials/:id', sessionAuth, getHelpTutorial);
+router.patch('/api/help-tutorials/:id', sessionAuth, updateHelpTutorial);
+router.delete('/api/help-tutorials/:id', sessionAuth, deleteHelpTutorial);
+
+router.get('/api/help-faqs', sessionAuth, getHelpFaqs);
+router.post('/api/help-faqs', sessionAuth, createHelpFaq);
+router.get('/api/help-faqs/:id', sessionAuth, getHelpFaq);
+router.patch('/api/help-faqs/:id', sessionAuth, updateHelpFaq);
+router.delete('/api/help-faqs/:id', sessionAuth, deleteHelpFaq);
 
 module.exports = router;

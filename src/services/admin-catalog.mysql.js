@@ -7,6 +7,11 @@ const CATALOG_DELETE_ACTOR = 'admin-catalog';
 
 const MOOD_CATEGORIES = new Set(['bhajans', 'meditation', 'jokes_fun', 'nature_sounds']);
 const MOOD_MEDIA_TYPES = new Set(['audio', 'video', 'youtube']);
+const HELP_TUTORIAL_CATEGORIES = new Set([
+  'getting_started', 'health_tracking', 'medicine_management',
+  'talking_with_sathi', 'emergency_features', 'family_features',
+]);
+const HELP_TUTORIAL_DIFFICULTIES = new Set(['beginner', 'intermediate', 'advanced']);
 const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const YOUTUBE_URL_RE = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[a-zA-Z0-9_-]{11}(&.*)?$/i;
 
@@ -696,6 +701,264 @@ async function deleteInspiration(id) {
   return { id };
 }
 
+// ── Help & Guide — tutorials ────────────────────────────────────────────────
+
+function mapHelpTutorial(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    is_active: !!row.is_active,
+    sort_order: Number(row.sort_order ?? 0),
+    duration_seconds: row.duration_seconds == null ? null : Number(row.duration_seconds),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+  };
+}
+
+function requireHelpTutorialCategory(value) {
+  const raw = String(value ?? '').trim();
+  if (!HELP_TUTORIAL_CATEGORIES.has(raw)) {
+    const err = new Error(`category must be one of: ${[...HELP_TUTORIAL_CATEGORIES].join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+  return raw;
+}
+
+function requireHelpTutorialDifficulty(value) {
+  const raw = String(value ?? 'beginner').trim();
+  if (!HELP_TUTORIAL_DIFFICULTIES.has(raw)) {
+    const err = new Error(`difficulty must be one of: ${[...HELP_TUTORIAL_DIFFICULTIES].join(', ')}`);
+    err.status = 400;
+    throw err;
+  }
+  return raw;
+}
+
+async function listHelpTutorials({ page, limit, category, active, search }) {
+  const { limitNum, offset } = parsePageLimit(page, limit);
+  const clauses = [];
+  const params = [];
+
+  if (category) {
+    clauses.push('category = ?');
+    params.push(category);
+  }
+  if (active !== undefined && active !== '') {
+    clauses.push('is_active = ?');
+    params.push(active === 'true' || active === true || active === '1' ? 1 : 0);
+  }
+  if (search) {
+    clauses.push('(title LIKE ? OR description LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const rows = await query(
+    `SELECT id, category, title, description, video_url, thumbnail_url,
+            difficulty, duration_seconds, sort_order, is_active, created_at, updated_at
+     FROM help_tutorials
+     ${where}
+     ORDER BY category ASC, sort_order ASC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map(mapHelpTutorial);
+}
+
+async function getHelpTutorialById(id) {
+  const rows = await query(
+    `SELECT id, category, title, description, video_url, thumbnail_url,
+            difficulty, duration_seconds, sort_order, is_active, created_at, updated_at
+     FROM help_tutorials WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  return mapHelpTutorial(rows[0] ?? null);
+}
+
+async function createHelpTutorial(body) {
+  const { title, description, video_url, thumbnail_url, duration_seconds, sort_order } = body ?? {};
+  if (!title?.trim()) {
+    const err = new Error('title is required');
+    err.status = 400;
+    throw err;
+  }
+
+  const category = requireHelpTutorialCategory(body?.category);
+  const difficulty = requireHelpTutorialDifficulty(body?.difficulty);
+  const normalizedVideoUrl = requireHttpsMediaUrl(video_url, 'video_url');
+  const normalizedThumbnailUrl = requireHttpsMediaUrl(thumbnail_url, 'thumbnail_url');
+
+  const id = randomUUID();
+  await execute(
+    `INSERT INTO help_tutorials
+       (id, category, title, description, video_url, thumbnail_url, difficulty, duration_seconds, sort_order)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      category,
+      title.trim(),
+      description?.trim() || null,
+      normalizedVideoUrl,
+      normalizedThumbnailUrl,
+      difficulty,
+      duration_seconds ?? null,
+      sort_order ?? 0,
+    ],
+  );
+  return getHelpTutorialById(id);
+}
+
+async function updateHelpTutorial(id, body) {
+  const existing = await getHelpTutorialById(id);
+  if (!existing) throw notFound('Help tutorial', id);
+
+  const fields = [];
+  const params = [];
+
+  if (body.category !== undefined) {
+    fields.push('category = ?');
+    params.push(requireHelpTutorialCategory(body.category));
+  }
+  if (body.difficulty !== undefined) {
+    fields.push('difficulty = ?');
+    params.push(requireHelpTutorialDifficulty(body.difficulty));
+  }
+  if (body.video_url !== undefined) {
+    fields.push('video_url = ?');
+    params.push(requireHttpsMediaUrl(body.video_url, 'video_url'));
+  }
+  if (body.thumbnail_url !== undefined) {
+    fields.push('thumbnail_url = ?');
+    params.push(requireHttpsMediaUrl(body.thumbnail_url, 'thumbnail_url'));
+  }
+  if (body.is_active !== undefined) {
+    fields.push('is_active = ?');
+    params.push(body.is_active ? 1 : 0);
+  }
+  for (const key of ['title', 'description', 'duration_seconds', 'sort_order']) {
+    if (body[key] === undefined) continue;
+    fields.push(`${key} = ?`);
+    params.push(typeof body[key] === 'string' ? body[key].trim() : body[key]);
+  }
+
+  if (!fields.length) return existing;
+
+  params.push(id);
+  await execute(`UPDATE help_tutorials SET ${fields.join(', ')} WHERE id = ?`, params);
+  return getHelpTutorialById(id);
+}
+
+async function deleteHelpTutorial(id) {
+  const existing = await getHelpTutorialById(id);
+  if (!existing) throw notFound('Help tutorial', id);
+  await execute('DELETE FROM help_tutorials WHERE id = ?', [id]);
+  for (const url of [existing.video_url, existing.thumbnail_url]) {
+    if (url) await storageService.deleteObjectByUrl(url, CATALOG_DELETE_ACTOR);
+  }
+  return { id };
+}
+
+// ── Help & Guide — FAQs ─────────────────────────────────────────────────────
+
+function mapHelpFaq(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    is_active: !!row.is_active,
+    sort_order: Number(row.sort_order ?? 0),
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+  };
+}
+
+async function listHelpFaqs({ page, limit, active, search }) {
+  const { limitNum, offset } = parsePageLimit(page, limit);
+  const clauses = [];
+  const params = [];
+
+  if (active !== undefined && active !== '') {
+    clauses.push('is_active = ?');
+    params.push(active === 'true' || active === true || active === '1' ? 1 : 0);
+  }
+  if (search) {
+    clauses.push('(question LIKE ? OR answer LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const rows = await query(
+    `SELECT id, question, answer, sort_order, is_active, created_at, updated_at
+     FROM help_faqs
+     ${where}
+     ORDER BY sort_order ASC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map(mapHelpFaq);
+}
+
+async function getHelpFaqById(id) {
+  const rows = await query(
+    `SELECT id, question, answer, sort_order, is_active, created_at, updated_at
+     FROM help_faqs WHERE id = ? LIMIT 1`,
+    [id],
+  );
+  return mapHelpFaq(rows[0] ?? null);
+}
+
+async function createHelpFaq(body) {
+  const { question, answer, sort_order, is_active } = body ?? {};
+  if (!question?.trim() || !answer?.trim()) {
+    const err = new Error('question and answer are required');
+    err.status = 400;
+    throw err;
+  }
+
+  const id = randomUUID();
+  await execute(
+    `INSERT INTO help_faqs (id, question, answer, sort_order, is_active)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, question.trim(), answer.trim(), sort_order ?? 0, is_active === false || is_active === 0 ? 0 : 1],
+  );
+  return getHelpFaqById(id);
+}
+
+async function updateHelpFaq(id, body) {
+  const existing = await getHelpFaqById(id);
+  if (!existing) throw notFound('Help FAQ', id);
+
+  const fields = [];
+  const params = [];
+
+  if (body.is_active !== undefined) {
+    fields.push('is_active = ?');
+    params.push(body.is_active ? 1 : 0);
+  }
+  for (const key of ['question', 'answer', 'sort_order']) {
+    if (body[key] === undefined) continue;
+    fields.push(`${key} = ?`);
+    params.push(typeof body[key] === 'string' ? body[key].trim() : body[key]);
+  }
+
+  if (!fields.length) return existing;
+
+  params.push(id);
+  await execute(`UPDATE help_faqs SET ${fields.join(', ')} WHERE id = ?`, params);
+  return getHelpFaqById(id);
+}
+
+async function deleteHelpFaq(id) {
+  const existing = await getHelpFaqById(id);
+  if (!existing) throw notFound('Help FAQ', id);
+  await execute('DELETE FROM help_faqs WHERE id = ?', [id]);
+  return { id };
+}
+
 module.exports = {
   listDoctors,
   getDoctorById,
@@ -717,4 +980,14 @@ module.exports = {
   createInspiration,
   updateInspiration,
   deleteInspiration,
+  listHelpTutorials,
+  getHelpTutorialById,
+  createHelpTutorial,
+  updateHelpTutorial,
+  deleteHelpTutorial,
+  listHelpFaqs,
+  getHelpFaqById,
+  createHelpFaq,
+  updateHelpFaq,
+  deleteHelpFaq,
 };

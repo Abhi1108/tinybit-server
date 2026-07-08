@@ -27,7 +27,8 @@ const VALID_PURPOSES = new Set([
   'journal',
   'profile',
   'catalog',
-  'calorie-tracker'
+  'calorie-tracker',
+  'family-message'
 ]);
 
 /**

@@ -65,6 +65,7 @@ app.use('/api/mood-media',  require('./routes/mood-media.routes'));
 app.use('/api/storage',     require('./routes/storage.routes'));
 app.use('/api/calorie-tracker', require('./routes/calorie-tracker.routes'));
 app.use('/api/streak',      require('./routes/streak.routes'));
+app.use('/api/help',        require('./routes/help.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
 // ── OpenAPI / Swagger UI (mobile API only — excludes /admin) ────────────────
