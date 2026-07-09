@@ -195,7 +195,24 @@ const chat = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. TRANSCRIBE — Gemini audio understanding
 // ═══════════════════════════════════════════════════════════════════════════════
-const TRANSCRIBE_PROMPT = 'Transcribe this audio recording exactly as spoken, word for word. Respond with ONLY the transcription text — no preamble, no quotation marks, no commentary, no timestamps, no duration markers (e.g. "00:00"), and no bracketed labels like "[silence]". If the audio is silent, contains no speech, or is unintelligible, respond with a completely empty string and nothing else.';
+// Audio-transcription models (Gemini included, same as Whisper) are known to
+// hallucinate a plausible sentence for silent/near-silent clips instead of
+// honoring a free-text "respond with nothing" instruction. Asking the model to
+// commit to an explicit hasSpeech boolean via a JSON schema — and having the
+// server discard the transcript whenever hasSpeech is false, regardless of what
+// text the model produced — is materially more reliable than trusting free-text
+// emptiness. This is a second, independent layer on top of the client-side
+// mic-silence gate in useSathiVoice.ts; neither alone is 100% reliable.
+const TRANSCRIBE_PROMPT = 'Listen to this audio clip. First decide whether it contains any actual intelligible human speech — silence, ambient/background noise, static, breathing, or unintelligible mumbling all count as NOT speech. Set "hasSpeech" to true only if there is real, intelligible speech. If "hasSpeech" is true, put the exact word-for-word transcription in "transcript" (no preamble, no quotation marks, no commentary, no timestamps). If "hasSpeech" is false, set "transcript" to an empty string.';
+
+const TRANSCRIBE_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    hasSpeech:  { type: 'BOOLEAN' },
+    transcript: { type: 'STRING' },
+  },
+  required: ['hasSpeech', 'transcript'],
+};
 
 const transcribe = async (req, res) => {
   try {
@@ -213,7 +230,12 @@ const transcribe = async (req, res) => {
           { text: TRANSCRIBE_PROMPT },
         ],
       }],
-      generationConfig: { maxOutputTokens: 1024, temperature: 0 },
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: TRANSCRIBE_RESPONSE_SCHEMA,
+      },
     }, 30_000);
 
     if (!geminiResp.ok) {
@@ -222,7 +244,21 @@ const transcribe = async (req, res) => {
     }
 
     const json = await geminiResp.json();
-    const text = geminiText(json).trim();
+    const raw = geminiText(json).trim();
+
+    let text = '';
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.hasSpeech === true && typeof parsed.transcript === 'string') {
+        text = parsed.transcript.trim();
+      }
+    } catch {
+      // Malformed JSON from the model — treat as no usable speech rather than
+      // falling back to raw text, which is exactly the unverified path that
+      // let hallucinated sentences through before.
+      text = '';
+    }
+
     return res.json({ success: true, data: { text } });
   } catch (error) {
     return res.status(502).json({ success: false, message: 'Transcription error', detail: error?.message || 'Server error' });
