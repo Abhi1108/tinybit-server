@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
+const { requireActivePlan } = require('../middleware/requireActivePlan.middleware');
 const {
   inviteParent,
   respondToInvitation,
@@ -33,40 +34,40 @@ const {
   presignElderDownload,
 } = require('../controllers/guardian.controller');
 
-router.post('/invite',               requireJwtAuth, inviteParent);
-router.post('/respond',              requireJwtAuth, respondToInvitation);
-router.get('/pending-invitations',   requireJwtAuth, getPendingInvitations);
-router.get('/sent-invitations',      requireJwtAuth, getSentInvitations);
-router.get('/connected-guardians',   requireJwtAuth, getConnectedGuardians);
-router.post('/save-push-token',      requireJwtAuth, savePushToken);
+router.post('/invite',               requireJwtAuth, requireActivePlan, inviteParent);
+router.post('/respond',              requireJwtAuth, requireActivePlan, respondToInvitation);
+router.get('/pending-invitations',   requireJwtAuth, requireActivePlan, getPendingInvitations);
+router.get('/sent-invitations',      requireJwtAuth, requireActivePlan, getSentInvitations);
+router.get('/connected-guardians',   requireJwtAuth, requireActivePlan, getConnectedGuardians);
+router.post('/save-push-token',      requireJwtAuth, requireActivePlan, savePushToken);
 
-router.get('/elders',                requireJwtAuth, guardianElders);
-router.delete('/elders/:elderId',    requireJwtAuth, removeElder);
-router.get('/alerts',                requireJwtAuth, guardianAlerts);
-router.get('/location',              requireJwtAuth, guardianLocation);
-router.get('/reports',               requireJwtAuth, guardianReports);
-router.get('/elders/:elderId/summary',   requireJwtAuth, getElderSummary);
-router.get('/elders/:elderId/dashboard', requireJwtAuth, getElderDashboard);
-router.get('/elders/:elderId/co-guardians', requireJwtAuth, getElderCoGuardians);
-router.post('/elders/:elderId/notify-guardians', requireJwtAuth, notifyOtherGuardians);
-router.get('/elders/:elderId/emergency-contacts',  requireJwtAuth, listElderEmergencyContacts);
-router.post('/elders/:elderId/emergency-contacts', requireJwtAuth, createElderEmergencyContact);
-router.post('/elders/:elderId/send-reminder',       requireJwtAuth, sendElderReminder);
+router.get('/elders',                requireJwtAuth, requireActivePlan, guardianElders);
+router.delete('/elders/:elderId',    requireJwtAuth, requireActivePlan, removeElder);
+router.get('/alerts',                requireJwtAuth, requireActivePlan, guardianAlerts);
+router.get('/location',              requireJwtAuth, requireActivePlan, guardianLocation);
+router.get('/reports',               requireJwtAuth, requireActivePlan, guardianReports);
+router.get('/elders/:elderId/summary',   requireJwtAuth, requireActivePlan, getElderSummary);
+router.get('/elders/:elderId/dashboard', requireJwtAuth, requireActivePlan, getElderDashboard);
+router.get('/elders/:elderId/co-guardians', requireJwtAuth, requireActivePlan, getElderCoGuardians);
+router.post('/elders/:elderId/notify-guardians', requireJwtAuth, requireActivePlan, notifyOtherGuardians);
+router.get('/elders/:elderId/emergency-contacts',  requireJwtAuth, requireActivePlan, listElderEmergencyContacts);
+router.post('/elders/:elderId/emergency-contacts', requireJwtAuth, requireActivePlan, createElderEmergencyContact);
+router.post('/elders/:elderId/send-reminder',       requireJwtAuth, requireActivePlan, sendElderReminder);
 
-router.get('/elders/:elderId/medicines',        requireJwtAuth, listElderMedicines);
-router.post('/elders/:elderId/medicines',       requireJwtAuth, createElderMedicine);
-router.get('/elders/:elderId/medicines/logs',   requireJwtAuth, listElderMedicineLogs);
+router.get('/elders/:elderId/medicines',        requireJwtAuth, requireActivePlan, listElderMedicines);
+router.post('/elders/:elderId/medicines',       requireJwtAuth, requireActivePlan, createElderMedicine);
+router.get('/elders/:elderId/medicines/logs',   requireJwtAuth, requireActivePlan, listElderMedicineLogs);
 // NOTE: /medicines/:id must be registered after the /medicines/logs literal route above,
 // or a request to .../medicines/logs would match :id="logs" here instead.
-router.get('/elders/:elderId/medicines/:id',    requireJwtAuth, getElderMedicine);
-router.patch('/elders/:elderId/medicines/:id',  requireJwtAuth, updateElderMedicine);
-router.delete('/elders/:elderId/medicines/:id', requireJwtAuth, deleteElderMedicine);
+router.get('/elders/:elderId/medicines/:id',    requireJwtAuth, requireActivePlan, getElderMedicine);
+router.patch('/elders/:elderId/medicines/:id',  requireJwtAuth, requireActivePlan, updateElderMedicine);
+router.delete('/elders/:elderId/medicines/:id', requireJwtAuth, requireActivePlan, deleteElderMedicine);
 
-router.get('/elders/:elderId/health-records',        requireJwtAuth, listElderHealthRecords);
-router.post('/elders/:elderId/health-records',       requireJwtAuth, createElderHealthRecord);
-router.delete('/elders/:elderId/health-records/:id', requireJwtAuth, deleteElderHealthRecord);
+router.get('/elders/:elderId/health-records',        requireJwtAuth, requireActivePlan, listElderHealthRecords);
+router.post('/elders/:elderId/health-records',       requireJwtAuth, requireActivePlan, createElderHealthRecord);
+router.delete('/elders/:elderId/health-records/:id', requireJwtAuth, requireActivePlan, deleteElderHealthRecord);
 
-router.post('/elders/:elderId/storage/presign-upload',   requireJwtAuth, presignElderUpload);
-router.post('/elders/:elderId/storage/presign-download', requireJwtAuth, presignElderDownload);
+router.post('/elders/:elderId/storage/presign-upload',   requireJwtAuth, requireActivePlan, presignElderUpload);
+router.post('/elders/:elderId/storage/presign-download', requireJwtAuth, requireActivePlan, presignElderDownload);
 
 module.exports = router;

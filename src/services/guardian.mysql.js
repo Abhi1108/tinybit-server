@@ -24,10 +24,12 @@ async function ensureGuardianProfile(guardianId, guardianName, email) {
   if (existing[0]?.id) return;
 
   try {
+    // plan_status starts 'inactive' — guardians must complete a payment before use
+    // (CONTEXT.md Q6, no free trial); requireActivePlan middleware enforces this.
     await execute(
       `INSERT INTO profiles (
          id, email, full_name, role, plan_type, plan_status, plan_currency, streak
-       ) VALUES (?, ?, ?, 'guardian', 'free', 'active', 'INR', 0)`,
+       ) VALUES (?, ?, ?, 'guardian', 'free', 'inactive', 'INR', 0)`,
       [guardianId, email ?? null, guardianName || email || 'Family member'],
     );
   } catch (err) {

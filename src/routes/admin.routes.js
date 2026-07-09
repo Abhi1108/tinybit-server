@@ -57,6 +57,16 @@ const {
   deleteHelpFaq,
 } = require('../controllers/admin-catalog.controller');
 const { presignCatalogUpload } = require('../controllers/admin-storage.controller');
+const {
+  getPricingTiers,
+  getPricingTier,
+  createPricingTier,
+  updatePricingTier,
+  deletePricingTier,
+  getOrders,
+  getOrder,
+  refundPayment,
+} = require('../controllers/admin-payments.controller');
 
 router.use(express.static(path.join(__dirname, '../../public/admin')));
 
@@ -155,5 +165,15 @@ router.post('/api/help-faqs', sessionAuth, createHelpFaq);
 router.get('/api/help-faqs/:id', sessionAuth, getHelpFaq);
 router.patch('/api/help-faqs/:id', sessionAuth, updateHelpFaq);
 router.delete('/api/help-faqs/:id', sessionAuth, deleteHelpFaq);
+
+router.get('/api/pricing-tiers', sessionAuth, getPricingTiers);
+router.post('/api/pricing-tiers', sessionAuth, createPricingTier);
+router.get('/api/pricing-tiers/:id', sessionAuth, getPricingTier);
+router.patch('/api/pricing-tiers/:id', sessionAuth, updatePricingTier);
+router.delete('/api/pricing-tiers/:id', sessionAuth, deletePricingTier);
+
+router.get('/api/payments/orders', sessionAuth, getOrders);
+router.get('/api/payments/orders/:id', sessionAuth, getOrder);
+router.post('/api/payments/:id/refund', sessionAuth, refundPayment);
 
 module.exports = router;

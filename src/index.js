@@ -11,6 +11,12 @@ app.use(express.json({
   limit: '25mb',
   strict: true,
   type: ['application/json', 'application/*+json'],
+  // Capture the exact raw bytes alongside the parsed body — the Razorpay webhook
+  // signature (src/controllers/payment-webhooks.controller.js) must be computed over
+  // the untouched raw request, not a re-serialization of the parsed JSON.
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
 }));
 
 // ── Health check first — no deps, responds instantly ─────────────────────────
@@ -38,6 +44,7 @@ app.get('/api/health', async (req, res) => {
 app.use('/api/auth',        require('./routes/auth.routes'));
 app.use('/api/ai',          require('./routes/ai.routes'));
 app.use('/api/guardian',    require('./routes/guardian.routes'));
+app.use('/api/payments',    require('./routes/payments.routes'));
 app.use('/api/sos',         require('./routes/sos.routes'));
 app.use('/api/wellness',    require('./routes/wellness.routes'));
 app.use('/api/medicines',   require('./routes/medicine.routes'));
