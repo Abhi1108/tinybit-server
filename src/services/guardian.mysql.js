@@ -6,6 +6,19 @@ function todayISO() {
   return new Date().toISOString().split('T')[0];
 }
 
+/** Monday..Sunday ISO dates (YYYY-MM-DD) for the calendar week containing `today` (UTC). */
+function currentWeekDates(today) {
+  const d = new Date(`${today}T00:00:00.000Z`);
+  const isoDow = d.getUTCDay() === 0 ? 7 : d.getUTCDay(); // Mon=1..Sun=7
+  const monday = new Date(d);
+  monday.setUTCDate(d.getUTCDate() - (isoDow - 1));
+  return Array.from({ length: 7 }, (_, i) => {
+    const day = new Date(monday);
+    day.setUTCDate(monday.getUTCDate() + i);
+    return day.toISOString().split('T')[0];
+  });
+}
+
 function inClause(ids) {
   if (!ids.length) return { sql: 'NULL', params: [] };
   return { sql: ids.map(() => '?').join(', '), params: ids };
@@ -154,13 +167,13 @@ async function getGuardianEldersDashboard(guardianId) {
 
   const [profiles, checkins, meds, logs] = await Promise.all([
     query(
-      `SELECT id, full_name, age, location, mobile
+      `SELECT id, full_name, age, location, mobile, last_active
        FROM profiles
        WHERE id IN (${inSql})`,
       inParams,
     ),
     query(
-      `SELECT user_id
+      `SELECT user_id, mood
        FROM daily_checkins
        WHERE user_id IN (${inSql}) AND check_in_date = ?`,
       [...inParams, today],
@@ -183,6 +196,8 @@ async function getGuardianEldersDashboard(guardianId) {
   profiles.forEach((p) => { pMap[p.id] = p; });
 
   const checkinIds = new Set(checkins.map((c) => c.user_id));
+  const moodByUser = {};
+  checkins.forEach((c) => { moodByUser[c.user_id] = c.mood ?? null; });
   const medsByUser = {};
   meds.forEach((m) => {
     if (!medsByUser[m.user_id]) medsByUser[m.user_id] = [];
@@ -204,6 +219,10 @@ async function getGuardianEldersDashboard(guardianId) {
       checkedInToday: checkinIds.has(link.elder_id),
       medicineCount: userMeds.length,
       medicinesDone: userMeds.filter((id) => loggedMeds.has(id)).length,
+      mood: moodByUser[link.elder_id] ?? null,
+      lastActiveAt: profile?.last_active
+        ? (profile.last_active instanceof Date ? profile.last_active.toISOString() : profile.last_active)
+        : null,
     };
   });
 }
@@ -690,12 +709,13 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
   }
 
   const today = todayISO();
+  const weekDates = currentWeekDates(today);
 
   const [
     profileRows, medicines, medLogsToday, checkinToday, moods, journalEntries,
-    memoriesCount, mindStats,
+    memoriesCount, mindStats, weekCheckins, locationRows,
   ] = await Promise.all([
-    query('SELECT id, full_name, age, location, profile_image, mobile, streak FROM profiles WHERE id = ? LIMIT 1', [elderId]),
+    query('SELECT id, full_name, age, location, profile_image, mobile, streak, last_active FROM profiles WHERE id = ? LIMIT 1', [elderId]),
     query('SELECT id, name, dosage, time, schedule_time, instruction, priority FROM medicines WHERE user_id = ? AND is_active = 1', [elderId]),
     query('SELECT medicine_id, taken_at FROM medicine_logs WHERE user_id = ? AND taken_date = ?', [elderId, today]),
     query(
@@ -706,12 +726,47 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
     journalService.listByUser(elderId),
     journalService.countByUser(elderId),
     mindGamesService.getUserStats(elderId),
+    query(
+      `SELECT check_in_date FROM daily_checkins WHERE user_id = ? AND check_in_date BETWEEN ? AND ?`,
+      [elderId, weekDates[0], weekDates[6]],
+    ),
+    query(
+      `SELECT latitude, longitude, accuracy, address, is_sharing, updated_at
+       FROM elder_locations WHERE elder_id = ? LIMIT 1`,
+      [elderId],
+    ),
   ]);
 
   const profile = profileRows[0] ?? null;
   const loggedMedIds = new Set(medLogsToday.map((l) => l.medicine_id));
   const medNameById = {};
   medicines.forEach((m) => { medNameById[m.id] = m.name; });
+
+  const checkedInDates = new Set(
+    weekCheckins.map((c) => (c.check_in_date instanceof Date
+      ? c.check_in_date.toISOString().split('T')[0]
+      : String(c.check_in_date))),
+  );
+  const checkinWeek = weekDates.map((date) => {
+    let status;
+    if (date > today) status = 'future';
+    else if (date === today) status = checkedInDates.has(date) ? 'done' : 'pending';
+    else status = checkedInDates.has(date) ? 'done' : 'missed';
+    return { date, status };
+  });
+
+  const loc = locationRows[0] ?? null;
+  const isSharing = !!loc?.is_sharing;
+  const location = loc ? {
+    isSharing,
+    latitude:  isSharing ? loc.latitude : null,
+    longitude: isSharing ? loc.longitude : null,
+    accuracy:  isSharing ? loc.accuracy : null,
+    address:   isSharing ? loc.address : null,
+    updatedAt: isSharing && loc.updated_at
+      ? (loc.updated_at instanceof Date ? loc.updated_at.toISOString() : loc.updated_at)
+      : null,
+  } : null;
 
   const activity = buildActivityFeed({
     journalEntries: journalEntries.slice(0, 10),
@@ -750,8 +805,99 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
     memoriesCount,
     mindGamesScore: mindStats.totalScore ?? 0,
     checkedInToday: !!checkinToday[0],
+    mood: checkinToday[0]?.mood ?? null,
+    lastActiveAt: profile?.last_active
+      ? (profile.last_active instanceof Date ? profile.last_active.toISOString() : profile.last_active)
+      : null,
+    checkinWeek,
+    location,
     activity,
   };
+}
+
+/** Normalizes a MySQL DATE/DATETIME value (Date object or string) to 'YYYY-MM-DD'. */
+function toDateOnlyString(value) {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString().split('T')[0] : String(value).slice(0, 10);
+}
+
+/**
+ * Per-day medicine-adherence bucket for the "7-Day Adherence" strip on the guardian
+ * elder-medicines screen — Monday..Sunday of the current calendar week (UTC), mirroring
+ * `checkinWeek`'s date-range convention above. For each day, "expected" doses are the
+ * elder's active medicines whose `days_of_week` includes that weekday and whose
+ * start/end date window covers the day; "taken" is how many of those were logged.
+ * `status` buckets the taken/expected ratio into good (>=80%) / ok (50-79%) / poor (<50%),
+ * plus `none` (nothing scheduled that day) and `future` (day hasn't happened yet).
+ */
+async function getElderMedicineAdherenceWeek(guardianId, elderId) {
+  const connected = await isConnectedToElder(guardianId, elderId);
+  if (!connected) {
+    const error = new Error('You are not connected to this elder.');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const today = todayISO();
+  const weekDates = currentWeekDates(today);
+
+  const [medicineRows, logRows] = await Promise.all([
+    query(
+      `SELECT id, days_of_week, start_date, end_date
+       FROM medicines WHERE user_id = ? AND is_active = 1`,
+      [elderId],
+    ),
+    query(
+      `SELECT medicine_id, DATE(taken_at) AS taken_date
+       FROM medicine_logs
+       WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?`,
+      [elderId, `${weekDates[0]} 00:00:00.000`, `${weekDates[6]} 23:59:59.999`],
+    ),
+  ]);
+
+  const medicines = medicineRows.map((m) => {
+    let days = m.days_of_week;
+    if (typeof days === 'string') {
+      try { days = JSON.parse(days); } catch { days = []; }
+    }
+    return {
+      id:    m.id,
+      days:  Array.isArray(days) ? days : [],
+      start: toDateOnlyString(m.start_date),
+      end:   toDateOnlyString(m.end_date),
+    };
+  });
+
+  const takenByDate = new Map();
+  for (const row of logRows) {
+    const date = toDateOnlyString(row.taken_date);
+    if (!takenByDate.has(date)) takenByDate.set(date, new Set());
+    takenByDate.get(date).add(row.medicine_id);
+  }
+
+  return weekDates.map((date) => {
+    if (date > today) {
+      return { date, status: 'future', percent: null };
+    }
+
+    const dow = new Date(`${date}T00:00:00.000Z`).getUTCDay();
+    const expected = medicines.filter((m) => {
+      if (!m.days.includes(dow)) return false;
+      if (m.start && date < m.start) return false;
+      if (m.end && date > m.end) return false;
+      return true;
+    });
+
+    if (expected.length === 0) {
+      return { date, status: 'none', percent: null };
+    }
+
+    const takenIds = takenByDate.get(date) ?? new Set();
+    const takenCount = expected.filter((m) => takenIds.has(m.id)).length;
+    const percent = Math.round((takenCount / expected.length) * 100);
+    const status = percent >= 80 ? 'good' : percent >= 50 ? 'ok' : 'poor';
+    return { date, status, percent };
+  });
 }
 
 async function listSentInvitations(guardianId) {
@@ -788,4 +934,5 @@ module.exports = {
   getElderPushToken,
   getElderSummaryForGuardian,
   getElderDashboardForGuardian,
+  getElderMedicineAdherenceWeek,
 };

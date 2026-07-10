@@ -554,6 +554,23 @@ const listElderMedicineLogs = async (req, res) => {
   }
 };
 
+// GET /api/guardian/elders/:elderId/medicines/adherence-week
+const getElderMedicineAdherenceWeek = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!elderId) return res.status(400).json({ success: false, message: 'elderId is required' });
+
+  try {
+    const week = await guardianService.getElderMedicineAdherenceWeek(guardianId, elderId);
+    return res.json({ success: true, week });
+  } catch (err) {
+    console.error('getElderMedicineAdherenceWeek error:', err);
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
 // GET /api/guardian/elders/:elderId/health-records
 const listElderHealthRecords = async (req, res) => {
   const elderId = await requireElderConnection(req, res);
@@ -708,6 +725,7 @@ module.exports = {
   updateElderMedicine,
   deleteElderMedicine,
   listElderMedicineLogs,
+  getElderMedicineAdherenceWeek,
   listElderHealthRecords,
   createElderHealthRecord,
   deleteElderHealthRecord,

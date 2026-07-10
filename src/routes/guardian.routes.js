@@ -27,6 +27,7 @@ const {
   updateElderMedicine,
   deleteElderMedicine,
   listElderMedicineLogs,
+  getElderMedicineAdherenceWeek,
   listElderHealthRecords,
   createElderHealthRecord,
   deleteElderHealthRecord,
@@ -57,8 +58,9 @@ router.post('/elders/:elderId/send-reminder',       requireJwtAuth, requireActiv
 router.get('/elders/:elderId/medicines',        requireJwtAuth, requireActivePlan, listElderMedicines);
 router.post('/elders/:elderId/medicines',       requireJwtAuth, requireActivePlan, createElderMedicine);
 router.get('/elders/:elderId/medicines/logs',   requireJwtAuth, requireActivePlan, listElderMedicineLogs);
-// NOTE: /medicines/:id must be registered after the /medicines/logs literal route above,
-// or a request to .../medicines/logs would match :id="logs" here instead.
+router.get('/elders/:elderId/medicines/adherence-week', requireJwtAuth, requireActivePlan, getElderMedicineAdherenceWeek);
+// NOTE: /medicines/:id must be registered after the /medicines/logs and /medicines/adherence-week
+// literal routes above, or a request to those paths would match :id="logs"/"adherence-week" here instead.
 router.get('/elders/:elderId/medicines/:id',    requireJwtAuth, requireActivePlan, getElderMedicine);
 router.patch('/elders/:elderId/medicines/:id',  requireJwtAuth, requireActivePlan, updateElderMedicine);
 router.delete('/elders/:elderId/medicines/:id', requireJwtAuth, requireActivePlan, deleteElderMedicine);
