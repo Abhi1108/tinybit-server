@@ -7,6 +7,8 @@ const { normalizeCreatePayload } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
 const { sendExpoPush } = require('../services/notifications.service');
+const paymentsService = require('../services/payments.mysql');
+const profilesService = require('../services/profiles.service');
 
 async function notifyElderOfMedicineChange(elderId, message) {
   try {
@@ -83,6 +85,29 @@ const inviteParent = async (req, res) => {
 
     if (await guardianService.hasPendingInvite(guardian_id, elder_email)) {
       return res.status(409).json({ success: false, message: 'A pending invitation already exists for this email' });
+    }
+
+    // Mid-cycle tier upgrade gate (CONTEXT.md Q5/Q10, ADR 0003): elder_count counts
+    // pending + connected links, so sending this invite itself counts toward the tier —
+    // block until the guardian pays the difference if it would cross into a higher tier.
+    const currentElderCount = await paymentsService.getElderCountForGuardian(guardian_id);
+    const prospectiveElderCount = currentElderCount + 1;
+    const guardianProfile = await profilesService.getProfileById(guardian_id);
+    const entitledElderCount = guardianProfile?.plan_elder_count ?? 0;
+
+    if (prospectiveElderCount > entitledElderCount) {
+      const { order, appliedImmediately } = await paymentsService.createUpgradeOrder(guardian_id, prospectiveElderCount);
+      if (!appliedImmediately) {
+        return res.status(402).json({
+          success: false,
+          message: 'Adding this elder requires a payment.',
+          code: 'UPGRADE_REQUIRED',
+          order,
+          razorpay_key_id: process.env.RAZORPAY_KEY_ID || null,
+        });
+      }
+      // appliedImmediately: tier bump had zero/negative delta (e.g. admin lowered prices)
+      // and was applied directly to profiles — fall through and let the invite proceed.
     }
 
     await guardianService.createInvitation({
@@ -529,6 +554,23 @@ const listElderMedicineLogs = async (req, res) => {
   }
 };
 
+// GET /api/guardian/elders/:elderId/medicines/adherence-week
+const getElderMedicineAdherenceWeek = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  const { elderId } = req.params;
+  if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  if (!elderId) return res.status(400).json({ success: false, message: 'elderId is required' });
+
+  try {
+    const week = await guardianService.getElderMedicineAdherenceWeek(guardianId, elderId);
+    return res.json({ success: true, week });
+  } catch (err) {
+    console.error('getElderMedicineAdherenceWeek error:', err);
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
 // GET /api/guardian/elders/:elderId/health-records
 const listElderHealthRecords = async (req, res) => {
   const elderId = await requireElderConnection(req, res);
@@ -683,6 +725,7 @@ module.exports = {
   updateElderMedicine,
   deleteElderMedicine,
   listElderMedicineLogs,
+  getElderMedicineAdherenceWeek,
   listElderHealthRecords,
   createElderHealthRecord,
   deleteElderHealthRecord,

@@ -45,6 +45,7 @@ const options = {
       { name: 'Auth', description: 'Authentication and user profile' },
       { name: 'AI', description: 'Sathi AI features' },
       { name: 'Guardian', description: 'Guardian–elder linking' },
+      { name: 'Payments', description: 'Guardian payments (Razorpay) — manual renewal, no auto-recurring' },
       { name: 'SOS', description: 'Emergency SOS' },
       { name: 'Wellness', description: 'Daily check-ins and health metrics' },
       { name: 'Medicines', description: 'Medicine management' },

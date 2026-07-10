@@ -108,12 +108,15 @@ CREATE TABLE IF NOT EXISTS profiles (
   family_code          VARCHAR(64)   NULL,
   push_token           TEXT          NULL,
   plan_type            VARCHAR(32)   NOT NULL DEFAULT 'free',
-  plan_status          VARCHAR(32)   NOT NULL DEFAULT 'active',
+  -- 'inactive' until a guardian completes their first payment (see payment_orders/payments;
+  -- CONTEXT.md Q6) — elders' plan_status is never checked, this default is harmless for them.
+  plan_status          VARCHAR(32)   NOT NULL DEFAULT 'inactive',
   plan_started_at      DATETIME(3)   NULL,
   plan_expires_at      DATETIME(3)   NULL,
   plan_amount          DECIMAL(12,2) NULL,
   plan_currency        VARCHAR(8)    NOT NULL DEFAULT 'INR',
   plan_interval        VARCHAR(16)   NULL,
+  plan_elder_count     INT           NULL,
   streak               INT           NOT NULL DEFAULT 0,
   best_streak          INT           NOT NULL DEFAULT 0,
   is_banned            TINYINT(1)    NOT NULL DEFAULT 0,
@@ -772,10 +775,122 @@ CREATE TABLE IF NOT EXISTS help_faqs (
   KEY idx_help_faqs_active_sort (is_active, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- -----------------------------------------------------------------------------
+-- Guardian payments (Razorpay) — see tinybit-server/CONTEXT.md and docs/adr/000{1,2,3}
+-- for the design rationale (manual renewal, country x elder_count pricing tiers,
+-- flat-delta mid-cycle upgrades).
+-- -----------------------------------------------------------------------------
+
+-- Admin-editable (country_code, elder_count) -> price rules. country_code = '*' is
+-- the fallback for any country without an explicit row. elder_count beyond the
+-- highest configured row for a country reuses that row's price (tier caps out).
+CREATE TABLE IF NOT EXISTS payment_pricing_tiers (
+  id              CHAR(36)      NOT NULL DEFAULT (UUID()),
+  country_code    VARCHAR(4)    NOT NULL DEFAULT '*',
+  elder_count     INT           NOT NULL,
+  amount          DECIMAL(12,2) NOT NULL,
+  currency        VARCHAR(8)    NOT NULL,
+  interval_days   INT           NOT NULL DEFAULT 365,
+  is_active       TINYINT(1)    NOT NULL DEFAULT 1,
+  created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_pricing_country_eldercount (country_code, elder_count),
+  CONSTRAINT chk_pricing_elder_count CHECK (elder_count >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per Razorpay Order we create. Snapshots the tier at purchase time so
+-- history/refunds never depend on payment_pricing_tiers still having the same values.
+CREATE TABLE IF NOT EXISTS payment_orders (
+  id                       CHAR(36)      NOT NULL DEFAULT (UUID()),
+  guardian_id              CHAR(36)      NOT NULL,
+  razorpay_order_id        VARCHAR(64)   NOT NULL,
+  kind                     VARCHAR(16)   NOT NULL DEFAULT 'renewal',
+  pricing_tier_id          CHAR(36)      NULL,
+  elder_count_at_purchase  INT           NOT NULL,
+  amount                   DECIMAL(12,2) NOT NULL,          -- amount actually charged via Razorpay (full tier price for 'renewal'; delta for 'upgrade', ADR 0003)
+  tier_amount              DECIMAL(12,2) NOT NULL,          -- full price of the destination tier — applied to profiles.plan_amount regardless of kind
+  interval_days            INT           NOT NULL,          -- snapshotted from the tier — applied to profiles.plan_expires_at on 'renewal' (unchanged on 'upgrade', ADR 0003)
+  currency                 VARCHAR(8)    NOT NULL,
+  previous_tier_amount     DECIMAL(12,2) NULL,
+  previous_elder_count     INT           NULL,
+  receipt                  VARCHAR(64)   NOT NULL,
+  status                   VARCHAR(16)   NOT NULL DEFAULT 'created',
+  notes                    JSON          NULL,
+  created_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_orders_razorpay_id (razorpay_order_id),
+  KEY idx_payment_orders_guardian (guardian_id),
+  CONSTRAINT chk_payment_orders_kind CHECK (kind IN ('renewal', 'upgrade')),
+  CONSTRAINT chk_payment_orders_status CHECK (status IN ('created', 'paid', 'expired', 'cancelled')),
+  CONSTRAINT fk_payment_orders_guardian
+    FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per Razorpay Payment entity. An Order can have multiple payment
+-- attempts (retries after a failure); only one is ever captured.
+CREATE TABLE IF NOT EXISTS payments (
+  id                   CHAR(36)      NOT NULL DEFAULT (UUID()),
+  order_id             CHAR(36)      NOT NULL,
+  razorpay_payment_id  VARCHAR(64)   NOT NULL,
+  razorpay_signature   VARCHAR(255)  NULL,
+  method               VARCHAR(32)   NULL,
+  status               VARCHAR(16)   NOT NULL DEFAULT 'created',
+  amount               DECIMAL(12,2) NOT NULL,
+  currency             VARCHAR(8)    NOT NULL,
+  failure_code         VARCHAR(64)   NULL,
+  failure_reason       TEXT          NULL,
+  captured_at          DATETIME(3)   NULL,
+  raw_response         JSON          NULL,
+  created_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payments_razorpay_id (razorpay_payment_id),
+  KEY idx_payments_order (order_id),
+  CONSTRAINT chk_payments_status CHECK (status IN ('created', 'authorized', 'captured', 'failed', 'refunded')),
+  CONSTRAINT fk_payments_order
+    FOREIGN KEY (order_id) REFERENCES payment_orders (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Admin-initiated refunds only (no guardian-facing self-serve refund in this pass).
+CREATE TABLE IF NOT EXISTS payment_refunds (
+  id                  CHAR(36)      NOT NULL DEFAULT (UUID()),
+  payment_id          CHAR(36)      NOT NULL,
+  razorpay_refund_id  VARCHAR(64)   NOT NULL,
+  amount              DECIMAL(12,2) NOT NULL,
+  currency            VARCHAR(8)    NOT NULL,
+  speed               VARCHAR(16)   NOT NULL DEFAULT 'normal',
+  status              VARCHAR(16)   NOT NULL DEFAULT 'pending',
+  reason              TEXT          NULL,
+  initiated_by_admin  VARCHAR(255)  NULL,
+  raw_response        JSON          NULL,
+  created_at          DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at          DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_refunds_razorpay_id (razorpay_refund_id),
+  KEY idx_refunds_payment (payment_id),
+  CONSTRAINT chk_refunds_status CHECK (status IN ('pending', 'processed', 'failed')),
+  CONSTRAINT fk_refunds_payment
+    FOREIGN KEY (payment_id) REFERENCES payments (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Idempotency ledger — Razorpay may redeliver the same webhook event.
+CREATE TABLE IF NOT EXISTS payment_webhook_events (
+  id                 CHAR(36)     NOT NULL DEFAULT (UUID()),
+  razorpay_event_id  VARCHAR(64)  NOT NULL,
+  event_type         VARCHAR(64)  NOT NULL,
+  payload            JSON         NOT NULL,
+  processed_at       DATETIME(3)  NULL,
+  created_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_webhook_events_event_id (razorpay_event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 34 tables
+-- End of schema — 39 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
 -- profiles, streak_activity_log, guardian_elder_links, user_settings, elder_locations
@@ -789,4 +904,5 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- mind_games_scores, daily_quiz_questions, daily_inspirations
 -- notifications
 -- doctors, help_tutorials, help_faqs
+-- payment_pricing_tiers, payment_orders, payments, payment_refunds, payment_webhook_events
 -- =============================================================================
