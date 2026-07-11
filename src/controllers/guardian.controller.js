@@ -9,6 +9,8 @@ const { mapStorageError } = require('./storage.controller');
 const { sendExpoPush } = require('../services/notifications.service');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
+const authUsersService = require('../services/auth-users.service');
+const { toE164 } = require('../utils/phone');
 
 async function notifyElderOfMedicineChange(elderId, message) {
   try {
@@ -135,6 +137,115 @@ const inviteParent = async (req, res) => {
     const message = (err?.message && String(err.message).trim())
       ? String(err.message).trim()
       : 'Could not send invitation. Please try again.';
+    return res.status(status).json({ success: false, message });
+  }
+};
+
+// POST /api/guardian/elders — ADR 0004: guardian creates a real, immediately-claimable elder
+// account directly (the elder isn't on the app yet) — not a pending invite. Creates
+// app_users + profiles + guardian_elder_links(status='connected') atomically.
+const createElderProfile = async (req, res) => {
+  const guardianId = req.auth?.userId;
+  if (!guardianId) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const {
+    first_name,
+    last_name,
+    email,
+    mobile,
+    mobile_country,
+    relation,
+    age,
+    blood_group,
+    biological_sex,
+    preferred_language,
+    medical_conditions,
+    medical_notes,
+  } = req.body ?? {};
+
+  if (!first_name || !email || !mobile || !mobile_country || !relation) {
+    return res.status(400).json({ success: false, message: 'Missing required fields' });
+  }
+
+  let phoneE164;
+  try {
+    phoneE164 = toE164(String(mobile), String(mobile_country));
+  } catch {
+    return res.status(400).json({ success: false, message: 'Invalid mobile number.' });
+  }
+
+  try {
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    // Fail loudly on a phone/email already used by a different account (ADR 0004) — never
+    // silently attach this data to an unrelated person's profile.
+    const [existingByPhone, existingByEmail] = await Promise.all([
+      authUsersService.findByPhone(phoneE164),
+      authUsersService.findByEmail(normalizedEmail),
+    ]);
+
+    if (existingByPhone) {
+      return res.status(409).json({
+        success: false,
+        message: 'This phone number is already registered to an account.',
+        code: 'PHONE_TAKEN',
+      });
+    }
+    if (existingByEmail) {
+      return res.status(409).json({
+        success: false,
+        message: 'This email is already registered to an account.',
+        code: 'EMAIL_TAKEN',
+      });
+    }
+
+    // Mid-cycle tier upgrade gate (CONTEXT.md Q5/Q10, ADR 0003): elder_count counts
+    // pending + connected links, so creating this shadow elder counts toward the tier —
+    // block until the guardian pays the difference if it would cross into a higher tier.
+    const currentElderCount = await paymentsService.getElderCountForGuardian(guardianId);
+    const prospectiveElderCount = currentElderCount + 1;
+    const guardianProfile = await profilesService.getProfileById(guardianId);
+    const entitledElderCount = guardianProfile?.plan_elder_count ?? 0;
+
+    if (prospectiveElderCount > entitledElderCount) {
+      const { order, appliedImmediately } = await paymentsService.createUpgradeOrder(guardianId, prospectiveElderCount);
+      if (!appliedImmediately) {
+        return res.status(402).json({
+          success: false,
+          message: 'Adding this elder requires a payment.',
+          code: 'UPGRADE_REQUIRED',
+          order,
+          razorpay_key_id: process.env.RAZORPAY_KEY_ID || null,
+        });
+      }
+      // appliedImmediately: tier bump had zero/negative delta and was applied directly to
+      // profiles — fall through and let the elder profile creation proceed.
+    }
+
+    const elder = await guardianService.createElderProfile({
+      guardianId,
+      firstName: String(first_name).trim(),
+      lastName: last_name != null ? String(last_name).trim() : '',
+      email: normalizedEmail,
+      phoneE164,
+      relation,
+      age: age ?? null,
+      bloodGroup: blood_group ?? null,
+      biologicalSex: biological_sex ?? null,
+      preferredLanguage: preferred_language ?? null,
+      medicalConditions: Array.isArray(medical_conditions) ? medical_conditions : null,
+      medicalNotes: medical_notes ?? null,
+    });
+
+    return res.json({ success: true, elder });
+  } catch (err) {
+    console.error('createElderProfile error:', err);
+    const status = err.statusCode ?? 500;
+    const message = (err?.message && String(err.message).trim())
+      ? String(err.message).trim()
+      : 'Could not create elder profile. Please try again.';
     return res.status(status).json({ success: false, message });
   }
 };
@@ -702,6 +813,7 @@ const getSentInvitations = async (req, res) => {
 
 module.exports = {
   inviteParent,
+  createElderProfile,
   respondToInvitation,
   getPendingInvitations,
   getSentInvitations,

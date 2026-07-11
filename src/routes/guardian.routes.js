@@ -4,6 +4,7 @@ const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const { requireActivePlan } = require('../middleware/requireActivePlan.middleware');
 const {
   inviteParent,
+  createElderProfile,
   respondToInvitation,
   getPendingInvitations,
   getSentInvitations,
@@ -36,6 +37,7 @@ const {
 } = require('../controllers/guardian.controller');
 
 router.post('/invite',               requireJwtAuth, requireActivePlan, inviteParent);
+router.post('/elders',               requireJwtAuth, requireActivePlan, createElderProfile);
 router.post('/respond',              requireJwtAuth, requireActivePlan, respondToInvitation);
 router.get('/pending-invitations',   requireJwtAuth, requireActivePlan, getPendingInvitations);
 router.get('/sent-invitations',      requireJwtAuth, requireActivePlan, getSentInvitations);

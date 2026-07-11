@@ -216,19 +216,28 @@ function googlePlaceholderPhone(firebaseUid) {
   return `+99${digits.padEnd(15, '0').slice(0, 15)}`;
 }
 
-async function upsertGoogleProfile({ id, email, fullName }) {
+/**
+ * Deliberately does NOT persist `fullName` (or a real `role`) to `profiles` on creation —
+ * only `email`. The mobile onboarding flow (role.tsx -> your-name.tsx) is the single place
+ * `full_name`/`role` get confirmed, for both Google and phone-OTP sign-in alike. If this
+ * pre-filled `full_name` from Google, the app's `needsNameSetup`/`needsRoleSetup` checks
+ * would treat onboarding as already complete and skip role selection entirely, permanently
+ * defaulting every Google sign-up to the `role` column's DB default ('elder') with no way to
+ * choose guardian. `role='elder'` below is just a NOT-NULL placeholder — your-name.tsx's
+ * first `PATCH /auth/profile` always overwrites it with the user's actual choice.
+ */
+async function upsertGoogleProfile({ id, email }) {
   await execute(
     `INSERT INTO profiles (
-       id, email, full_name, role, plan_type, plan_status, plan_currency, streak
-     ) VALUES (?, ?, ?, 'elder', 'free', 'active', 'INR', 0)
+       id, email, role, plan_type, plan_status, plan_currency, streak
+     ) VALUES (?, ?, 'elder', 'free', 'active', 'INR', 0)
      ON DUPLICATE KEY UPDATE
-       email = VALUES(email),
-       full_name = COALESCE(VALUES(full_name), full_name)`,
-    [id, email, fullName?.trim() || null],
+       email = VALUES(email)`,
+    [id, email],
   );
 }
 
-async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
+async function findOrCreateByGoogle({ email, firebaseUid }) {
   const normalizedEmail = String(email).trim().toLowerCase();
   const existing = await findByEmail(normalizedEmail);
   if (existing) {
@@ -248,7 +257,6 @@ async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
     await upsertGoogleProfile({
       id: user.id,
       email: normalizedEmail,
-      fullName,
     });
 
     return { user, isNewUser: true };

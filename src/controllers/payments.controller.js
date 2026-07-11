@@ -16,6 +16,16 @@ async function getPricing(req, res) {
   }
 }
 
+/** GET /api/payments/pricing/tiers — all selectable tiers for the mobile Plan Selection screen. */
+async function listPricingTiers(req, res) {
+  try {
+    const result = await paymentsService.listTiersForGuardian(req.auth.userId);
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return handleError(res, err, 'Could not load pricing tiers.');
+  }
+}
+
 /** POST /api/payments/orders — always a renewal order (first payment or post-expiry renewal). */
 async function createOrder(req, res) {
   try {
@@ -49,6 +59,38 @@ async function verifyOrder(req, res) {
   }
 }
 
+/**
+ * Route-level gate for /dev-complete (ADR 0005) — must run BEFORE requireJwtAuth so an
+ * unauthenticated caller gets the same 404 as everyone else when ALLOW_DEV_PAYMENTS isn't
+ * 'true', rather than a 401 that would reveal the route exists.
+ */
+function requireDevPaymentsEnabled(req, res, next) {
+  if (process.env.ALLOW_DEV_PAYMENTS !== 'true') {
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+  return next();
+}
+
+/**
+ * POST /api/payments/dev-complete — DEV ONLY (ADR 0005). Gated behind ALLOW_DEV_PAYMENTS by
+ * requireDevPaymentsEnabled above; simulates a successful renewal payment so the guardian
+ * onboarding flow is testable before real Razorpay checkout ships on mobile.
+ * Body: { elder_count }.
+ */
+async function devComplete(req, res) {
+  try {
+    const elderCount = Number(req.body?.elder_count);
+    if (!Number.isInteger(elderCount) || elderCount < 1) {
+      return res.status(400).json({ success: false, message: 'elder_count must be an integer >= 1' });
+    }
+
+    const { order, plan } = await paymentsService.devCompletePayment(req.auth.userId, elderCount);
+    return res.json({ success: true, order, plan });
+  } catch (err) {
+    return handleError(res, err, 'Could not complete dev payment.');
+  }
+}
+
 /** GET /api/payments/history */
 async function getHistory(req, res) {
   try {
@@ -61,7 +103,10 @@ async function getHistory(req, res) {
 
 module.exports = {
   getPricing,
+  listPricingTiers,
   createOrder,
   verifyOrder,
   getHistory,
+  requireDevPaymentsEnabled,
+  devComplete,
 };
