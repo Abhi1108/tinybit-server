@@ -2,8 +2,10 @@ const guardianService = require('../services/guardian.service');
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
 const healthRecordsService = require('../services/health-records.service');
+const healthInsightsService = require('../services/health-insights.service');
+const savedDoctorsService = require('../services/saved-doctors.service');
 const emergencyContactsService = require('../services/emergency-contacts.service');
-const { normalizeCreatePayload } = require('./health-vault.controller');
+const { normalizeCreatePayload, loadRecordBase64 } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
 const { sendExpoPush } = require('../services/notifications.service');
@@ -270,11 +272,27 @@ const respondToInvitation = async (req, res) => {
 
 // GET /api/guardian/pending-invitations
 const getPendingInvitations = async (req, res) => {
-  const elder_email = req.auth?.email;
-  if (!elder_email) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  const authEmail = req.auth?.email;
+  if (!authEmail) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
-    const invitations = await guardianService.getPendingInvitations(elder_email);
+    // A guardian may invite an elder by email OR by phone (see resolveInviteElderEmail on
+    // mobile), which resolves to a synthetic `{digits}@phone.tinybit.app` elder_email. That
+    // only equals req.auth.email (app_users.email) when the elder ALSO signed up via phone
+    // OTP — a Google-signed-up elder's app_users.email is their real email, so a phone-based
+    // invite for them would never match on req.auth.email alone. Match against every
+    // identifier this elder is known by: their login email, their profile email (can differ),
+    // and the synthetic phone-email derived from their profile's real mobile number.
+    const candidateEmails = new Set([authEmail.trim().toLowerCase()]);
+
+    const profile = await profilesService.getProfileById(req.auth.userId);
+    if (profile?.email) candidateEmails.add(String(profile.email).trim().toLowerCase());
+    if (profile?.mobile) {
+      const digits = String(profile.mobile).replace(/\D/g, '');
+      if (digits) candidateEmails.add(`${digits}@phone.tinybit.app`);
+    }
+
+    const invitations = await guardianService.getPendingInvitations([...candidateEmails]);
     return res.json({ success: true, invitations });
   } catch (err) {
     console.error('getPendingInvitations error:', err);
@@ -798,6 +816,139 @@ const deleteElderHealthRecord = async (req, res) => {
   }
 };
 
+// POST /api/guardian/elders/:elderId/health-records/:id/insights?refresh=true
+const getElderHealthRecordInsights = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const record = await healthRecordsService.getById(elderId, req.params.id);
+    if (!record) {
+      return res.status(404).json({ success: false, message: 'Health record not found.' });
+    }
+
+    const forceRefresh = String(req.query?.refresh || '').toLowerCase() === 'true';
+    if (!forceRefresh && record.ai_insights) {
+      return res.json({ success: true, data: record.ai_insights, cached: true, computed_at: record.ai_insights_at });
+    }
+
+    const base64 = await loadRecordBase64(record);
+    if (!base64) {
+      return res.status(400).json({ success: false, message: 'This record has no stored file to analyze.' });
+    }
+
+    const insights = await healthInsightsService.runHealthForecast({
+      base64,
+      mimeType: record.mime_type || 'image/jpeg',
+      category: record.category,
+      title: record.title,
+    });
+
+    const updated = await healthRecordsService.saveInsights(elderId, record.id, insights);
+    return res.json({
+      success: true,
+      data: insights,
+      cached: false,
+      computed_at: updated?.ai_insights_at ?? null,
+    });
+  } catch (err) {
+    console.error('getElderHealthRecordInsights error:', err);
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || 'Could not analyze this record.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/health-records/compare — body: { recordIds: string[] } (2+)
+const compareElderHealthRecords = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const { recordIds } = req.body ?? {};
+    if (!Array.isArray(recordIds) || recordIds.length < 2) {
+      return res.status(400).json({ success: false, message: 'Select at least 2 records to compare.' });
+    }
+
+    const records = [];
+    for (const id of recordIds) {
+      const record = await healthRecordsService.getById(elderId, id);
+      if (!record) {
+        return res.status(404).json({ success: false, message: `Health record ${id} not found.` });
+      }
+      records.push(record);
+    }
+
+    const documents = [];
+    for (const record of records) {
+      let base64 = null;
+      try {
+        base64 = await loadRecordBase64(record);
+      } catch (err) {
+        console.warn(`compareElderHealthRecords: failed to load record ${record.id}`, err.message);
+      }
+      if (!base64) continue;
+      documents.push({
+        base64,
+        mimeType: record.mime_type || 'image/jpeg',
+        category:  record.category,
+        title:     record.title,
+        date:      record.date,
+      });
+    }
+
+    const insights = await healthInsightsService.runMultiHealthForecast(documents);
+    return res.json({ success: true, data: insights });
+  } catch (err) {
+    console.error('compareElderHealthRecords error:', err);
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || 'Could not compare these records.' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/doctors
+const listElderDoctors = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const doctors = await savedDoctorsService.listByUser(elderId);
+    return res.json({ success: true, doctors });
+  } catch (err) {
+    console.error('listElderDoctors error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load doctors.' });
+  }
+};
+
+// POST /api/guardian/elders/:elderId/doctors
+const createElderDoctor = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const { name, phone } = req.body ?? {};
+    const doctor = await savedDoctorsService.create(elderId, { name, phone });
+    return res.json({ success: true, doctor });
+  } catch (err) {
+    console.error('createElderDoctor error:', err);
+    return res.status(err.statusCode || 500).json({ success: false, message: err.message || 'Could not add doctor.' });
+  }
+};
+
+// DELETE /api/guardian/elders/:elderId/doctors/:id
+const deleteElderDoctor = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const deleted = await savedDoctorsService.deleteById(elderId, req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ success: false, message: 'Doctor not found.' });
+    }
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('deleteElderDoctor error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not delete doctor.' });
+  }
+};
+
 const getSentInvitations = async (req, res) => {
   const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
@@ -841,6 +992,11 @@ module.exports = {
   listElderHealthRecords,
   createElderHealthRecord,
   deleteElderHealthRecord,
+  getElderHealthRecordInsights,
+  compareElderHealthRecords,
+  listElderDoctors,
+  createElderDoctor,
+  deleteElderDoctor,
   presignElderUpload,
   presignElderDownload,
 };

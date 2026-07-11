@@ -42,6 +42,21 @@ async function getById(id) {
   return mapMessageRow(rows[0] ?? null);
 }
 
+/** Full two-way thread between `userId` and `otherUserId`, newest first. */
+async function listBetween(userId, otherUserId, limit = 50) {
+  const rows = await query(
+    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
+     FROM family_messages fm
+     LEFT JOIN profiles p ON p.id = fm.sender_id
+     WHERE (fm.sender_id = ? AND fm.receiver_id = ?)
+        OR (fm.sender_id = ? AND fm.receiver_id = ?)
+     ORDER BY fm.created_at DESC
+     LIMIT ?`,
+    [userId, otherUserId, otherUserId, userId, limit],
+  );
+  return rows.map(mapMessageRow);
+}
+
 async function latestForReceiver(receiverId) {
   const rows = await query(
     `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
@@ -90,6 +105,7 @@ async function isParticipantInAudioMessage(userId, audioUrl) {
 }
 
 module.exports = {
+  listBetween,
   latestForReceiver,
   countForReceiverOnDate,
   create,

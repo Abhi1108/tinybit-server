@@ -386,6 +386,7 @@ async function deleteDoctor(req, res) {
 
 module.exports = {
   normalizeCreatePayload,
+  loadRecordBase64,
   listRecords,
   createRecord,
   updateRecord,

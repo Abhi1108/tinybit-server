@@ -180,7 +180,12 @@ async function respondToInvitation(linkId, action, elderId) {
   return newStatus;
 }
 
-async function getPendingInvitations(elderEmail) {
+/** `elderEmails` — every identifier this elder is known by (login email, profile email,
+ *  phone-derived synthetic email) — see getPendingInvitations in guardian.controller.js. */
+async function getPendingInvitations(elderEmails) {
+  const emails = Array.isArray(elderEmails) ? elderEmails : [elderEmails];
+  const { sql: inSql, params: inParams } = inClause(emails);
+
   return query(
     `SELECT
        l.id,
@@ -191,9 +196,9 @@ async function getPendingInvitations(elderEmail) {
        COALESCE(p.full_name, 'Unknown') AS guardian_name
      FROM guardian_elder_links l
      LEFT JOIN profiles p ON p.id = l.guardian_id
-     WHERE l.elder_email = ? AND l.status = 'pending'
+     WHERE l.elder_email IN (${inSql}) AND l.status = 'pending'
      ORDER BY l.created_at DESC`,
-    [elderEmail],
+    inParams,
   );
 }
 
