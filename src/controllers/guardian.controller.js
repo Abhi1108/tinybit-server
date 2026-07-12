@@ -159,12 +159,22 @@ const createElderProfile = async (req, res) => {
     mobile,
     mobile_country,
     relation,
-    age,
+    location,
+    country,
+    country_code,
+    date_of_birth,
     blood_group,
     biological_sex,
     preferred_language,
+    height,
+    height_unit,
+    weight,
+    weight_unit,
     medical_conditions,
-    medical_notes,
+    other_condition,
+    allergies,
+    doctor_name,
+    doctor_contact,
   } = req.body ?? {};
 
   if (!first_name || !email || !mobile || !mobile_country || !relation) {
@@ -226,6 +236,9 @@ const createElderProfile = async (req, res) => {
       // profiles — fall through and let the elder profile creation proceed.
     }
 
+    // The guardian creating this shadow profile is the elder's emergency contact — derived
+    // server-side from the guardian's own profile (already fetched above), never trusted
+    // from the client, so it can't be omitted or spoofed.
     const elder = await guardianService.createElderProfile({
       guardianId,
       firstName: String(first_name).trim(),
@@ -233,12 +246,28 @@ const createElderProfile = async (req, res) => {
       email: normalizedEmail,
       phoneE164,
       relation,
-      age: age ?? null,
+      // `location`/`country`/`country_code` all come from the same country-picker
+      // selection — if the client didn't send `country` explicitly, fall back to
+      // mirroring `location` (see identical rule in auth.controller.js updateProfile).
+      location: location ?? null,
+      country: country ?? location ?? null,
+      countryCode: country_code ?? null,
+      dateOfBirth: date_of_birth ?? null,
       bloodGroup: blood_group ?? null,
       biologicalSex: biological_sex ?? null,
       preferredLanguage: preferred_language ?? null,
+      height: height ?? null,
+      heightUnit: height_unit ?? null,
+      weight: weight ?? null,
+      weightUnit: weight_unit ?? null,
       medicalConditions: Array.isArray(medical_conditions) ? medical_conditions : null,
-      medicalNotes: medical_notes ?? null,
+      otherCondition: other_condition ?? null,
+      allergies: Array.isArray(allergies) ? allergies : null,
+      doctorName: doctor_name ?? null,
+      doctorContact: doctor_contact ?? null,
+      emergencyName: guardianProfile?.full_name ?? null,
+      emergencyPhone: guardianProfile?.mobile ?? null,
+      emergencyRelation: relation,
     });
 
     return res.json({ success: true, elder });

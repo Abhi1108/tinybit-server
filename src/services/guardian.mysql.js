@@ -7,6 +7,17 @@ function todayISO() {
   return new Date().toISOString().split('T')[0];
 }
 
+/** mysql2 returns JSON columns as raw strings — parse, tolerating already-parsed values. */
+function parseJsonColumn(value) {
+  if (value == null) return null;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
 /** Monday..Sunday ISO dates (YYYY-MM-DD) for the calendar week containing `today` (UTC). */
 function currentWeekDates(today) {
   const d = new Date(`${today}T00:00:00.000Z`);
@@ -107,12 +118,25 @@ async function createElderProfile({
   email,
   phoneE164,
   relation,
-  age,
+  location,
+  country,
+  countryCode,
+  dateOfBirth,
   bloodGroup,
   biologicalSex,
   preferredLanguage,
+  height,
+  heightUnit,
+  weight,
+  weightUnit,
   medicalConditions,
-  medicalNotes,
+  otherCondition,
+  allergies,
+  doctorName,
+  doctorContact,
+  emergencyName,
+  emergencyPhone,
+  emergencyRelation,
 }) {
   const elderId = randomUUID();
   const fullName = `${firstName} ${lastName || ''}`.trim();
@@ -126,9 +150,12 @@ async function createElderProfile({
     await conn.execute(
       `INSERT INTO profiles (
          id, first_name, last_name, full_name, email, mobile, role,
-         age, blood_group, biological_sex, preferred_language, medical_conditions, other_condition,
+         location, country, country_code, date_of_birth, blood_group, biological_sex, preferred_language,
+         height, height_unit, weight, weight_unit,
+         medical_conditions, other_condition, allergies, doctor_name, doctor_contact,
+         emergency_name, emergency_phone, emergency_relation,
          plan_type, plan_status, plan_currency, streak
-       ) VALUES (?, ?, ?, ?, ?, ?, 'elder', ?, ?, ?, ?, ?, ?, 'free', 'active', 'INR', 0)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'elder', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'free', 'active', 'INR', 0)`,
       [
         elderId,
         firstName,
@@ -136,12 +163,25 @@ async function createElderProfile({
         fullName,
         email,
         phoneE164,
-        age ?? null,
+        location ?? null,
+        country ?? null,
+        countryCode ?? null,
+        dateOfBirth ?? null,
         bloodGroup ?? null,
         biologicalSex ?? null,
         preferredLanguage ?? null,
+        height ?? null,
+        heightUnit ?? null,
+        weight ?? null,
+        weightUnit ?? null,
         medicalConditions ? JSON.stringify(medicalConditions) : null,
-        medicalNotes ?? null,
+        otherCondition ?? null,
+        allergies ? JSON.stringify(allergies) : null,
+        doctorName ?? null,
+        doctorContact ?? null,
+        emergencyName ?? null,
+        emergencyPhone ?? null,
+        emergencyRelation ?? null,
       ],
     );
 
@@ -160,6 +200,25 @@ async function createElderProfile({
     email,
     mobile: phoneE164,
     relation,
+    location: location ?? null,
+    country: country ?? null,
+    country_code: countryCode ?? null,
+    date_of_birth: dateOfBirth ?? null,
+    blood_group: bloodGroup ?? null,
+    biological_sex: biologicalSex ?? null,
+    preferred_language: preferredLanguage ?? null,
+    height: height ?? null,
+    height_unit: heightUnit ?? null,
+    weight: weight ?? null,
+    weight_unit: weightUnit ?? null,
+    medical_conditions: medicalConditions ?? null,
+    other_condition: otherCondition ?? null,
+    allergies: allergies ?? null,
+    doctor_name: doctorName ?? null,
+    doctor_contact: doctorContact ?? null,
+    emergency_name: emergencyName ?? null,
+    emergency_phone: emergencyPhone ?? null,
+    emergency_relation: emergencyRelation ?? null,
   };
 }
 
@@ -246,7 +305,10 @@ async function getGuardianEldersDashboard(guardianId) {
 
   const [profiles, checkins, meds, logs] = await Promise.all([
     query(
-      `SELECT id, full_name, age, location, mobile, last_active
+      `SELECT id, full_name, age, location, country, country_code, mobile, last_active, biological_sex,
+              date_of_birth, blood_group, preferred_language, height, height_unit,
+              weight, weight_unit, medical_conditions, other_condition, allergies,
+              doctor_name, doctor_contact, emergency_name, emergency_phone, emergency_relation
        FROM profiles
        WHERE id IN (${inSql})`,
       inParams,
@@ -293,7 +355,30 @@ async function getGuardianEldersDashboard(guardianId) {
       relation: link.relation,
       elderEmail: link.elder_email,
       profile: profile
-        ? { fullName: profile.full_name, age: profile.age, location: profile.location, mobile: profile.mobile }
+        ? {
+          fullName:          profile.full_name,
+          age:               profile.age,
+          location:          profile.location,
+          country:           profile.country,
+          countryCode:       profile.country_code,
+          mobile:            profile.mobile,
+          biologicalSex:     profile.biological_sex,
+          dateOfBirth:       profile.date_of_birth,
+          bloodGroup:        profile.blood_group,
+          preferredLanguage: profile.preferred_language,
+          height:            profile.height,
+          heightUnit:        profile.height_unit,
+          weight:            profile.weight,
+          weightUnit:        profile.weight_unit,
+          medicalConditions: parseJsonColumn(profile.medical_conditions),
+          otherCondition:    profile.other_condition,
+          allergies:         parseJsonColumn(profile.allergies),
+          doctorName:        profile.doctor_name,
+          doctorContact:     profile.doctor_contact,
+          emergencyName:     profile.emergency_name,
+          emergencyPhone:    profile.emergency_phone,
+          emergencyRelation: profile.emergency_relation,
+        }
         : null,
       checkedInToday: checkinIds.has(link.elder_id),
       medicineCount: userMeds.length,

@@ -386,6 +386,8 @@ async function updateProfile(req, res) {
       'full_name',
       'mobile',
       'location',
+      'country',
+      'country_code',
       'preferred_language',
       'biological_sex',
       'height',
@@ -408,6 +410,13 @@ async function updateProfile(req, res) {
     const patch = {};
     for (const key of allowed) {
       if (body[key] !== undefined) patch[key] = body[key];
+    }
+
+    // `location` is the name from the same country-picker selection as `country_code`
+    // (see your-name.tsx) — fall back to mirroring it into `country` only if the client
+    // didn't already send an explicit value for it.
+    if (patch.location !== undefined && patch.country === undefined) {
+      patch.country = patch.location;
     }
 
     if (Object.keys(patch).length === 0) {
