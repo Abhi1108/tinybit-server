@@ -1081,10 +1081,10 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
 /** Columns returned by GET /api/guardian/elders/:elderId/profile — no SELECT *. */
 const ELDER_PROFILE_COLUMNS = [
   'id', 'first_name', 'last_name', 'full_name', 'email', 'mobile', 'location',
-  'date_of_birth', 'age', 'blood_group', 'biological_sex', 'height', 'height_unit',
-  'weight', 'weight_unit', 'medical_conditions', 'other_condition', 'allergies',
-  'doctor_name', 'doctor_contact', 'emergency_name', 'emergency_phone', 'emergency_relation',
-  'profile_image',
+  'date_of_birth', 'age', 'blood_group', 'biological_sex', 'preferred_language',
+  'height', 'height_unit', 'weight', 'weight_unit', 'medical_conditions', 'other_condition',
+  'allergies', 'doctor_name', 'doctor_contact', 'emergency_name', 'emergency_phone',
+  'emergency_relation', 'profile_image',
 ];
 
 /** Same JSON columns as PROFILE_JSON_COLUMNS in profiles.mysql.js — mirrored here since
@@ -1103,7 +1103,7 @@ function parseElderProfileJsonField(value) {
   return value;
 }
 
-function mapElderProfileRow(row) {
+function mapElderProfileRow(row, relation) {
   if (!row) return null;
   return {
     id: row.id,
@@ -1112,11 +1112,13 @@ function mapElderProfileRow(row) {
     fullName: row.full_name,
     email: row.email,
     mobile: row.mobile,
+    relation: relation ?? null,
     location: row.location,
     dateOfBirth: isoDate(row.date_of_birth),
     age: row.age,
     bloodGroup: row.blood_group,
     biologicalSex: row.biological_sex,
+    preferredLanguage: row.preferred_language,
     height: row.height != null ? Number(row.height) : null,
     heightUnit: row.height_unit,
     weight: row.weight != null ? Number(row.weight) : null,
@@ -1134,13 +1136,33 @@ function mapElderProfileRow(row) {
 }
 
 /** GET /api/guardian/elders/:elderId/profile — caller must have already verified the
- *  guardian-elder connection (see requireElderConnection in guardian.controller.js). */
-async function getElderProfileForGuardian(elderId) {
-  const rows = await query(
-    `SELECT ${ELDER_PROFILE_COLUMNS.join(', ')} FROM profiles WHERE id = ? LIMIT 1`,
-    [elderId],
+ *  guardian-elder connection (see requireElderConnection in guardian.controller.js).
+ *  `relation` (the guardian's relation to this elder) lives on `guardian_elder_links`,
+ *  not `profiles`, so it's fetched separately and merged in. */
+async function getElderProfileForGuardian(elderId, guardianId) {
+  const [rows, linkRows] = await Promise.all([
+    query(
+      `SELECT ${ELDER_PROFILE_COLUMNS.join(', ')} FROM profiles WHERE id = ? LIMIT 1`,
+      [elderId],
+    ),
+    query(
+      `SELECT relation FROM guardian_elder_links
+       WHERE guardian_id = ? AND elder_id = ? AND status = 'connected' LIMIT 1`,
+      [guardianId, elderId],
+    ),
+  ]);
+  return mapElderProfileRow(rows[0] ?? null, linkRows[0]?.relation ?? null);
+}
+
+/** Updates the guardian's relation label for a connected elder (e.g. "Son", "Daughter") —
+ *  lives on `guardian_elder_links`, not `profiles`, so it's a separate write from
+ *  updateElderProfile. */
+async function updateElderRelation(guardianId, elderId, relation) {
+  await execute(
+    `UPDATE guardian_elder_links SET relation = ?
+     WHERE guardian_id = ? AND elder_id = ? AND status = 'connected'`,
+    [relation, guardianId, elderId],
   );
-  return mapElderProfileRow(rows[0] ?? null);
 }
 
 /** True if some OTHER account (app_users.id != excludeId) already owns this email. */
@@ -1164,9 +1186,9 @@ async function isPhoneTakenByOther(phoneE164, excludeId) {
 /** PATCH /api/guardian/elders/:elderId/profile — partial update, same dynamic-columns
  *  pattern as upsertProfile in profiles.mysql.js. `fields` is a snake_case patch object
  *  (only keys actually present in the request body). */
-async function updateElderProfile(elderId, fields) {
+async function updateElderProfile(elderId, fields, guardianId) {
   const columns = Object.keys(fields);
-  if (columns.length === 0) return getElderProfileForGuardian(elderId);
+  if (columns.length === 0) return getElderProfileForGuardian(elderId, guardianId);
 
   const setSql = columns.map((col) => `${col} = ?`).join(', ');
   const values = columns.map((col) => {
@@ -1182,7 +1204,7 @@ async function updateElderProfile(elderId, fields) {
     [...values, elderId],
   );
 
-  return getElderProfileForGuardian(elderId);
+  return getElderProfileForGuardian(elderId, guardianId);
 }
 
 async function listSentInvitations(guardianId) {
@@ -1223,6 +1245,7 @@ module.exports = {
   getElderMedicineAdherenceWeek,
   getElderProfileForGuardian,
   updateElderProfile,
+  updateElderRelation,
   isEmailTakenByOther,
   isPhoneTakenByOther,
 };

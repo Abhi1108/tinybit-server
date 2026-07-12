@@ -566,7 +566,7 @@ const getElderProfileForGuardian = async (req, res) => {
   if (!elderId) return;
 
   try {
-    const data = await guardianService.getElderProfileForGuardian(elderId);
+    const data = await guardianService.getElderProfileForGuardian(elderId, req.auth.userId);
     if (!data) {
       return res.status(404).json({ success: false, message: 'Elder profile not found.' });
     }
@@ -577,8 +577,9 @@ const getElderProfileForGuardian = async (req, res) => {
   }
 };
 
-// Mirrors PATCH /api/auth/profile's whitelist (auth.controller.js), minus elder-self-only
-// fields (role, preferred_language) that don't apply when a guardian is editing.
+// Mirrors PATCH /api/auth/profile's whitelist (auth.controller.js), minus `role` (doesn't
+// apply when a guardian is editing). `relation` is handled separately below — it lives on
+// `guardian_elder_links`, not `profiles`.
 const ELDER_PROFILE_UPDATE_FIELDS = [
   'first_name',
   'last_name',
@@ -588,6 +589,7 @@ const ELDER_PROFILE_UPDATE_FIELDS = [
   'date_of_birth',
   'blood_group',
   'biological_sex',
+  'preferred_language',
   'height',
   'height_unit',
   'weight',
@@ -605,6 +607,7 @@ const ELDER_PROFILE_UPDATE_FIELDS = [
 
 // PATCH /api/guardian/elders/:elderId/profile
 const updateElderProfileForGuardian = async (req, res) => {
+  const guardianId = req.auth?.userId;
   const elderId = await requireElderConnection(req, res);
   if (!elderId) return;
 
@@ -613,8 +616,9 @@ const updateElderProfileForGuardian = async (req, res) => {
   for (const key of ELDER_PROFILE_UPDATE_FIELDS) {
     if (body[key] !== undefined) patch[key] = body[key];
   }
+  const relation = body.relation !== undefined ? String(body.relation).trim() : undefined;
 
-  if (Object.keys(patch).length === 0) {
+  if (Object.keys(patch).length === 0 && relation === undefined) {
     return res.status(400).json({ success: false, message: 'No profile fields to update' });
   }
 
@@ -643,7 +647,13 @@ const updateElderProfileForGuardian = async (req, res) => {
       }
     }
 
-    const data = await guardianService.updateElderProfile(elderId, patch);
+    if (relation) {
+      await guardianService.updateElderRelation(guardianId, elderId, relation);
+    }
+
+    const data = Object.keys(patch).length > 0
+      ? await guardianService.updateElderProfile(elderId, patch, guardianId)
+      : await guardianService.getElderProfileForGuardian(elderId, guardianId);
     return res.json({ success: true, data });
   } catch (err) {
     console.error('updateElderProfileForGuardian error:', err);
