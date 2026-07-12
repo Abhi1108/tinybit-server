@@ -1,4 +1,5 @@
 const { query, execute } = require('../config/mysql');
+const { notifyGuardiansOfElder } = require('./notifications.service');
 
 const PROFILE_JSON_COLUMNS = new Set(['medical_conditions', 'allergies']);
 
@@ -261,6 +262,17 @@ async function touchLastActive(userId) {
     'UPDATE profiles SET streak = ?, best_streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
     [newStreak, newBest, userId],
   );
+
+  try {
+    await notifyGuardiansOfElder(userId, {
+      type: 'streak_maintained',
+      title: 'Keep Your Streak',
+      body: 'The user has maintained their wellness streak today.',
+      data: { type: 'streak_maintained', elderId: userId },
+    });
+  } catch (err) {
+    console.warn('[touchLastActive] guardian notify failed:', err.message);
+  }
 }
 
 module.exports = {

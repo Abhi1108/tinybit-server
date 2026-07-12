@@ -275,6 +275,13 @@ async function savePushToken(userId, pushToken) {
   }
 }
 
+async function clearPushToken(userId) {
+  await execute(
+    'UPDATE profiles SET push_token = NULL WHERE id = ?',
+    [userId],
+  );
+}
+
 async function getConnectedLinksForGuardian(guardianId) {
   return query(
     `SELECT elder_id, parent_name, relation, elder_email
@@ -1081,6 +1088,7 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
 /** Columns returned by GET /api/guardian/elders/:elderId/profile — no SELECT *. */
 const ELDER_PROFILE_COLUMNS = [
   'id', 'first_name', 'last_name', 'full_name', 'email', 'mobile', 'location',
+  'country', 'country_code',
   'date_of_birth', 'age', 'blood_group', 'biological_sex', 'preferred_language',
   'height', 'height_unit', 'weight', 'weight_unit', 'medical_conditions', 'other_condition',
   'allergies', 'doctor_name', 'doctor_contact', 'emergency_name', 'emergency_phone',
@@ -1114,6 +1122,8 @@ function mapElderProfileRow(row, relation) {
     mobile: row.mobile,
     relation: relation ?? null,
     location: row.location,
+    country: row.country,
+    countryCode: row.country_code,
     dateOfBirth: isoDate(row.date_of_birth),
     age: row.age,
     bloodGroup: row.blood_group,
@@ -1231,6 +1241,7 @@ module.exports = {
   respondToInvitation,
   getPendingInvitations,
   savePushToken,
+  clearPushToken,
   getGuardianEldersDashboard,
   getGuardianAlerts,
   getGuardianLocationElders,

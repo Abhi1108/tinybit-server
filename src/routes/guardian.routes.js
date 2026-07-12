@@ -9,6 +9,7 @@ const {
   getPendingInvitations,
   getSentInvitations,
   savePushToken,
+  clearPushToken,
   guardianElders,
   guardianAlerts,
   guardianLocation,
@@ -50,6 +51,7 @@ router.get('/pending-invitations',   requireJwtAuth, requireActivePlan, getPendi
 router.get('/sent-invitations',      requireJwtAuth, requireActivePlan, getSentInvitations);
 router.get('/connected-guardians',   requireJwtAuth, requireActivePlan, getConnectedGuardians);
 router.post('/save-push-token',      requireJwtAuth, requireActivePlan, savePushToken);
+router.post('/clear-push-token',     requireJwtAuth, requireActivePlan, clearPushToken);
 
 router.get('/elders',                requireJwtAuth, requireActivePlan, guardianElders);
 router.delete('/elders/:elderId',    requireJwtAuth, requireActivePlan, removeElder);

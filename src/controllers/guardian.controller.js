@@ -8,22 +8,28 @@ const emergencyContactsService = require('../services/emergency-contacts.service
 const { normalizeCreatePayload, loadRecordBase64 } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
-const { sendExpoPush } = require('../services/notifications.service');
+const { sendExpoPush, notifyElder } = require('../services/notifications.service');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
 const authUsersService = require('../services/auth-users.service');
 const { toE164 } = require('../utils/phone');
 
-async function notifyElderOfMedicineChange(elderId, message) {
+const MEDICINE_CHANGE_COPY = {
+  added:   { title: 'New Medicine Added', body: 'A new medicine has been added to your schedule.' },
+  updated: { title: 'Medicine Updated',   body: 'Your medicine schedule has been updated successfully.' },
+  removed: { title: 'Medicine Removed',   body: 'The selected medicine has been removed from your schedule.' },
+};
+
+async function notifyElderOfMedicineChange(elderId, guardianId, action) {
   try {
-    const token = await guardianService.getElderPushToken(elderId);
-    if (token) {
-      await sendExpoPush(token, {
-        title: 'Medicine Updated',
-        body: message,
-        data: { type: 'guardian_medicine_update' },
-      });
-    }
+    const { title, body } = MEDICINE_CHANGE_COPY[action];
+    await notifyElder(elderId, {
+      senderId: guardianId,
+      type: `medicine_${action}`,
+      title,
+      body,
+      data: { type: `medicine_${action}` },
+    });
   } catch (err) {
     console.error('notifyElderOfMedicineChange error:', err);
   }
@@ -359,6 +365,21 @@ const savePushToken = async (req, res) => {
   }
 };
 
+// POST /api/guardian/clear-push-token
+const clearPushToken = async (req, res) => {
+  const user_id = req.auth?.userId;
+  if (!user_id) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    await guardianService.clearPushToken(user_id);
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
 // GET /api/guardian/elders
 const guardianElders = async (req, res) => {
   const guardianId = req.auth?.userId;
@@ -473,7 +494,7 @@ const notifyOtherGuardians = async (req, res) => {
         .map((g) => sendExpoPush(g.push_token, {
           title: 'Care Alert',
           body: message,
-          data: { type: 'guardian_alert_notify' },
+          data: { type: 'guardian_alert_notify', elderId },
         }).catch(() => {})),
     );
 
@@ -586,6 +607,8 @@ const ELDER_PROFILE_UPDATE_FIELDS = [
   'email',
   'mobile',
   'location',
+  'country',
+  'country_code',
   'date_of_birth',
   'blood_group',
   'biological_sex',
@@ -744,7 +767,7 @@ const createElderMedicine = async (req, res) => {
     }
 
     const medicines = await medicinesService.create(elderId, rawRows);
-    await notifyElderOfMedicineChange(elderId, 'Your guardian added a new medicine to your schedule.');
+    await notifyElderOfMedicineChange(elderId, req.auth?.userId, 'added');
     return res.json({ success: true, medicines });
   } catch (err) {
     console.error('createElderMedicine error:', err);
@@ -775,7 +798,7 @@ const updateElderMedicine = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
-    await notifyElderOfMedicineChange(elderId, 'Your guardian updated a medicine in your schedule.');
+    await notifyElderOfMedicineChange(elderId, req.auth?.userId, 'updated');
     return res.json({ success: true, medicine });
   } catch (err) {
     console.error('updateElderMedicine error:', err);
@@ -794,7 +817,7 @@ const deleteElderMedicine = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
-    await notifyElderOfMedicineChange(elderId, 'Your guardian removed a medicine from your schedule.');
+    await notifyElderOfMedicineChange(elderId, req.auth?.userId, 'removed');
     return res.json({ success: true, id: deleted.id });
   } catch (err) {
     console.error('deleteElderMedicine error:', err);
@@ -1114,6 +1137,7 @@ module.exports = {
   getPendingInvitations,
   getSentInvitations,
   savePushToken,
+  clearPushToken,
   guardianElders,
   guardianAlerts,
   guardianLocation,

@@ -59,4 +59,24 @@ async function notifyGuardiansOfElder(elderId, { type, title, body, data = null 
   return guardians.length;
 }
 
-module.exports = { createNotification, sendExpoPush, notifyGuardiansOfElder };
+/**
+ * Notifies a single elder — one in-app notification row plus a best-effort push,
+ * for guardian-initiated changes to the elder's own data. Mirrors notifyGuardiansOfElder.
+ */
+async function notifyElder(elderId, { senderId = null, type, title, body, data = null }) {
+  const token = await guardianService.getElderPushToken(elderId);
+
+  await createNotification({
+    userId: elderId,
+    senderId,
+    type,
+    title,
+    body,
+    data,
+  });
+  if (token) {
+    await sendExpoPush(token, { title, body, data });
+  }
+}
+
+module.exports = { createNotification, sendExpoPush, notifyGuardiansOfElder, notifyElder };

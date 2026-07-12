@@ -1,5 +1,53 @@
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
+const { notifyGuardiansOfElder } = require('../services/notifications.service');
+
+const MEDICINE_CHANGE_COPY = {
+  added:   { title: 'New Medicine Added', body: "A new medicine has been added to the user's schedule." },
+  updated: { title: 'Medicine Updated',   body: "The user's medicine schedule has been updated." },
+  removed: { title: 'Medicine Removed',   body: "A medicine has been removed from the user's schedule." },
+};
+
+async function notifyGuardiansOfMedicineChange(elderId, action) {
+  try {
+    const { title, body } = MEDICINE_CHANGE_COPY[action];
+    await notifyGuardiansOfElder(elderId, {
+      type: `medicine_${action}`,
+      title,
+      body,
+      data: { type: `medicine_${action}`, elderId },
+    });
+  } catch (err) {
+    console.error('notifyGuardiansOfMedicineChange error:', err);
+  }
+}
+
+/** "8:00 AM" / "2:30 PM" -> 'Morning' | 'Afternoon' | 'Night'. Defaults to 'Morning' if unparseable. */
+function doseTimeBucket(timeStr) {
+  const match = /^(\d{1,2}):(\d{2})\s*(AM|PM)$/i.exec(String(timeStr ?? '').trim());
+  if (!match) return 'Morning';
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') hour += 12;
+  if (hour < 12) return 'Morning';
+  if (hour < 17) return 'Afternoon';
+  return 'Night';
+}
+
+async function notifyGuardiansOfDoseCompleted(elderId, medicineId) {
+  try {
+    const medicine = await medicinesService.getById(elderId, medicineId);
+    if (!medicine) return;
+    const bucket = doseTimeBucket(medicine.time);
+    await notifyGuardiansOfElder(elderId, {
+      type: 'medicine_dose_completed',
+      title: `${bucket} Dose Completed`,
+      body: 'The user has successfully completed their ' + bucket.toLowerCase() + ' medicine.',
+      data: { type: 'medicine_dose_completed', elderId },
+    });
+  } catch (err) {
+    console.error('notifyGuardiansOfDoseCompleted error:', err);
+  }
+}
 
 function isTableMissing(error) {
   return (
@@ -88,6 +136,7 @@ async function createMedicines(req, res) {
     }
 
     const medicines = await medicinesService.create(userId, rawRows);
+    await notifyGuardiansOfMedicineChange(userId, 'added');
 
     return res.json({ success: true, medicines });
   } catch (err) {
@@ -129,6 +178,7 @@ async function updateMedicine(req, res) {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
+    await notifyGuardiansOfMedicineChange(userId, 'updated');
     return res.json({ success: true, medicine });
   } catch (err) {
     console.error('[medicines] update', err);
@@ -156,6 +206,7 @@ async function deleteMedicine(req, res) {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
+    await notifyGuardiansOfMedicineChange(userId, 'removed');
     return res.json({ success: true, id: deleted.id });
   } catch (err) {
     console.error('[medicines] delete', err);
@@ -225,6 +276,9 @@ async function toggleMedicineLog(req, res) {
     }
 
     const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dateInput);
+    if (taken) {
+      await notifyGuardiansOfDoseCompleted(userId, medicineId);
+    }
 
     return res.json({ success: true, log });
   } catch (err) {
