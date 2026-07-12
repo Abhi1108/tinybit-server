@@ -78,6 +78,7 @@ async function upsertDailyCheckInHandler(req, res) {
       id: _ignoredId,
       created_at: _ignoredCreatedAt,
       updated_at: _ignoredUpdatedAt,
+      source,
       ...fields
     } = body;
 
@@ -97,11 +98,18 @@ async function upsertDailyCheckInHandler(req, res) {
     const checkIn = await upsertDailyCheckIn(userId, upsertFields);
 
     try {
+      const isMoodLift = source === 'mood_lift';
       await notifyGuardiansOfElder(userId, {
-        type: 'daily_checkin',
-        title: 'Check-In Completed',
-        body: "The user has completed today's wellness check-in.",
-        data: { type: 'daily_checkin', elderId: userId, mood: upsertFields.mood },
+        type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+        title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
+        body: isMoodLift
+          ? "The user has completed today's Mood Lift activity."
+          : "The user has completed today's wellness check-in.",
+        data: {
+          type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+          elderId: userId,
+          mood: upsertFields.mood,
+        },
       });
     } catch (notifyErr) {
       console.warn('[wellness/daily-checkin] guardian notify failed:', notifyErr.message);

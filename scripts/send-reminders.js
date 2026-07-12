@@ -67,6 +67,8 @@ async function checkMedicineMissed() {
   );
 
   let sent = 0;
+  const missedCountByElder = {};
+
   for (const med of medicines) {
     const days = Array.isArray(med.days_of_week)
       ? med.days_of_week
@@ -78,6 +80,10 @@ async function checkMedicineMissed() {
 
     const scheduledMs = midnight.getTime() + minutes * 60 * 1000;
     if (Date.now() < scheduledMs + MISSED_DOSE_GRACE_MS) continue;
+
+    // Counts toward today's aggregate regardless of whether the individual
+    // per-dose push below was already sent on an earlier cron tick.
+    missedCountByElder[med.user_id] = (missedCountByElder[med.user_id] ?? 0) + 1;
 
     if (await alreadyNotified(med.user_id, 'medicine_missed', midnight, 'medicineId', med.id)) continue;
 
@@ -96,6 +102,23 @@ async function checkMedicineMissed() {
     sent++;
   }
   console.log(`  Medicine Missed: ${sent} notified`);
+
+  // Aggregate: once an elder has 2+ missed doses today, notify guardians once (no
+  // elder-side copy — the elder already got each individual "Medicine Missed" push).
+  let aggregateSent = 0;
+  for (const [elderId, missedCount] of Object.entries(missedCountByElder)) {
+    if (missedCount < 2) continue;
+    if (await alreadyNotified(elderId, 'missed_medicines_aggregate', midnight)) continue;
+
+    await notifyGuardiansOfElder(elderId, {
+      type: 'missed_medicines_aggregate',
+      title: 'Missed Medicines',
+      body: 'The user has missed multiple scheduled medicines. Please check in with them.',
+      data: { type: 'missed_medicines_aggregate', elderId },
+    });
+    aggregateSent++;
+  }
+  console.log(`  Missed Medicines (aggregate): ${aggregateSent} notified`);
 }
 
 async function checkHealthRecordsNudge() {
