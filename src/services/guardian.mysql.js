@@ -137,6 +137,7 @@ async function createElderProfile({
   emergencyName,
   emergencyPhone,
   emergencyRelation,
+  profileImage,
 }) {
   const elderId = randomUUID();
   const fullName = `${firstName} ${lastName || ''}`.trim();
@@ -153,9 +154,9 @@ async function createElderProfile({
          location, country, country_code, date_of_birth, blood_group, biological_sex, preferred_language,
          height, height_unit, weight, weight_unit,
          medical_conditions, other_condition, allergies, doctor_name, doctor_contact,
-         emergency_name, emergency_phone, emergency_relation,
+         emergency_name, emergency_phone, emergency_relation, profile_image,
          plan_type, plan_status, plan_currency, streak
-       ) VALUES (?, ?, ?, ?, ?, ?, 'elder', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'free', 'active', 'INR', 0)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'elder', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'free', 'active', 'INR', 0)`,
       [
         elderId,
         firstName,
@@ -182,6 +183,7 @@ async function createElderProfile({
         emergencyName ?? null,
         emergencyPhone ?? null,
         emergencyRelation ?? null,
+        profileImage ?? null,
       ],
     );
 
@@ -219,6 +221,7 @@ async function createElderProfile({
     emergency_name: emergencyName ?? null,
     emergency_phone: emergencyPhone ?? null,
     emergency_relation: emergencyRelation ?? null,
+    profile_image: profileImage ?? null,
   };
 }
 
@@ -297,13 +300,14 @@ async function getGuardianEldersDashboard(guardianId) {
       checkedInToday: false,
       medicineCount: 0,
       medicinesDone: 0,
+      doctorCount: 0,
     }));
   }
 
   const today = todayISO();
   const { sql: inSql, params: inParams } = inClause(elderIds);
 
-  const [profiles, checkins, meds, logs] = await Promise.all([
+  const [profiles, checkins, meds, logs, doctorCounts] = await Promise.all([
     query(
       `SELECT id, full_name, age, location, country, country_code, mobile, last_active, biological_sex,
               date_of_birth, blood_group, preferred_language, height, height_unit,
@@ -331,6 +335,13 @@ async function getGuardianEldersDashboard(guardianId) {
        WHERE user_id IN (${inSql}) AND taken_date = ?`,
       [...inParams, today],
     ),
+    query(
+      `SELECT user_id, COUNT(*) AS doctor_count
+       FROM saved_doctors
+       WHERE user_id IN (${inSql})
+       GROUP BY user_id`,
+      inParams,
+    ),
   ]);
 
   const pMap = {};
@@ -345,6 +356,8 @@ async function getGuardianEldersDashboard(guardianId) {
     medsByUser[m.user_id].push(m.id);
   });
   const loggedMeds = new Set(logs.map((l) => l.medicine_id));
+  const doctorCountByUser = {};
+  doctorCounts.forEach((d) => { doctorCountByUser[d.user_id] = Number(d.doctor_count) || 0; });
 
   return links.map((link) => {
     const profile = pMap[link.elder_id] || null;
@@ -387,6 +400,7 @@ async function getGuardianEldersDashboard(guardianId) {
       lastActiveAt: profile?.last_active
         ? (profile.last_active instanceof Date ? profile.last_active.toISOString() : profile.last_active)
         : null,
+      doctorCount: doctorCountByUser[link.elder_id] ?? 0,
     };
   });
 }
@@ -1064,6 +1078,113 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
   });
 }
 
+/** Columns returned by GET /api/guardian/elders/:elderId/profile — no SELECT *. */
+const ELDER_PROFILE_COLUMNS = [
+  'id', 'first_name', 'last_name', 'full_name', 'email', 'mobile', 'location',
+  'date_of_birth', 'age', 'blood_group', 'biological_sex', 'height', 'height_unit',
+  'weight', 'weight_unit', 'medical_conditions', 'other_condition', 'allergies',
+  'doctor_name', 'doctor_contact', 'emergency_name', 'emergency_phone', 'emergency_relation',
+  'profile_image',
+];
+
+/** Same JSON columns as PROFILE_JSON_COLUMNS in profiles.mysql.js — mirrored here since
+ *  that set isn't exported. */
+const ELDER_PROFILE_JSON_COLUMNS = new Set(['medical_conditions', 'allergies']);
+
+function parseElderProfileJsonField(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value;
+}
+
+function mapElderProfileRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    fullName: row.full_name,
+    email: row.email,
+    mobile: row.mobile,
+    location: row.location,
+    dateOfBirth: isoDate(row.date_of_birth),
+    age: row.age,
+    bloodGroup: row.blood_group,
+    biologicalSex: row.biological_sex,
+    height: row.height != null ? Number(row.height) : null,
+    heightUnit: row.height_unit,
+    weight: row.weight != null ? Number(row.weight) : null,
+    weightUnit: row.weight_unit,
+    medicalConditions: parseElderProfileJsonField(row.medical_conditions),
+    otherCondition: row.other_condition,
+    allergies: parseElderProfileJsonField(row.allergies),
+    doctorName: row.doctor_name,
+    doctorContact: row.doctor_contact,
+    emergencyName: row.emergency_name,
+    emergencyPhone: row.emergency_phone,
+    emergencyRelation: row.emergency_relation,
+    profileImage: row.profile_image,
+  };
+}
+
+/** GET /api/guardian/elders/:elderId/profile — caller must have already verified the
+ *  guardian-elder connection (see requireElderConnection in guardian.controller.js). */
+async function getElderProfileForGuardian(elderId) {
+  const rows = await query(
+    `SELECT ${ELDER_PROFILE_COLUMNS.join(', ')} FROM profiles WHERE id = ? LIMIT 1`,
+    [elderId],
+  );
+  return mapElderProfileRow(rows[0] ?? null);
+}
+
+/** True if some OTHER account (app_users.id != excludeId) already owns this email. */
+async function isEmailTakenByOther(email, excludeId) {
+  const rows = await query(
+    'SELECT id FROM app_users WHERE email = ? AND id != ? LIMIT 1',
+    [email, excludeId],
+  );
+  return rows.length > 0;
+}
+
+/** True if some OTHER account (app_users.id != excludeId) already owns this phone. */
+async function isPhoneTakenByOther(phoneE164, excludeId) {
+  const rows = await query(
+    'SELECT id FROM app_users WHERE phone_e164 = ? AND id != ? LIMIT 1',
+    [phoneE164, excludeId],
+  );
+  return rows.length > 0;
+}
+
+/** PATCH /api/guardian/elders/:elderId/profile — partial update, same dynamic-columns
+ *  pattern as upsertProfile in profiles.mysql.js. `fields` is a snake_case patch object
+ *  (only keys actually present in the request body). */
+async function updateElderProfile(elderId, fields) {
+  const columns = Object.keys(fields);
+  if (columns.length === 0) return getElderProfileForGuardian(elderId);
+
+  const setSql = columns.map((col) => `${col} = ?`).join(', ');
+  const values = columns.map((col) => {
+    const value = fields[col];
+    if (ELDER_PROFILE_JSON_COLUMNS.has(col) && value != null) {
+      return JSON.stringify(value);
+    }
+    return value;
+  });
+
+  await execute(
+    `UPDATE profiles SET ${setSql} WHERE id = ?`,
+    [...values, elderId],
+  );
+
+  return getElderProfileForGuardian(elderId);
+}
+
 async function listSentInvitations(guardianId) {
   const rows = await query(
     `SELECT id, guardian_id, elder_id, elder_email, parent_name, relation, status, created_at, updated_at
@@ -1100,4 +1221,8 @@ module.exports = {
   getElderSummaryForGuardian,
   getElderDashboardForGuardian,
   getElderMedicineAdherenceWeek,
+  getElderProfileForGuardian,
+  updateElderProfile,
+  isEmailTakenByOther,
+  isPhoneTakenByOther,
 };

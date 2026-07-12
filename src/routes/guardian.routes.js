@@ -17,6 +17,8 @@ const {
   removeElder,
   getElderSummary,
   getElderDashboard,
+  getElderProfileForGuardian,
+  updateElderProfileForGuardian,
   getElderCoGuardians,
   notifyOtherGuardians,
   listElderEmergencyContacts,
@@ -56,6 +58,8 @@ router.get('/location',              requireJwtAuth, requireActivePlan, guardian
 router.get('/reports',               requireJwtAuth, requireActivePlan, guardianReports);
 router.get('/elders/:elderId/summary',   requireJwtAuth, requireActivePlan, getElderSummary);
 router.get('/elders/:elderId/dashboard', requireJwtAuth, requireActivePlan, getElderDashboard);
+router.get('/elders/:elderId/profile',   requireJwtAuth, requireActivePlan, getElderProfileForGuardian);
+router.patch('/elders/:elderId/profile', requireJwtAuth, requireActivePlan, updateElderProfileForGuardian);
 router.get('/elders/:elderId/co-guardians', requireJwtAuth, requireActivePlan, getElderCoGuardians);
 router.post('/elders/:elderId/notify-guardians', requireJwtAuth, requireActivePlan, notifyOtherGuardians);
 router.get('/elders/:elderId/emergency-contacts',  requireJwtAuth, requireActivePlan, listElderEmergencyContacts);

@@ -171,10 +171,12 @@ const createElderProfile = async (req, res) => {
     weight,
     weight_unit,
     medical_conditions,
+    medical_notes,
     other_condition,
     allergies,
     doctor_name,
     doctor_contact,
+    profile_image,
   } = req.body ?? {};
 
   if (!first_name || !email || !mobile || !mobile_country || !relation) {
@@ -239,6 +241,16 @@ const createElderProfile = async (req, res) => {
     // The guardian creating this shadow profile is the elder's emergency contact — derived
     // server-side from the guardian's own profile (already fetched above), never trusted
     // from the client, so it can't be omitted or spoofed.
+
+    // `other_condition` ("Other condition" free text) and `medical_notes` (a separate
+    // "additional notes" field on create-elder-profile.tsx) both target the single
+    // `profiles.other_condition` column (CLAUDE.md: no new columns) — concatenate both when
+    // present so neither is silently dropped.
+    const otherConditionValue = [other_condition, medical_notes]
+      .filter((v) => v != null && String(v).trim() !== '')
+      .map((v) => String(v).trim())
+      .join(' | ') || null;
+
     const elder = await guardianService.createElderProfile({
       guardianId,
       firstName: String(first_name).trim(),
@@ -261,13 +273,14 @@ const createElderProfile = async (req, res) => {
       weight: weight ?? null,
       weightUnit: weight_unit ?? null,
       medicalConditions: Array.isArray(medical_conditions) ? medical_conditions : null,
-      otherCondition: other_condition ?? null,
+      otherCondition: otherConditionValue,
       allergies: Array.isArray(allergies) ? allergies : null,
       doctorName: doctor_name ?? null,
       doctorContact: doctor_contact ?? null,
       emergencyName: guardianProfile?.full_name ?? null,
       emergencyPhone: guardianProfile?.mobile ?? null,
       emergencyRelation: relation,
+      profileImage: profile_image ?? null,
     });
 
     return res.json({ success: true, elder });
@@ -543,6 +556,99 @@ const getElderDashboard = async (req, res) => {
     console.error('getElderDashboard error:', err);
     const status = err.statusCode ?? 500;
     return res.status(status).json({ success: false, message: err.message || 'Server error' });
+  }
+};
+
+// GET /api/guardian/elders/:elderId/profile — full profile prefill for the guardian's "edit
+// elder" screen.
+const getElderProfileForGuardian = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  try {
+    const data = await guardianService.getElderProfileForGuardian(elderId);
+    if (!data) {
+      return res.status(404).json({ success: false, message: 'Elder profile not found.' });
+    }
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('getElderProfileForGuardian error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Could not load elder profile.' });
+  }
+};
+
+// Mirrors PATCH /api/auth/profile's whitelist (auth.controller.js), minus elder-self-only
+// fields (role, preferred_language) that don't apply when a guardian is editing.
+const ELDER_PROFILE_UPDATE_FIELDS = [
+  'first_name',
+  'last_name',
+  'email',
+  'mobile',
+  'location',
+  'date_of_birth',
+  'blood_group',
+  'biological_sex',
+  'height',
+  'height_unit',
+  'weight',
+  'weight_unit',
+  'medical_conditions',
+  'other_condition',
+  'allergies',
+  'doctor_name',
+  'doctor_contact',
+  'emergency_name',
+  'emergency_phone',
+  'emergency_relation',
+  'profile_image',
+];
+
+// PATCH /api/guardian/elders/:elderId/profile
+const updateElderProfileForGuardian = async (req, res) => {
+  const elderId = await requireElderConnection(req, res);
+  if (!elderId) return;
+
+  const body = req.body ?? {};
+  const patch = {};
+  for (const key of ELDER_PROFILE_UPDATE_FIELDS) {
+    if (body[key] !== undefined) patch[key] = body[key];
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return res.status(400).json({ success: false, message: 'No profile fields to update' });
+  }
+
+  try {
+    if (patch.email !== undefined) {
+      const normalizedEmail = String(patch.email).trim().toLowerCase();
+      const taken = await guardianService.isEmailTakenByOther(normalizedEmail, elderId);
+      if (taken) {
+        return res.status(409).json({
+          success: false,
+          message: 'This email is already registered to an account.',
+          code: 'EMAIL_TAKEN',
+        });
+      }
+      patch.email = normalizedEmail;
+    }
+
+    if (patch.mobile !== undefined) {
+      const taken = await guardianService.isPhoneTakenByOther(patch.mobile, elderId);
+      if (taken) {
+        return res.status(409).json({
+          success: false,
+          message: 'This phone number is already registered to an account.',
+          code: 'PHONE_TAKEN',
+        });
+      }
+    }
+
+    const data = await guardianService.updateElderProfile(elderId, patch);
+    return res.json({ success: true, data });
+  } catch (err) {
+    console.error('updateElderProfileForGuardian error:', err);
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Could not update elder profile.' });
   }
 };
 
@@ -1006,6 +1112,8 @@ module.exports = {
   removeElder,
   getElderSummary,
   getElderDashboard,
+  getElderProfileForGuardian,
+  updateElderProfileForGuardian,
   getElderCoGuardians,
   notifyOtherGuardians,
   listElderEmergencyContacts,
