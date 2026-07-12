@@ -1,4 +1,5 @@
-const { query, execute } = require('../config/mysql');
+const { randomUUID } = require('crypto');
+const { query, execute, withTransaction } = require('../config/mysql');
 const journalService = require('./journal.service');
 const mindGamesService = require('./mind-games.service');
 
@@ -89,6 +90,79 @@ async function createInvitation({ guardian_id, elder_id, elder_email, parent_nam
   }
 }
 
+/**
+ * Guardian-created "shadow" elder profile (ADR 0004): creates a REAL, immediately-usable
+ * app_users + profiles + guardian_elder_links(status='connected') row in one transaction —
+ * not a pending invite. Caller (controller) is responsible for the phone/email uniqueness
+ * pre-check and the mid-cycle tier-upgrade gate before calling this.
+ *
+ * No new auth-matching logic is needed elsewhere: findOrCreateByPhone/findOrCreateByGoogle
+ * already check app_users.phone_e164/email first, so when the real elder later signs in with
+ * the same phone (OTP) or email (Google), they land on exactly this profile.
+ */
+async function createElderProfile({
+  guardianId,
+  firstName,
+  lastName,
+  email,
+  phoneE164,
+  relation,
+  age,
+  bloodGroup,
+  biologicalSex,
+  preferredLanguage,
+  medicalConditions,
+  medicalNotes,
+}) {
+  const elderId = randomUUID();
+  const fullName = `${firstName} ${lastName || ''}`.trim();
+
+  await withTransaction(async (conn) => {
+    await conn.execute(
+      `INSERT INTO app_users (id, phone_e164, email, password_hash) VALUES (?, ?, ?, NULL)`,
+      [elderId, phoneE164, email],
+    );
+
+    await conn.execute(
+      `INSERT INTO profiles (
+         id, first_name, last_name, full_name, email, mobile, role,
+         age, blood_group, biological_sex, preferred_language, medical_conditions, other_condition,
+         plan_type, plan_status, plan_currency, streak
+       ) VALUES (?, ?, ?, ?, ?, ?, 'elder', ?, ?, ?, ?, ?, ?, 'free', 'active', 'INR', 0)`,
+      [
+        elderId,
+        firstName,
+        lastName || null,
+        fullName,
+        email,
+        phoneE164,
+        age ?? null,
+        bloodGroup ?? null,
+        biologicalSex ?? null,
+        preferredLanguage ?? null,
+        medicalConditions ? JSON.stringify(medicalConditions) : null,
+        medicalNotes ?? null,
+      ],
+    );
+
+    await conn.execute(
+      `INSERT INTO guardian_elder_links (
+         guardian_id, elder_id, elder_email, parent_name, relation, status
+       ) VALUES (?, ?, ?, ?, ?, 'connected')`,
+      [guardianId, elderId, email, fullName, relation],
+    );
+  });
+
+  return {
+    id: elderId,
+    first_name: firstName,
+    last_name: lastName || '',
+    email,
+    mobile: phoneE164,
+    relation,
+  };
+}
+
 async function respondToInvitation(linkId, action, elderId) {
   const newStatus = action === 'accept' ? 'connected' : 'declined';
 
@@ -106,7 +180,12 @@ async function respondToInvitation(linkId, action, elderId) {
   return newStatus;
 }
 
-async function getPendingInvitations(elderEmail) {
+/** `elderEmails` — every identifier this elder is known by (login email, profile email,
+ *  phone-derived synthetic email) — see getPendingInvitations in guardian.controller.js. */
+async function getPendingInvitations(elderEmails) {
+  const emails = Array.isArray(elderEmails) ? elderEmails : [elderEmails];
+  const { sql: inSql, params: inParams } = inClause(emails);
+
   return query(
     `SELECT
        l.id,
@@ -117,9 +196,9 @@ async function getPendingInvitations(elderEmail) {
        COALESCE(p.full_name, 'Unknown') AS guardian_name
      FROM guardian_elder_links l
      LEFT JOIN profiles p ON p.id = l.guardian_id
-     WHERE l.elder_email = ? AND l.status = 'pending'
+     WHERE l.elder_email IN (${inSql}) AND l.status = 'pending'
      ORDER BY l.created_at DESC`,
-    [elderEmail],
+    inParams,
   );
 }
 
@@ -920,6 +999,7 @@ module.exports = {
   findProfileByEmail,
   hasPendingInvite,
   createInvitation,
+  createElderProfile,
   respondToInvitation,
   getPendingInvitations,
   savePushToken,

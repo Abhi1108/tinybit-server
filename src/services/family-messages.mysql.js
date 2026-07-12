@@ -42,6 +42,27 @@ async function getById(id) {
   return mapMessageRow(rows[0] ?? null);
 }
 
+/** Full two-way thread between `userId` and `otherUserId`, newest first. */
+async function listBetween(userId, otherUserId, limit = 50) {
+  // `LIMIT ?` as a mysql2 prepared-statement placeholder throws "Incorrect arguments to
+  // mysqld_stmt_execute" (a known mysql2 limitation, not consistently supported across
+  // versions). Safe to inline here since `safeLimit` is clamped to a plain integer below,
+  // never raw user input.
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+
+  const rows = await query(
+    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
+     FROM family_messages fm
+     LEFT JOIN profiles p ON p.id = fm.sender_id
+     WHERE (fm.sender_id = ? AND fm.receiver_id = ?)
+        OR (fm.sender_id = ? AND fm.receiver_id = ?)
+     ORDER BY fm.created_at DESC
+     LIMIT ${safeLimit}`,
+    [userId, otherUserId, otherUserId, userId],
+  );
+  return rows.map(mapMessageRow);
+}
+
 async function latestForReceiver(receiverId) {
   const rows = await query(
     `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
@@ -90,6 +111,7 @@ async function isParticipantInAudioMessage(userId, audioUrl) {
 }
 
 module.exports = {
+  listBetween,
   latestForReceiver,
   countForReceiverOnDate,
   create,

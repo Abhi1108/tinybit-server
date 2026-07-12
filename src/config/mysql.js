@@ -48,4 +48,25 @@ async function execute(sql, params = []) {
   return result;
 }
 
-module.exports = { getPool, query, execute };
+/**
+ * Runs `fn(conn)` inside a single transaction — commits on success, rolls back and
+ * rethrows on error, always releases the connection. `conn` is a raw mysql2
+ * PoolConnection; use `conn.execute(sql, params)` inside `fn` (same call shape as the
+ * pool-level `execute` above, returns `[result]`/`[rows]`).
+ */
+async function withTransaction(fn) {
+  const conn = await getPool().getConnection();
+  try {
+    await conn.beginTransaction();
+    const result = await fn(conn);
+    await conn.commit();
+    return result;
+  } catch (err) {
+    try { await conn.rollback(); } catch { /* rollback best-effort */ }
+    throw err;
+  } finally {
+    conn.release();
+  }
+}
+
+module.exports = { getPool, query, execute, withTransaction };

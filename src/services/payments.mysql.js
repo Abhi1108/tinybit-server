@@ -99,6 +99,19 @@ async function getPricingSummaryForGuardian(guardianId) {
   };
 }
 
+/** All selectable pricing tiers for the guardian's country — mobile Plan Selection screen. */
+async function listTiersForGuardian(guardianId) {
+  const profile = await requireGuardianProfile(guardianId);
+  const countryCode = pricingService.normalizeCountryCode(profile.country_code);
+
+  let tiers = await pricingService.listPricingTiers({ countryCode, active: true });
+  if (!tiers.length && countryCode !== pricingService.DEFAULT_COUNTRY) {
+    tiers = await pricingService.listPricingTiers({ countryCode: pricingService.DEFAULT_COUNTRY, active: true });
+  }
+
+  return { country_code: countryCode, tiers };
+}
+
 async function getOrderById(id) {
   const rows = await query('SELECT * FROM payment_orders WHERE id = ? LIMIT 1', [id]);
   return mapOrder(rows[0] ?? null);
@@ -338,6 +351,73 @@ async function getOrderByRazorpayId(razorpayOrderId) {
   return mapOrder(rows[0] ?? null);
 }
 
+/**
+ * ADR 0005 — dev-mode payment bypass. Simulates a successful renewal payment for the given
+ * elder_count tier without touching Razorpay: writes the exact same profiles.plan_* fields
+ * `applyPlanUpdate` writes for a real verified payment, plus a `payment_orders`/`payments` row
+ * pair so history/admin dashboards aren't missing rows a real payment would have produced.
+ * Always a 'renewal' (extends plan_expires_at) — there is no dev-mode upgrade flow.
+ * Gateway ids are prefixed `dev_order_`/`dev_payment_` so these rows are trivially identifiable
+ * and truncatable once real Razorpay checkout ships on mobile (see ADR 0005 Consequences).
+ * Caller (controller) is responsible for the ALLOW_DEV_PAYMENTS env gate.
+ */
+async function devCompletePayment(guardianId, elderCount) {
+  const profile = await requireGuardianProfile(guardianId);
+  const count = Math.max(1, Number(elderCount) || 1);
+  const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, count);
+
+  const orderId = randomUUID();
+  const receipt = `dev_${orderId}`.slice(0, 64);
+  const devRazorpayOrderId = `dev_order_${randomUUID()}`;
+  const devRazorpayPaymentId = `dev_payment_${randomUUID()}`;
+
+  await execute(
+    `INSERT INTO payment_orders
+       (id, guardian_id, razorpay_order_id, kind, pricing_tier_id, elder_count_at_purchase,
+        amount, tier_amount, interval_days, currency, previous_tier_amount, previous_elder_count,
+        receipt, status, notes)
+     VALUES (?, ?, ?, 'renewal', ?, ?, ?, ?, ?, ?, NULL, NULL, ?, 'paid', ?)`,
+    [
+      orderId, guardianId, devRazorpayOrderId, tier.id, count,
+      tier.amount, tier.amount, tier.interval_days, tier.currency, receipt,
+      JSON.stringify({ dev_mock: true, guardian_id: guardianId, elder_count: count }),
+    ],
+  );
+
+  const paymentId = randomUUID();
+  await execute(
+    `INSERT INTO payments
+       (id, order_id, razorpay_payment_id, razorpay_signature, method, status, amount, currency, captured_at, raw_response)
+     VALUES (?, ?, ?, NULL, 'dev_mock', 'captured', ?, ?, CURRENT_TIMESTAMP(3), ?)`,
+    [
+      paymentId, orderId, devRazorpayPaymentId, tier.amount, tier.currency,
+      JSON.stringify({ dev_mock: true }),
+    ],
+  );
+
+  await applyPlanUpdate(guardianId, {
+    planAmount: tier.amount,
+    planCurrency: tier.currency,
+    planElderCount: count,
+    extendExpiry: true,
+    intervalDays: tier.interval_days,
+  });
+
+  const order = await getOrderById(orderId);
+  const updatedProfile = await profilesService.getProfileById(guardianId);
+
+  return {
+    order,
+    plan: {
+      status:       updatedProfile.plan_status,
+      expires_at:   toIso(updatedProfile.plan_expires_at),
+      amount:       updatedProfile.plan_amount == null ? null : Number(updatedProfile.plan_amount),
+      currency:     updatedProfile.plan_currency,
+      elder_count:  updatedProfile.plan_elder_count,
+    },
+  };
+}
+
 async function getHistoryForGuardian(guardianId) {
   const orders = await query(
     `SELECT o.*,
@@ -404,6 +484,7 @@ async function listAllOrders({ guardianId, page, limit } = {}) {
 module.exports = {
   getElderCountForGuardian,
   getPricingSummaryForGuardian,
+  listTiersForGuardian,
   getOrderById,
   getOrderByRazorpayId,
   createRenewalOrder,
@@ -413,4 +494,5 @@ module.exports = {
   recordFailedPayment,
   getHistoryForGuardian,
   listAllOrders,
+  devCompletePayment,
 };

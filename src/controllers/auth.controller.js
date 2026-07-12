@@ -254,20 +254,16 @@ async function googleAuth(req, res) {
       });
     }
 
-    const fullName = decoded.name ?? decoded.display_name ?? null;
+    // Deliberately NOT persisting decoded.name to profiles.full_name here — the mobile
+    // onboarding flow (role.tsx -> your-name.tsx) must be the sole place full_name/role get
+    // confirmed for a new user, same as phone-OTP sign-in. Pre-filling it from Google would
+    // make the app's needsNameSetup/needsRoleSetup checks treat onboarding as already done,
+    // skipping role selection entirely and permanently defaulting to the 'elder' DB default.
+    // See src/services/auth-users.mysql.js#upsertGoogleProfile for the matching fix.
     const { user, isNewUser } = await findOrCreateByGoogle({
       email,
-      fullName,
       firebaseUid: decoded.uid,
     });
-
-    if (fullName && isNewUser) {
-      await upsertProfile({
-        id: user.id,
-        full_name: fullName,
-        email: user.email,
-      });
-    }
 
     if (await isProfileDeleted(user.id)) {
       return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });

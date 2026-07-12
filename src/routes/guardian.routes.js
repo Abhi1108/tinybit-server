@@ -4,6 +4,7 @@ const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const { requireActivePlan } = require('../middleware/requireActivePlan.middleware');
 const {
   inviteParent,
+  createElderProfile,
   respondToInvitation,
   getPendingInvitations,
   getSentInvitations,
@@ -31,11 +32,17 @@ const {
   listElderHealthRecords,
   createElderHealthRecord,
   deleteElderHealthRecord,
+  getElderHealthRecordInsights,
+  compareElderHealthRecords,
+  listElderDoctors,
+  createElderDoctor,
+  deleteElderDoctor,
   presignElderUpload,
   presignElderDownload,
 } = require('../controllers/guardian.controller');
 
 router.post('/invite',               requireJwtAuth, requireActivePlan, inviteParent);
+router.post('/elders',               requireJwtAuth, requireActivePlan, createElderProfile);
 router.post('/respond',              requireJwtAuth, requireActivePlan, respondToInvitation);
 router.get('/pending-invitations',   requireJwtAuth, requireActivePlan, getPendingInvitations);
 router.get('/sent-invitations',      requireJwtAuth, requireActivePlan, getSentInvitations);
@@ -67,7 +74,17 @@ router.delete('/elders/:elderId/medicines/:id', requireJwtAuth, requireActivePla
 
 router.get('/elders/:elderId/health-records',        requireJwtAuth, requireActivePlan, listElderHealthRecords);
 router.post('/elders/:elderId/health-records',       requireJwtAuth, requireActivePlan, createElderHealthRecord);
+// NOTE: '/health-records/compare' is a literal POST route; it doesn't collide with the POST
+// '/health-records/:id/insights' or DELETE '/health-records/:id' routes below since either the
+// method or the trailing segment differs, but literal routes are kept above the '/:id' ones for
+// consistency with the /medicines block's ordering note.
+router.post('/elders/:elderId/health-records/compare',      requireJwtAuth, requireActivePlan, compareElderHealthRecords);
+router.post('/elders/:elderId/health-records/:id/insights', requireJwtAuth, requireActivePlan, getElderHealthRecordInsights);
 router.delete('/elders/:elderId/health-records/:id', requireJwtAuth, requireActivePlan, deleteElderHealthRecord);
+
+router.get('/elders/:elderId/doctors',        requireJwtAuth, requireActivePlan, listElderDoctors);
+router.post('/elders/:elderId/doctors',       requireJwtAuth, requireActivePlan, createElderDoctor);
+router.delete('/elders/:elderId/doctors/:id', requireJwtAuth, requireActivePlan, deleteElderDoctor);
 
 router.post('/elders/:elderId/storage/presign-upload',   requireJwtAuth, requireActivePlan, presignElderUpload);
 router.post('/elders/:elderId/storage/presign-download', requireJwtAuth, requireActivePlan, presignElderDownload);

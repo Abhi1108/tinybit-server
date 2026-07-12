@@ -21,6 +21,36 @@ function todayDateParam() {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** GET /api/family/messages/history?with=<userId>&limit=50 — full two-way thread, newest first. */
+async function getMessageHistory(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const otherUserId = String(req.query.with ?? '').trim();
+    if (!otherUserId) {
+      return res.status(400).json({ success: false, message: '"with" query param is required.' });
+    }
+
+    const limitRaw = parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+
+    const messages = await familyMessagesService.listBetween(userId, otherUserId, limit);
+    return res.json({ success: true, messages });
+  } catch (err) {
+    console.error('[family/messages] history', err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'family_messages table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not load message history.',
+    });
+  }
+}
+
 /** GET /api/family/messages/latest */
 async function getLatestMessage(req, res) {
   try {
@@ -144,6 +174,7 @@ async function presignAudioDownload(req, res) {
 }
 
 module.exports = {
+  getMessageHistory,
   getLatestMessage,
   getMessageCount,
   createMessage,
