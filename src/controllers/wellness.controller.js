@@ -5,7 +5,6 @@ const {
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
 const medicineLogsService = require('../services/medicine-logs.service');
 const familyMessagesService = require('../services/family-messages.service');
-const profilesService = require('../services/profiles.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
 
 function isTableMissing(error) {
@@ -79,6 +78,7 @@ async function upsertDailyCheckInHandler(req, res) {
       id: _ignoredId,
       created_at: _ignoredCreatedAt,
       updated_at: _ignoredUpdatedAt,
+      source,
       ...fields
     } = body;
 
@@ -98,13 +98,18 @@ async function upsertDailyCheckInHandler(req, res) {
     const checkIn = await upsertDailyCheckIn(userId, upsertFields);
 
     try {
-      const elder = await profilesService.getProfileById(userId);
-      const elderName = elder?.full_name || 'Your family member';
+      const isMoodLift = source === 'mood_lift';
       await notifyGuardiansOfElder(userId, {
-        type: 'daily_checkin',
-        title: 'Daily Check-in Completed',
-        body: `${elderName} completed today's health check-in.`,
-        data: { source: 'daily_checkin', mood: upsertFields.mood },
+        type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+        title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
+        body: isMoodLift
+          ? "The user has completed today's Mood Lift activity."
+          : "The user has completed today's wellness check-in.",
+        data: {
+          type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+          elderId: userId,
+          mood: upsertFields.mood,
+        },
       });
     } catch (notifyErr) {
       console.warn('[wellness/daily-checkin] guardian notify failed:', notifyErr.message);

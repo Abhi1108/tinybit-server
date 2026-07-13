@@ -2,6 +2,7 @@ const healthRecordsService = require('../services/health-records.service');
 const savedDoctorsService = require('../services/saved-doctors.service');
 const healthInsightsService = require('../services/health-insights.service');
 const storageService = require('../services/storage.service');
+const { notifyGuardiansOfElder } = require('../services/notifications.service');
 
 function isTableMissing(error) {
   return (
@@ -123,6 +124,17 @@ async function createRecord(req, res) {
     }
 
     const record = await healthRecordsService.create(userId, payload);
+
+    try {
+      await notifyGuardiansOfElder(userId, {
+        type: 'report_uploaded',
+        title: 'Report Uploaded',
+        body: 'The user has uploaded a new health report.',
+        data: { type: 'report_uploaded', elderId: userId },
+      });
+    } catch (notifyErr) {
+      console.warn('[health-vault/create] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({ success: true, record });
   } catch (err) {

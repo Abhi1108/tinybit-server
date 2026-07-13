@@ -1,6 +1,12 @@
 const journalService = require('../services/journal.service');
+const { notifyGuardiansOfElder } = require('../services/notifications.service');
 
 const VALID_TYPES = new Set(['Written', 'Voice']);
+
+const JOURNAL_COPY = {
+  Voice:   { title: 'Voice Journal',  body: 'The user has added a new voice journal entry.' },
+  Written: { title: 'Memory Journal', body: 'The user has added a new memory to their journal.' },
+};
 
 function isTableMissing(error) {
   return (
@@ -112,6 +118,18 @@ async function createJournalEntry(req, res) {
       audio_uri: audioUri,
       prompt,
     });
+
+    try {
+      const { title, body } = JOURNAL_COPY[type];
+      await notifyGuardiansOfElder(userId, {
+        type: 'journal_added',
+        title,
+        body,
+        data: { type: 'journal_added', elderId: userId },
+      });
+    } catch (notifyErr) {
+      console.warn('[journal/create] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({ success: true, entry });
   } catch (err) {

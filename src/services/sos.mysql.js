@@ -1,9 +1,9 @@
 const { query, execute } = require('../config/mysql');
 
-/** Minimal profile fields for SOS trigger logging. */
+/** Minimal profile fields for SOS trigger logging + guardian push. */
 async function getProfileForTrigger(userId) {
   const rows = await query(
-    `SELECT full_name, emergency_name, emergency_phone, mobile
+    `SELECT full_name, emergency_name, emergency_phone, mobile, blood_group
      FROM profiles
      WHERE id = ?
      LIMIT 1`,

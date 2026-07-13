@@ -9,6 +9,7 @@ const {
   getPendingInvitations,
   getSentInvitations,
   savePushToken,
+  clearPushToken,
   guardianElders,
   guardianAlerts,
   guardianLocation,
@@ -17,6 +18,8 @@ const {
   removeElder,
   getElderSummary,
   getElderDashboard,
+  getElderProfileForGuardian,
+  updateElderProfileForGuardian,
   getElderCoGuardians,
   notifyOtherGuardians,
   listElderEmergencyContacts,
@@ -48,6 +51,7 @@ router.get('/pending-invitations',   requireJwtAuth, requireActivePlan, getPendi
 router.get('/sent-invitations',      requireJwtAuth, requireActivePlan, getSentInvitations);
 router.get('/connected-guardians',   requireJwtAuth, requireActivePlan, getConnectedGuardians);
 router.post('/save-push-token',      requireJwtAuth, requireActivePlan, savePushToken);
+router.post('/clear-push-token',     requireJwtAuth, requireActivePlan, clearPushToken);
 
 router.get('/elders',                requireJwtAuth, requireActivePlan, guardianElders);
 router.delete('/elders/:elderId',    requireJwtAuth, requireActivePlan, removeElder);
@@ -56,6 +60,8 @@ router.get('/location',              requireJwtAuth, requireActivePlan, guardian
 router.get('/reports',               requireJwtAuth, requireActivePlan, guardianReports);
 router.get('/elders/:elderId/summary',   requireJwtAuth, requireActivePlan, getElderSummary);
 router.get('/elders/:elderId/dashboard', requireJwtAuth, requireActivePlan, getElderDashboard);
+router.get('/elders/:elderId/profile',   requireJwtAuth, requireActivePlan, getElderProfileForGuardian);
+router.patch('/elders/:elderId/profile', requireJwtAuth, requireActivePlan, updateElderProfileForGuardian);
 router.get('/elders/:elderId/co-guardians', requireJwtAuth, requireActivePlan, getElderCoGuardians);
 router.post('/elders/:elderId/notify-guardians', requireJwtAuth, requireActivePlan, notifyOtherGuardians);
 router.get('/elders/:elderId/emergency-contacts',  requireJwtAuth, requireActivePlan, listElderEmergencyContacts);

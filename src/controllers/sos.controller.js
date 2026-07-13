@@ -1,5 +1,20 @@
 const emergencyContactsService = require('../services/emergency-contacts.service');
 const sosService = require('../services/sos.service');
+const elderLocationsService = require('../services/elder-locations.service');
+const { notifyGuardiansOfElder } = require('../services/notifications.service');
+
+async function notifyGuardiansOfEmergencyContactChange(userId) {
+  try {
+    await notifyGuardiansOfElder(userId, {
+      type: 'emergency_contact_updated',
+      title: 'Emergency Contact Updated',
+      body: "The user's emergency contact information has been updated.",
+      data: { type: 'emergency_contact_updated', elderId: userId },
+    });
+  } catch (err) {
+    console.warn('[sos/emergency-contacts] guardian notify failed:', err.message);
+  }
+}
 
 const DEFAULT_COLOR = '#F0F4FF';
 
@@ -60,6 +75,7 @@ async function createEmergencyContact(req, res) {
     }
 
     const contact = await emergencyContactsService.create(userId, { name, role, phone, color });
+    await notifyGuardiansOfEmergencyContactChange(userId);
     return res.json({ success: true, contact });
   } catch (err) {
     console.error('[sos/emergency-contacts] insert:', err.message || err);
@@ -102,6 +118,7 @@ async function updateEmergencyContact(req, res) {
       return res.status(404).json({ success: false, message: 'Emergency contact not found.' });
     }
 
+    await notifyGuardiansOfEmergencyContactChange(userId);
     return res.json({ success: true, contact });
   } catch (err) {
     console.error('[sos/emergency-contacts] update:', err.message || err);
@@ -143,7 +160,7 @@ async function deleteEmergencyContact(req, res) {
   }
 }
 
-/** POST /api/sos/trigger — log SOS event (call-only on device; no SMS). */
+/** POST /api/sos/trigger — logs the alert, calls guardians on-device (dialer), and pushes every connected guardian. */
 async function triggerSos(req, res) {
   try {
     const userId = req.auth.userId;
@@ -156,6 +173,7 @@ async function triggerSos(req, res) {
     const alert = await sosService.createAlert(userId);
 
     const elderName = profile.full_name || profile.emergency_name || 'A TinyBit user';
+    const triggeredAt = new Date().toISOString();
 
     console.log('[sos/trigger]', {
       userId,
@@ -164,6 +182,28 @@ async function triggerSos(req, res) {
       emergency_phone: profile.emergency_phone ?? null,
       channel: 'call-only',
     });
+
+    try {
+      // Location is included regardless of the normal is_sharing gate: triggering
+      // an SOS is the elder's own explicit signal that their guardians should see it.
+      const location = await elderLocationsService.getByElderId(userId);
+      await notifyGuardiansOfElder(userId, {
+        type: 'sos_alert',
+        title: `🚨 ${elderName} IMMEDIATE HELP!!`,
+        body: 'Needs immediate help right now. Tap for live location and blood group.',
+        data: {
+          type:       'sos_alert',
+          elderId:    userId,
+          time:       triggeredAt,
+          bloodGroup: profile.blood_group ?? null,
+          latitude:   location?.latitude ?? null,
+          longitude:  location?.longitude ?? null,
+          address:    location?.address ?? null,
+        },
+      });
+    } catch (notifyErr) {
+      console.warn('[sos/trigger] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({
       success: true,
