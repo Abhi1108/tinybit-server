@@ -308,6 +308,9 @@ async function getGuardianEldersDashboard(guardianId) {
       medicineCount: 0,
       medicinesDone: 0,
       doctorCount: 0,
+      mood: null,
+      healthScore: null,
+      lastActiveAt: null,
     }));
   }
 
@@ -325,7 +328,7 @@ async function getGuardianEldersDashboard(guardianId) {
       inParams,
     ),
     query(
-      `SELECT user_id, mood
+      `SELECT user_id, mood, notes
        FROM daily_checkins
        WHERE user_id IN (${inSql}) AND check_in_date = ?`,
       [...inParams, today],
@@ -356,7 +359,18 @@ async function getGuardianEldersDashboard(guardianId) {
 
   const checkinIds = new Set(checkins.map((c) => c.user_id));
   const moodByUser = {};
-  checkins.forEach((c) => { moodByUser[c.user_id] = c.mood ?? null; });
+  const healthScoreByUser = {};
+  checkins.forEach((c) => {
+    moodByUser[c.user_id] = c.mood ?? null;
+    // `notes` is plain free text for the simple check-in flow, but the "Daily Wellness" form
+    // (the elder's Daily Health Check-In screen) stores a JSON-encoded payload there instead —
+    // this is the single source of truth for the 0-100 health score shown to the elder, so the
+    // guardian's summary must read it back rather than deriving its own proxy score.
+    const parsedNotes = parseJsonColumn(c.notes);
+    if (parsedNotes && typeof parsedNotes.healthScore === 'number') {
+      healthScoreByUser[c.user_id] = parsedNotes.healthScore;
+    }
+  });
   const medsByUser = {};
   meds.forEach((m) => {
     if (!medsByUser[m.user_id]) medsByUser[m.user_id] = [];
@@ -404,6 +418,7 @@ async function getGuardianEldersDashboard(guardianId) {
       medicineCount: userMeds.length,
       medicinesDone: userMeds.filter((id) => loggedMeds.has(id)).length,
       mood: moodByUser[link.elder_id] ?? null,
+      healthScore: healthScoreByUser[link.elder_id] ?? null,
       lastActiveAt: profile?.last_active
         ? (profile.last_active instanceof Date ? profile.last_active.toISOString() : profile.last_active)
         : null,
@@ -875,7 +890,7 @@ async function getElderSummaryForGuardian(guardianId, elderId) {
     query('SELECT id, full_name, age, location FROM profiles WHERE id = ? LIMIT 1', [elderId]),
     query(
       `SELECT check_in_date, mood, mood_score, sleep_hours, sleep_quality, energy_level,
-              pain_level, physical_activity, notes
+              pain_level, physical_activity, breakfast_done, hydration_done, notes
        FROM daily_checkins
        WHERE user_id = ?
        ORDER BY check_in_date DESC
@@ -908,6 +923,8 @@ async function getElderSummaryForGuardian(guardianId, elderId) {
       energyLevel:      c.energy_level,
       painLevel:        c.pain_level,
       physicalActivity: c.physical_activity,
+      breakfastDone:    c.breakfast_done != null ? Boolean(c.breakfast_done) : null,
+      hydrationDone:    c.hydration_done != null ? Boolean(c.hydration_done) : null,
       notes:            c.notes,
     })),
     moods: moods.map((m) => ({
@@ -925,7 +942,7 @@ function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameByI
   const items = [];
 
   journalEntries
-    .filter((j) => (j.created_at ?? '').slice(0, 10) === today)
+    .filter((j) => (isoDate(j.created_at) ?? '').slice(0, 10) === today)
     .forEach((j) => {
       items.push({
         type:      'journal',
@@ -936,7 +953,7 @@ function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameByI
     });
 
   moods
-    .filter((m) => (m.created_at ?? '').slice(0, 10) === today)
+    .filter((m) => (isoDate(m.created_at) ?? '').slice(0, 10) === today)
     .forEach((m) => {
       items.push({
         type:      'mood',
