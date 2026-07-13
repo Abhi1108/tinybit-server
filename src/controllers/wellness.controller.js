@@ -1,6 +1,7 @@
 const {
   findCheckInByUserAndDate,
   upsertDailyCheckIn,
+  insertMoodEntry,
 } = require('../services/daily-checkins.service');
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
 const medicineLogsService = require('../services/medicine-logs.service');
@@ -79,6 +80,7 @@ async function upsertDailyCheckInHandler(req, res) {
       created_at: _ignoredCreatedAt,
       updated_at: _ignoredUpdatedAt,
       source,
+      mood_note: moodNote,
       ...fields
     } = body;
 
@@ -97,8 +99,20 @@ async function upsertDailyCheckInHandler(req, res) {
 
     const checkIn = await upsertDailyCheckIn(userId, upsertFields);
 
+    const isMoodLift = source === 'mood_lift';
+    if (isMoodLift) {
+      try {
+        await insertMoodEntry(userId, {
+          mood: upsertFields.mood,
+          moodScore: upsertFields.mood_score,
+          note: moodNote ?? null,
+        });
+      } catch (moodEntryErr) {
+        console.warn('[wellness/daily-checkin] mood_entries insert failed:', moodEntryErr.message);
+      }
+    }
+
     try {
-      const isMoodLift = source === 'mood_lift';
       await notifyGuardiansOfElder(userId, {
         type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
         title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',

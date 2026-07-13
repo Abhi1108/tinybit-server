@@ -109,7 +109,23 @@ async function upsertDailyCheckIn(userId, fields) {
   return findCheckInByUserAndDate(userId, checkInDate);
 }
 
+/**
+ * Standalone mood log — distinct from `daily_checkins`, which only ever holds one row
+ * per user per day (each Mood Lift save upserts over the previous mood that day). This
+ * inserts a new row every time, so a guardian can see every mood the elder logged in a
+ * day, not just the last one.
+ */
+async function insertMoodEntry(userId, { mood, moodScore, note }) {
+  const id = randomUUID();
+  await execute(
+    `INSERT INTO mood_entries (id, user_id, mood, mood_score, note)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, userId, mood, moodScore ?? null, note ?? null],
+  );
+}
+
 module.exports = {
   findCheckInByUserAndDate,
   upsertDailyCheckIn,
+  insertMoodEntry,
 };
