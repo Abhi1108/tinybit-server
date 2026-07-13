@@ -564,25 +564,32 @@ function isoDateOnly(d) {
   return d.toISOString().split('T')[0];
 }
 
-/** Groups `windowDays` days ending today into `bucketCount` roughly-equal buckets,
- *  returning [{ startIso, endIso }] oldest-first — used to build the bar chart at
- *  weekly (7 daily bars), monthly (~4 weekly bars), or yearly (12 monthly bars)
- *  granularity from the same underlying per-day data. */
-function buildBuckets(windowDays, bucketCount) {
-  const today = new Date();
+/** Groups `windowDays` days ending on `endDate` (default today) into `bucketCount`
+ *  roughly-equal buckets, returning [{ startIso, endIso }] oldest-first — used to build
+ *  the bar chart at weekly (7 daily bars), monthly (~4 weekly bars), yearly (12 monthly
+ *  bars), or a custom date-range granularity from the same underlying per-day data. */
+function buildBuckets(windowDays, bucketCount, endDate = new Date()) {
   const buckets = [];
   const daysPerBucket = windowDays / bucketCount;
   for (let i = 0; i < bucketCount; i++) {
     const endOffset = Math.round(windowDays - i * daysPerBucket) - 1;
     const startOffset = Math.round(windowDays - (i + 1) * daysPerBucket);
-    const start = new Date(today); start.setDate(start.getDate() - Math.max(startOffset, 0));
-    const end = new Date(today); end.setDate(end.getDate() - endOffset);
+    const start = new Date(endDate); start.setDate(start.getDate() - Math.max(startOffset, 0));
+    const end = new Date(endDate); end.setDate(end.getDate() - endOffset);
     buckets.push({ startIso: isoDateOnly(start), endIso: isoDateOnly(end) });
   }
   return buckets;
 }
 
-async function getGuardianReports(guardianId, period = 'weekly') {
+/**
+ * @param {string} guardianId
+ * @param {'weekly'|'monthly'|'yearly'} [period]
+ * @param {string|null} [elderId] - when omitted, falls back to the guardian's first
+ *   connected elder (original behavior). When provided, must belong to this guardian.
+ * @param {{ startDate: string, endDate: string } | null} [dateRange] - explicit
+ *   YYYY-MM-DD bounds for a "Custom" period, overriding `period`'s bucket lookup.
+ */
+async function getGuardianReports(guardianId, period = 'weekly', elderId = null, dateRange = null) {
   const emptyMetrics = {
     medAdherence: '--',
     medTrend: '--',
@@ -590,77 +597,135 @@ async function getGuardianReports(guardianId, period = 'weekly') {
     moodTrend: '--',
     checkinStreak: '--',
     avgSleep: '--',
+    totalCheckins: 0,
+    medAdherenceToday: '0/0',
+    wellness: { avgSleep: '--', avgEnergyLevel: null, painReportedCount: 0 },
   };
-  const bucketCount = period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12;
+
+  const hasCustomRange = !!(dateRange && dateRange.startDate && dateRange.endDate);
+
+  let windowDays;
+  let windowStartIso;
+  let windowEndIso;
+  let bucketCount;
+
+  if (hasCustomRange) {
+    windowStartIso = dateRange.startDate;
+    windowEndIso = dateRange.endDate;
+    const startD = new Date(`${windowStartIso}T00:00:00.000Z`);
+    const endD = new Date(`${windowEndIso}T00:00:00.000Z`);
+    windowDays = Math.max(1, Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1);
+    bucketCount = Math.max(1, Math.min(12, windowDays));
+  } else {
+    windowDays = PERIOD_DAYS[period] ?? PERIOD_DAYS.weekly;
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - (windowDays - 1));
+    windowStartIso = isoDateOnly(windowStart);
+    windowEndIso = isoDateOnly(new Date());
+    bucketCount = period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12;
+  }
+
   const emptyBars = Array.from({ length: bucketCount }, () => 0);
+
+  // If an elderId is given it must belong to this guardian — same ownership-check
+  // convention as getElderSummaryForGuardian/getElderDashboardForGuardian.
+  if (elderId) {
+    const connected = await isConnectedToElder(guardianId, elderId);
+    if (!connected) {
+      const error = new Error('You are not connected to this elder.');
+      error.statusCode = 403;
+      throw error;
+    }
+  }
 
   const links = await query(
     `SELECT elder_id, parent_name
      FROM guardian_elder_links
      WHERE guardian_id = ? AND status = 'connected'
+       ${elderId ? 'AND elder_id = ?' : ''}
        AND elder_id NOT IN (SELECT id FROM profiles WHERE deleted_at IS NOT NULL)
      LIMIT 1`,
-    [guardianId],
+    elderId ? [guardianId, elderId] : [guardianId],
   );
 
   if (!links[0]) {
     return { elderName: 'Elder', bars: emptyBars, metrics: emptyMetrics };
   }
 
-  const elderId = links[0].elder_id;
+  const resolvedElderId = links[0].elder_id;
   const elderName = links[0].parent_name.split(' ')[0].toUpperCase();
 
-  const windowDays = PERIOD_DAYS[period] ?? PERIOD_DAYS.weekly;
-  const windowStart = new Date();
-  windowStart.setDate(windowStart.getDate() - (windowDays - 1));
-  const windowStartIso = isoDateOnly(windowStart);
   const windowStartTs = `${windowStartIso} 00:00:00.000`;
+  const windowEndTs = `${windowEndIso} 23:59:59.999`;
 
   // Streak is always "consecutive days ending today", independent of the selected period.
   const streakWindowStart = new Date();
   streakWindowStart.setDate(streakWindowStart.getDate() - 29);
   const streakWindowStartIso = isoDateOnly(streakWindowStart);
 
-  const [moods, activeMedRows, logRows, sleepRows, streakCheckinRows] = await Promise.all([
+  // "Today's" medicine adherence is always same-day regardless of period/elderId window —
+  // match this file's existing UTC day-boundary convention (todayISO()).
+  const today = todayISO();
+
+  const [
+    moodRows, activeMedRows, logRows, sleepRows, streakCheckinRows,
+    totalCheckinRows, medLogsTodayRows, wellnessRows,
+  ] = await Promise.all([
     query(
-      `SELECT created_at, mood_score
-       FROM mood_entries
-       WHERE user_id = ? AND created_at >= ?`,
-      [elderId, windowStartTs],
+      `SELECT check_in_date, mood_score
+       FROM daily_checkins
+       WHERE user_id = ? AND check_in_date >= ? AND check_in_date <= ? AND mood_score IS NOT NULL`,
+      [resolvedElderId, windowStartIso, windowEndIso],
     ),
     query(
       `SELECT id FROM medicines
        WHERE user_id = ? AND is_active = 1`,
-      [elderId],
+      [resolvedElderId],
     ),
     query(
       `SELECT medicine_id FROM medicine_logs
-       WHERE user_id = ? AND taken_at >= ?`,
-      [elderId, windowStartTs],
+       WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?`,
+      [resolvedElderId, windowStartTs, windowEndTs],
     ),
     query(
       `SELECT sleep_hours
        FROM daily_checkins
-       WHERE user_id = ? AND check_in_date >= ? AND sleep_hours IS NOT NULL`,
-      [elderId, windowStartIso],
+       WHERE user_id = ? AND check_in_date >= ? AND check_in_date <= ? AND sleep_hours IS NOT NULL`,
+      [resolvedElderId, windowStartIso, windowEndIso],
     ),
     query(
       `SELECT check_in_date FROM daily_checkins
        WHERE user_id = ? AND check_in_date >= ?`,
-      [elderId, streakWindowStartIso],
+      [resolvedElderId, streakWindowStartIso],
+    ),
+    query(
+      `SELECT COUNT(*) as cnt FROM daily_checkins
+       WHERE user_id = ? AND check_in_date >= ? AND check_in_date <= ?`,
+      [resolvedElderId, windowStartIso, windowEndIso],
+    ),
+    query(
+      `SELECT COUNT(*) as cnt FROM medicine_logs
+       WHERE user_id = ? AND taken_date = ?`,
+      [resolvedElderId, today],
+    ),
+    query(
+      `SELECT energy_level, pain_reported
+       FROM daily_checkins
+       WHERE user_id = ? AND check_in_date >= ? AND check_in_date <= ?`,
+      [resolvedElderId, windowStartIso, windowEndIso],
     ),
   ]);
 
   const moodByDate = {};
-  moods.forEach((m) => {
-    const dateKey = m.created_at instanceof Date
-      ? m.created_at.toISOString().slice(0, 10)
-      : String(m.created_at).slice(0, 10);
+  moodRows.forEach((m) => {
+    const dateKey = m.check_in_date instanceof Date
+      ? m.check_in_date.toISOString().slice(0, 10)
+      : String(m.check_in_date).slice(0, 10);
     if (!moodByDate[dateKey]) moodByDate[dateKey] = [];
     moodByDate[dateKey].push(m.mood_score);
   });
 
-  const buckets = buildBuckets(windowDays, bucketCount);
+  const buckets = buildBuckets(windowDays, bucketCount, hasCustomRange ? new Date(`${windowEndIso}T00:00:00.000Z`) : new Date());
   const bars = buckets.map(({ startIso, endIso }) => {
     const scores = [];
     Object.keys(moodByDate).forEach((dateKey) => {
@@ -676,8 +741,8 @@ async function getGuardianReports(guardianId, period = 'weekly') {
   const maxPossible = activeMeds * windowDays;
   const adherence = maxPossible > 0 ? Math.round((logCount / maxPossible) * 100) : null;
 
-  const avgMoodScore = moods.length > 0
-    ? (moods.reduce((s, m) => s + m.mood_score, 0) / moods.length).toFixed(1)
+  const avgMoodScore = moodRows.length > 0
+    ? (moodRows.reduce((s, m) => s + m.mood_score, 0) / moodRows.length).toFixed(1)
     : null;
 
   const streakCheckinDates = new Set(
@@ -699,6 +764,19 @@ async function getGuardianReports(guardianId, period = 'weekly') {
     ? (sleepRows.reduce((s, r) => s + Number(r.sleep_hours), 0) / sleepRows.length).toFixed(1)
     : null;
 
+  const totalCheckins = Number(totalCheckinRows[0]?.cnt ?? 0);
+  const medDoneToday = Number(medLogsTodayRows[0]?.cnt ?? 0);
+  const medAdherenceToday = `${medDoneToday}/${activeMeds}`;
+
+  const energyLevels = wellnessRows.map((r) => r.energy_level).filter(Boolean);
+  let avgEnergyLevel = null;
+  if (energyLevels.length > 0) {
+    const counts = {};
+    energyLevels.forEach((e) => { counts[e] = (counts[e] || 0) + 1; });
+    avgEnergyLevel = Object.keys(counts).sort((a, b) => counts[b] - counts[a])[0];
+  }
+  const painReportedCount = wellnessRows.filter((r) => Number(r.pain_reported) === 1).length;
+
   return {
     elderName,
     bars,
@@ -709,6 +787,13 @@ async function getGuardianReports(guardianId, period = 'weekly') {
       moodTrend: avgMoodScore ? (Number(avgMoodScore) >= 3.5 ? 'Good' : 'Low') : '--',
       checkinStreak: `${streak}d`,
       avgSleep: avgSleep ? `${avgSleep}h` : '--',
+      totalCheckins,
+      medAdherenceToday,
+      wellness: {
+        avgSleep: avgSleep ? `${avgSleep}h` : '--',
+        avgEnergyLevel,
+        painReportedCount,
+      },
     },
   };
 }

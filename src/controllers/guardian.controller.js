@@ -430,20 +430,29 @@ const guardianLocation = async (req, res) => {
 
 const VALID_REPORT_PERIODS = new Set(['weekly', 'monthly', 'yearly']);
 
-// GET /api/guardian/reports?period=weekly|monthly|yearly
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// GET /api/guardian/reports?period=weekly|monthly|yearly&elderId=&startDate=&endDate=
 const guardianReports = async (req, res) => {
   const guardianId = req.auth?.userId;
   if (!guardianId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   const periodRaw = String(req.query.period ?? 'weekly').toLowerCase();
   const period = VALID_REPORT_PERIODS.has(periodRaw) ? periodRaw : 'weekly';
+  const elderId = req.query.elderId ? String(req.query.elderId) : null;
+
+  const { startDate, endDate } = req.query;
+  const dateRange = (ISO_DATE_RE.test(startDate ?? '') && ISO_DATE_RE.test(endDate ?? ''))
+    ? { startDate: String(startDate), endDate: String(endDate) }
+    : null;
 
   try {
-    const data = await guardianService.getGuardianReports(guardianId, period);
+    const data = await guardianService.getGuardianReports(guardianId, period, elderId, dateRange);
     return res.json({ success: true, data });
   } catch (err) {
     console.error('guardianReports error:', err);
-    return res.status(500).json({ success: false, message: err.message || 'Server error' });
+    const status = err.statusCode ?? 500;
+    return res.status(status).json({ success: false, message: err.message || 'Server error' });
   }
 };
 
