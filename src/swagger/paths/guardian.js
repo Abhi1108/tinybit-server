@@ -407,6 +407,10 @@
  *   get:
  *     tags: [Guardian]
  *     summary: Guardian health reports
+ *     description: >
+ *       Returns bar-chart data + summary metrics for a connected elder over a period.
+ *       If elderId is omitted, falls back to the guardian's first connected elder.
+ *       If startDate/endDate are both given (YYYY-MM-DD), they override period's window.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -415,6 +419,23 @@
  *         schema:
  *           type: string
  *           enum: [weekly, monthly, yearly]
+ *       - in: query
+ *         name: elderId
+ *         schema:
+ *           type: string
+ *         description: Optional. Must be a connected elder of the caller; 403 otherwise.
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Optional custom range start (YYYY-MM-DD). Requires endDate too.
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Optional custom range end (YYYY-MM-DD). Requires startDate too.
  *     responses:
  *       200:
  *         description: Report data
@@ -427,7 +448,45 @@
  *                   type: boolean
  *                 data:
  *                   type: object
- *                   additionalProperties: true
+ *                   properties:
+ *                     elderName:
+ *                       type: string
+ *                     bars:
+ *                       type: array
+ *                       items:
+ *                         type: number
+ *                     metrics:
+ *                       type: object
+ *                       properties:
+ *                         medAdherence:
+ *                           type: string
+ *                         medTrend:
+ *                           type: string
+ *                         avgMood:
+ *                           type: string
+ *                         moodTrend:
+ *                           type: string
+ *                         checkinStreak:
+ *                           type: string
+ *                         avgSleep:
+ *                           type: string
+ *                         totalCheckins:
+ *                           type: number
+ *                         medAdherenceToday:
+ *                           type: string
+ *                           example: "1/2"
+ *                         wellness:
+ *                           type: object
+ *                           properties:
+ *                             avgSleep:
+ *                               type: string
+ *                             avgEnergyLevel:
+ *                               type: string
+ *                               nullable: true
+ *                             painReportedCount:
+ *                               type: number
+ *       403:
+ *         description: elderId provided but not connected to this guardian
  */
 
 module.exports = {};
