@@ -5,11 +5,7 @@ const dailyCheckinsService = require('./daily-checkins.service');
 const appointmentsService = require('./appointments.service');
 const emergencyContactsService = require('./emergency-contacts.service');
 const { FREQUENCY_LABELS, resolveMedicineTime, formatConditionLabels } = require('../utils/health-labels');
-
-/** Today's UTC calendar date — matches the day-boundary convention used across the app. */
-function todayDateStr() {
-  return new Date().toISOString().slice(0, 10);
-}
+const { resolveTodayForUser } = require('./timezone.service');
 
 function formatMedicineLine(m, takenToday) {
   const dose = [m.dosage, m.dosage_unit].filter(Boolean).join(' ');
@@ -49,7 +45,7 @@ function formatAppointmentLine(appointments) {
  * live data rather than whatever the client happened to have cached.
  */
 async function buildSathiContext(userId) {
-  const today = todayDateStr();
+  const today = await resolveTodayForUser(userId);
 
   const [profile, medicines, todayLogs, checkIn, appointments, contacts] = await Promise.all([
     profilesService.getProfileById(userId),

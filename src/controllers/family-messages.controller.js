@@ -1,6 +1,7 @@
 const familyMessagesService = require('../services/family-messages.service');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
+const { resolveTodayForUser } = require('../services/timezone.service');
 
 function isTableMissing(error) {
   return (
@@ -17,8 +18,8 @@ function isValidDateParam(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''));
 }
 
-function todayDateParam() {
-  return new Date().toISOString().slice(0, 10);
+function todayDateParam(userId) {
+  return resolveTodayForUser(userId);
 }
 
 /** GET /api/family/messages/history?with=<userId>&limit=50 — full two-way thread, newest first. */
@@ -85,7 +86,7 @@ async function getMessageCount(req, res) {
     }
 
     const dateRaw = String(req.query.date ?? '').trim();
-    const date = isValidDateParam(dateRaw) ? dateRaw : todayDateParam();
+    const date = isValidDateParam(dateRaw) ? dateRaw : await todayDateParam(userId);
 
     const count = await familyMessagesService.countForReceiverOnDate(userId, date);
     return res.json({ success: true, count });

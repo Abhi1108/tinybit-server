@@ -111,9 +111,15 @@ function buildHealthCardId(profileId) {
   return `TBIT-${raw.slice(0, 4)}-${raw.slice(4, 5)}`;
 }
 
-/** "Generated" date shown on both the webpage and the PDF — single canonical format. */
-function formatGeneratedDate(date = new Date()) {
-  return date.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+/**
+ * "Generated" date shown on both the webpage and the PDF — single canonical format.
+ * `getHealthCard` is a public, unauthenticated route (anyone with the QR link can view
+ * it — an ER doctor, a family member, from anywhere), so there is no single user whose
+ * timezone would be the "correct" one to apply here; the server's own default is a
+ * legitimate choice for this display-only text, same reasoning as daily-content.mysql.js.
+ */
+function formatGeneratedDate(date) {
+  return (date ?? new Date()).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
 }
 
 async function getPrimaryEmergencyContact(userId) {

@@ -1,5 +1,9 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const { getUserTimezone } = require('./timezone.service');
+const { todayForTimezone, dateOnlyForTimezone } = require('../utils/date');
+
+const LOOKBACK_MS = 48 * 60 * 60 * 1000;
 
 function toIsoString(value) {
   if (value == null) return null;
@@ -41,12 +45,18 @@ async function insertScore(userId, { game_type: gameType, score, duration_second
 }
 
 async function getUserStats(userId) {
-  const [todayRows, totalRows, rankRows] = await Promise.all([
+  const timezone = await getUserTimezone(userId);
+  const today = todayForTimezone(timezone);
+
+  const [recentRows, totalRows, rankRows] = await Promise.all([
+    // Raw `created_at` (not MySQL's `CURDATE()`, which is the DB connection's session
+    // timezone, not this user's) — the calendar day is derived in JS via
+    // `dateOnlyForTimezone` instead, same pattern as `calculateMedicineStreak`.
     query(
-      `SELECT score, duration_seconds
+      `SELECT score, duration_seconds, created_at
        FROM mind_games_scores
-       WHERE user_id = ? AND created_at >= CURDATE()`,
-      [userId],
+       WHERE user_id = ? AND created_at >= ?`,
+      [userId, new Date(Date.now() - LOOKBACK_MS)],
     ),
     query(
       `SELECT score
@@ -62,6 +72,7 @@ async function getUserStats(userId) {
     ),
   ]);
 
+  const todayRows = recentRows.filter((row) => dateOnlyForTimezone(new Date(row.created_at), timezone) === today);
   const todayScore = todayRows.reduce((sum, row) => sum + Number(row.score), 0);
   const totalScore = totalRows.reduce((sum, row) => sum + Number(row.score), 0);
   const todayDurationSeconds = todayRows.reduce((sum, row) => sum + Number(row.duration_seconds ?? 0), 0);

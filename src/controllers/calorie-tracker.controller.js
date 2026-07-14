@@ -24,11 +24,11 @@ function handleError(res, err, fallbackMessage) {
   return res.status(err.statusCode || 500).json({ success: false, message: err.message || fallbackMessage });
 }
 
-/** GET /api/calorie-tracker/today */
+/** GET /api/calorie-tracker/today?date= */
 async function getToday(req, res) {
   try {
     const userId = resolveUserId(req);
-    const summary = await calorieTrackerService.getTodaySummary(userId);
+    const summary = await calorieTrackerService.getTodaySummary(userId, req.query.date ?? null);
     return res.json({ success: true, data: summary });
   } catch (err) {
     return handleError(res, err, 'Could not load today\'s summary.');

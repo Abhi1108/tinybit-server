@@ -2,9 +2,13 @@ const { randomUUID } = require('crypto');
 const { query, execute, withTransaction } = require('../config/mysql');
 const journalService = require('./journal.service');
 const mindGamesService = require('./mind-games.service');
+const { addDays, weekDatesFor, todayForTimezone, dateOnlyForTimezone, localDayBoundsForTimezone, DEFAULT_TIMEZONE } = require('../utils/date');
+const { resolveTodayForUser, getUserTimezone } = require('./timezone.service');
 
-function todayISO() {
-  return new Date().toISOString().split('T')[0];
+/** Normalizes a MySQL DATE/DATETIME value (Date object or string) to 'YYYY-MM-DD'. */
+function columnDateOnly(value) {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
 }
 
 /** mysql2 returns JSON columns as raw strings — parse, tolerating already-parsed values. */
@@ -16,19 +20,6 @@ function parseJsonColumn(value) {
   } catch {
     return null;
   }
-}
-
-/** Monday..Sunday ISO dates (YYYY-MM-DD) for the calendar week containing `today` (UTC). */
-function currentWeekDates(today) {
-  const d = new Date(`${today}T00:00:00.000Z`);
-  const isoDow = d.getUTCDay() === 0 ? 7 : d.getUTCDay(); // Mon=1..Sun=7
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - (isoDow - 1));
-  return Array.from({ length: 7 }, (_, i) => {
-    const day = new Date(monday);
-    day.setUTCDate(monday.getUTCDate() + i);
-    return day.toISOString().split('T')[0];
-  });
 }
 
 function inClause(ids) {
@@ -314,36 +305,23 @@ async function getGuardianEldersDashboard(guardianId) {
     }));
   }
 
-  const today = todayISO();
   const { sql: inSql, params: inParams } = inClause(elderIds);
 
-  const [profiles, checkins, meds, logs, doctorCounts] = await Promise.all([
+  const [profiles, meds, doctorCounts] = await Promise.all([
     query(
       `SELECT id, full_name, age, location, country, country_code, mobile, last_active, biological_sex,
               date_of_birth, blood_group, preferred_language, height, height_unit,
               weight, weight_unit, medical_conditions, other_condition, allergies,
-              doctor_name, doctor_contact, emergency_name, emergency_phone, emergency_relation
+              doctor_name, doctor_contact, emergency_name, emergency_phone, emergency_relation, timezone
        FROM profiles
        WHERE id IN (${inSql})`,
       inParams,
-    ),
-    query(
-      `SELECT user_id, mood, notes
-       FROM daily_checkins
-       WHERE user_id IN (${inSql}) AND check_in_date = ?`,
-      [...inParams, today],
     ),
     query(
       `SELECT id, user_id
        FROM medicines
        WHERE is_active = 1 AND user_id IN (${inSql})`,
       inParams,
-    ),
-    query(
-      `SELECT medicine_id, user_id
-       FROM medicine_logs
-       WHERE user_id IN (${inSql}) AND taken_date = ?`,
-      [...inParams, today],
     ),
     query(
       `SELECT user_id, COUNT(*) AS doctor_count
@@ -356,6 +334,51 @@ async function getGuardianEldersDashboard(guardianId) {
 
   const pMap = {};
   profiles.forEach((p) => { pMap[p.id] = p; });
+
+  // Each elder's own "today" — a guardian's elders can be in different timezones, so this
+  // cannot be resolved once for the whole batch. Query candidate rows across every distinct
+  // date in play (usually 1, occasionally 2 across a UTC boundary), then match each row back
+  // to its own user's specific "today" in JS below — one batched query, not N+1.
+  const todayByElder = {};
+  const dayBoundsByElder = {};
+  elderIds.forEach((id) => {
+    const tz = pMap[id]?.timezone || DEFAULT_TIMEZONE;
+    todayByElder[id] = todayForTimezone(tz);
+    dayBoundsByElder[id] = localDayBoundsForTimezone(todayByElder[id], tz);
+  });
+  const distinctTodays = [...new Set(Object.values(todayByElder))];
+  const { sql: dateInSql, params: dateInParams } = inClause(distinctTodays);
+  const boundsList = Object.values(dayBoundsByElder);
+  const minStart = new Date(Math.min(...boundsList.map((b) => b.start.getTime())));
+  const maxEnd = new Date(Math.max(...boundsList.map((b) => b.end.getTime())));
+
+  const [checkinRows, logRows] = await Promise.all([
+    query(
+      `SELECT user_id, mood, notes, check_in_date
+       FROM daily_checkins
+       WHERE user_id IN (${inSql}) AND check_in_date IN (${dateInSql})`,
+      [...inParams, ...dateInParams],
+    ),
+    // `taken_date` (MySQL-generated `DATE(taken_at)`) is a literal UTC-truncated date, not
+    // the elder's local calendar date — filtering on it directly drops doses taken near an
+    // elder's local midnight. Pull the raw `taken_at` instant across the widest window any
+    // elder in this batch needs, then match each row to its own elder's real local-day
+    // bounds in JS below (still one batched query, not N+1).
+    query(
+      `SELECT medicine_id, user_id, taken_at
+       FROM medicine_logs
+       WHERE user_id IN (${inSql}) AND taken_at >= ? AND taken_at <= ?`,
+      [...inParams, minStart, maxEnd],
+    ),
+  ]);
+
+  const checkins = checkinRows.filter((c) => columnDateOnly(c.check_in_date) === todayByElder[c.user_id]);
+  const logs = logRows.filter((l) => {
+    const bounds = dayBoundsByElder[l.user_id];
+    if (!bounds) return false;
+    const t = new Date(l.taken_at).getTime();
+    return t >= bounds.start.getTime() && t <= bounds.end.getTime();
+  });
 
   const checkinIds = new Set(checkins.map((c) => c.user_id));
   const moodByUser = {};
@@ -429,7 +452,7 @@ async function getGuardianEldersDashboard(guardianId) {
 
 async function getGuardianAlerts(guardianId) {
   const links = await query(
-    `SELECT l.elder_id, l.parent_name, p.mobile AS elder_mobile
+    `SELECT l.elder_id, l.parent_name, p.mobile AS elder_mobile, p.timezone AS elder_timezone
      FROM guardian_elder_links l
      LEFT JOIN profiles p ON p.id = l.elder_id
      WHERE l.guardian_id = ? AND l.status = 'connected'
@@ -439,14 +462,21 @@ async function getGuardianAlerts(guardianId) {
 
   if (links.length === 0) return [];
 
-  const today = todayISO();
-  const t = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
-  const hour = new Date().getHours();
   const generated = [];
 
   for (const link of links) {
     const name = link.parent_name.toUpperCase();
     const eid = link.elder_id;
+    // A guardian's elders can be in different timezones — "today" and "is it past 9am yet"
+    // must be resolved per elder, never once for the whole batch.
+    const elderTimezone = link.elder_timezone || DEFAULT_TIMEZONE;
+    const today = todayForTimezone(elderTimezone);
+    const hour = Number(
+      new Intl.DateTimeFormat('en-US', { timeZone: elderTimezone, hour: 'numeric', hourCycle: 'h23' }).format(new Date()),
+    );
+    const t = new Intl.DateTimeFormat('en-US', {
+      timeZone: elderTimezone, hour: 'numeric', minute: '2-digit', hour12: true,
+    }).format(new Date());
 
     const [checkinRows, medRows] = await Promise.all([
       query(
@@ -476,10 +506,14 @@ async function getGuardianAlerts(guardianId) {
     }
 
     if (medRows.length > 0) {
+      // Same fix as `getElderDashboardForGuardian`: `taken_date` is a UTC-truncated
+      // generated column, not the elder's local day — filter on the real `taken_at`
+      // instant range instead.
+      const { start: medStart, end: medEnd } = localDayBoundsForTimezone(today, elderTimezone);
       const logRows = await query(
         `SELECT medicine_id FROM medicine_logs
-         WHERE user_id = ? AND taken_date = ?`,
-        [eid, today],
+         WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?`,
+        [eid, medStart, medEnd],
       );
 
       const loggedIds = new Set(logRows.map((l) => l.medicine_id));
@@ -575,23 +609,19 @@ async function getGuardianLocationElders(guardianId) {
 
 const PERIOD_DAYS = { weekly: 7, monthly: 30, yearly: 365 };
 
-function isoDateOnly(d) {
-  return d.toISOString().split('T')[0];
-}
-
-/** Groups `windowDays` days ending on `endDate` (default today) into `bucketCount`
- *  roughly-equal buckets, returning [{ startIso, endIso }] oldest-first — used to build
- *  the bar chart at weekly (7 daily bars), monthly (~4 weekly bars), yearly (12 monthly
- *  bars), or a custom date-range granularity from the same underlying per-day data. */
-function buildBuckets(windowDays, bucketCount, endDate = new Date()) {
+/** Groups `windowDays` days ending on `endDateStr` into `bucketCount` roughly-equal
+ *  buckets, returning [{ startIso, endIso }] oldest-first — used to build the bar chart
+ *  at weekly (7 daily bars), monthly (~4 weekly bars), yearly (12 monthly bars), or a
+ *  custom date-range granularity from the same underlying per-day data. */
+function buildBuckets(windowDays, bucketCount, endDateStr) {
   const buckets = [];
   const daysPerBucket = windowDays / bucketCount;
   for (let i = 0; i < bucketCount; i++) {
     const endOffset = Math.round(windowDays - i * daysPerBucket) - 1;
     const startOffset = Math.round(windowDays - (i + 1) * daysPerBucket);
-    const start = new Date(endDate); start.setDate(start.getDate() - Math.max(startOffset, 0));
-    const end = new Date(endDate); end.setDate(end.getDate() - endOffset);
-    buckets.push({ startIso: isoDateOnly(start), endIso: isoDateOnly(end) });
+    const startIso = addDays(endDateStr, -Math.max(startOffset, 0));
+    const endIso = addDays(endDateStr, -endOffset);
+    buckets.push({ startIso, endIso });
   }
   return buckets;
 }
@@ -617,31 +647,6 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
     wellness: { avgSleep: '--', avgEnergyLevel: null, painReportedCount: 0 },
   };
 
-  const hasCustomRange = !!(dateRange && dateRange.startDate && dateRange.endDate);
-
-  let windowDays;
-  let windowStartIso;
-  let windowEndIso;
-  let bucketCount;
-
-  if (hasCustomRange) {
-    windowStartIso = dateRange.startDate;
-    windowEndIso = dateRange.endDate;
-    const startD = new Date(`${windowStartIso}T00:00:00.000Z`);
-    const endD = new Date(`${windowEndIso}T00:00:00.000Z`);
-    windowDays = Math.max(1, Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1);
-    bucketCount = Math.max(1, Math.min(12, windowDays));
-  } else {
-    windowDays = PERIOD_DAYS[period] ?? PERIOD_DAYS.weekly;
-    const windowStart = new Date();
-    windowStart.setDate(windowStart.getDate() - (windowDays - 1));
-    windowStartIso = isoDateOnly(windowStart);
-    windowEndIso = isoDateOnly(new Date());
-    bucketCount = period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12;
-  }
-
-  const emptyBars = Array.from({ length: bucketCount }, () => 0);
-
   // If an elderId is given it must belong to this guardian — same ownership-check
   // convention as getElderSummaryForGuardian/getElderDashboardForGuardian.
   if (elderId) {
@@ -663,24 +668,51 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
     elderId ? [guardianId, elderId] : [guardianId],
   );
 
+  const hasCustomRange = !!(dateRange && dateRange.startDate && dateRange.endDate);
+  const emptyBucketCount = hasCustomRange
+    ? Math.max(1, Math.min(12, Math.round(
+      (Date.parse(`${dateRange.endDate}T00:00:00.000Z`) - Date.parse(`${dateRange.startDate}T00:00:00.000Z`)) / 86400000,
+    ) + 1))
+    : (period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12);
+
   if (!links[0]) {
+    const emptyBars = Array.from({ length: emptyBucketCount }, () => 0);
     return { elderName: 'Elder', bars: emptyBars, metrics: emptyMetrics };
   }
 
   const resolvedElderId = links[0].elder_id;
   const elderName = links[0].parent_name.split(' ')[0].toUpperCase();
 
+  // "Today" is always the elder's own — never the guardian's — regardless of which
+  // guardian is asking or where their device currently is.
+  const elderTimezone = await getUserTimezone(resolvedElderId);
+  const today = await resolveTodayForUser(resolvedElderId);
+
+  let windowDays;
+  let windowStartIso;
+  let windowEndIso;
+  let bucketCount;
+
+  if (hasCustomRange) {
+    windowStartIso = dateRange.startDate;
+    windowEndIso = dateRange.endDate;
+    const startD = new Date(`${windowStartIso}T00:00:00.000Z`);
+    const endD = new Date(`${windowEndIso}T00:00:00.000Z`);
+    windowDays = Math.max(1, Math.round((endD.getTime() - startD.getTime()) / 86400000) + 1);
+    bucketCount = Math.max(1, Math.min(12, windowDays));
+  } else {
+    windowDays = PERIOD_DAYS[period] ?? PERIOD_DAYS.weekly;
+    windowStartIso = addDays(today, -(windowDays - 1));
+    windowEndIso = today;
+    bucketCount = period === 'weekly' ? 7 : period === 'monthly' ? 4 : 12;
+  }
+
   const windowStartTs = `${windowStartIso} 00:00:00.000`;
   const windowEndTs = `${windowEndIso} 23:59:59.999`;
 
   // Streak is always "consecutive days ending today", independent of the selected period.
-  const streakWindowStart = new Date();
-  streakWindowStart.setDate(streakWindowStart.getDate() - 29);
-  const streakWindowStartIso = isoDateOnly(streakWindowStart);
-
-  // "Today's" medicine adherence is always same-day regardless of period/elderId window —
-  // match this file's existing UTC day-boundary convention (todayISO()).
-  const today = todayISO();
+  const streakWindowStartIso = addDays(today, -29);
+  const { start: todayStart, end: todayEnd } = localDayBoundsForTimezone(today, elderTimezone);
 
   const [
     moodRows, activeMedRows, logRows, sleepRows, streakCheckinRows,
@@ -719,9 +751,11 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
       [resolvedElderId, windowStartIso, windowEndIso],
     ),
     query(
+      // `taken_date` is a UTC-truncated generated column, not the elder's local day —
+      // filter on the real `taken_at` instant range instead (same fix as elsewhere).
       `SELECT COUNT(*) as cnt FROM medicine_logs
-       WHERE user_id = ? AND taken_date = ?`,
-      [resolvedElderId, today],
+       WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?`,
+      [resolvedElderId, todayStart, todayEnd],
     ),
     query(
       `SELECT energy_level, pain_reported
@@ -740,7 +774,7 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
     moodByDate[dateKey].push(m.mood_score);
   });
 
-  const buckets = buildBuckets(windowDays, bucketCount, hasCustomRange ? new Date(`${windowEndIso}T00:00:00.000Z`) : new Date());
+  const buckets = buildBuckets(windowDays, bucketCount, windowEndIso);
   const bars = buckets.map(({ startIso, endIso }) => {
     const scores = [];
     Object.keys(moodByDate).forEach((dateKey) => {
@@ -769,9 +803,7 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
   );
   let streak = 0;
   for (let i = 0; i < 30; i++) {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    if (streakCheckinDates.has(isoDateOnly(d))) streak++;
+    if (streakCheckinDates.has(addDays(today, -i))) streak++;
     else break;
   }
 
@@ -995,8 +1027,17 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
     throw error;
   }
 
-  const today = todayISO();
-  const weekDates = currentWeekDates(today);
+  // Always the elder's own "today" — never the guardian's.
+  const elderTimezone = await getUserTimezone(elderId);
+  const today = await resolveTodayForUser(elderId);
+  const weekDates = weekDatesFor(today);
+  // `medicine_logs.taken_date` is a MySQL-generated `DATE(taken_at)` column — a literal
+  // UTC-truncated date, not the elder's local calendar date. Comparing it directly to
+  // `today` (the elder's real local day) silently drops doses taken near local midnight
+  // for any elder whose timezone offset isn't 0. Query the real `taken_at` instant range
+  // instead, computed from the elder's stored timezone (same fix as `listForDay`/
+  // `getElderMedicineAdherenceWeek`).
+  const { start: todayStart, end: todayEnd } = localDayBoundsForTimezone(today, elderTimezone);
 
   const [
     profileRows, medicines, medLogsToday, checkinToday, moods, journalEntries,
@@ -1004,7 +1045,7 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
   ] = await Promise.all([
     query('SELECT id, full_name, age, location, profile_image, mobile, streak, last_active FROM profiles WHERE id = ? LIMIT 1', [elderId]),
     query('SELECT id, name, dosage, time, schedule_time, instruction, priority FROM medicines WHERE user_id = ? AND is_active = 1', [elderId]),
-    query('SELECT medicine_id, taken_at FROM medicine_logs WHERE user_id = ? AND taken_date = ?', [elderId, today]),
+    query('SELECT medicine_id, taken_at FROM medicine_logs WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?', [elderId, todayStart, todayEnd]),
     query(
       `SELECT mood, sleep_hours, created_at FROM daily_checkins WHERE user_id = ? AND check_in_date = ? LIMIT 1`,
       [elderId, today],
@@ -1125,8 +1166,9 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
     throw error;
   }
 
-  const today = todayISO();
-  const weekDates = currentWeekDates(today);
+  const elderTimezone = await getUserTimezone(elderId);
+  const today = todayForTimezone(elderTimezone);
+  const weekDates = weekDatesFor(today);
 
   const [medicineRows, logRows] = await Promise.all([
     query(
@@ -1134,11 +1176,16 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
        FROM medicines WHERE user_id = ? AND is_active = 1`,
       [elderId],
     ),
+    // Raw `taken_at` (not MySQL's `DATE(taken_at)`, which truncates using the DB
+    // connection's session timezone) — the calendar day is derived in JS via
+    // `dateOnlyForTimezone` instead, using the elder's own stored timezone. The query
+    // window is widened by a day on each side of the UTC-anchored week bounds so a
+    // timezone offset from UTC can't clip off a log that actually falls in-week locally.
     query(
-      `SELECT medicine_id, DATE(taken_at) AS taken_date
+      `SELECT medicine_id, taken_at
        FROM medicine_logs
        WHERE user_id = ? AND taken_at >= ? AND taken_at <= ?`,
-      [elderId, `${weekDates[0]} 00:00:00.000`, `${weekDates[6]} 23:59:59.999`],
+      [elderId, `${addDays(weekDates[0], -1)} 00:00:00.000`, `${addDays(weekDates[6], 1)} 23:59:59.999`],
     ),
   ]);
 
@@ -1157,7 +1204,7 @@ async function getElderMedicineAdherenceWeek(guardianId, elderId) {
 
   const takenByDate = new Map();
   for (const row of logRows) {
-    const date = toDateOnlyString(row.taken_date);
+    const date = dateOnlyForTimezone(new Date(row.taken_at), elderTimezone);
     if (!takenByDate.has(date)) takenByDate.set(date, new Set());
     takenByDate.get(date).add(row.medicine_id);
   }
