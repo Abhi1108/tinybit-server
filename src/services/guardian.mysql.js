@@ -463,6 +463,11 @@ async function getGuardianAlerts(guardianId) {
   if (links.length === 0) return [];
 
   const generated = [];
+  // Fallback time label for the all-clear card below — set on every iteration, so it survives
+  // the loop scope (the per-elder `t` is block-scoped to `for...of` and isn't usable after it).
+  let lastTimeLabel = new Intl.DateTimeFormat('en-US', {
+    timeZone: DEFAULT_TIMEZONE, hour: 'numeric', minute: '2-digit', hour12: true,
+  }).format(new Date());
 
   for (const link of links) {
     const name = link.parent_name.toUpperCase();
@@ -477,6 +482,7 @@ async function getGuardianAlerts(guardianId) {
     const t = new Intl.DateTimeFormat('en-US', {
       timeZone: elderTimezone, hour: 'numeric', minute: '2-digit', hour12: true,
     }).format(new Date());
+    lastTimeLabel = t;
 
     const [checkinRows, medRows] = await Promise.all([
       query(
@@ -497,11 +503,11 @@ async function getGuardianAlerts(guardianId) {
         id: `checkin_${eid}`,
         elderId: eid,
         elderPhone: link.elder_mobile ?? null,
-        tag: { text: 'Urgent', bg: '#FCEEEF', fg: '#DC2626' },
+        tag: { text: 'Check-in', bg: '#FEF3C7', fg: '#B45309' },
         who: name,
-        title: 'Morning Check-In Not Completed',
-        body: `${link.parent_name} has not completed today's check-in. Please check on them.`,
-        time: `Today · ${t}`,
+        title: 'No Morning Check-in',
+        body: `${link.parent_name} has not completed today's health check-in. Tap to remind.`,
+        time: t,
       });
     }
 
@@ -525,11 +531,11 @@ async function getGuardianAlerts(guardianId) {
           id: `med_${eid}`,
           elderId: eid,
           elderPhone: link.elder_mobile ?? null,
-          tag: { text: 'Attention', bg: '#FFF3E0', fg: '#F59E0B' },
+          tag: { text: 'Medicine', bg: '#FEE2E2', fg: '#DC2626' },
           who: name,
-          title: `${missed.length} Medicine${missed.length > 1 ? 's' : ''} Not Taken`,
-          body: `${names}${missed.length > 2 ? ` and ${missed.length - 2} more` : ''} not confirmed taken today.`,
-          time: `Today · ${t}`,
+          title: `${missed.length} Medicine${missed.length > 1 ? 's' : ''} Missed`,
+          body: `${link.parent_name} has not taken: ${names}${missed.length > 2 ? ` and ${missed.length - 2} more` : ''}`,
+          time: t,
         });
       } else {
         generated.push({
@@ -540,7 +546,7 @@ async function getGuardianAlerts(guardianId) {
           who: name,
           title: 'All Medicines Taken Today',
           body: `${link.parent_name} has confirmed all ${medRows.length} medicine${medRows.length > 1 ? 's' : ''} today.`,
-          time: `Today · ${t}`,
+          time: t,
         });
       }
     }
@@ -553,7 +559,7 @@ async function getGuardianAlerts(guardianId) {
       who: 'ALL',
       title: 'Everything looks good!',
       body: 'No urgent alerts right now. All family members are on track.',
-      time: `Today · ${t}`,
+      time: lastTimeLabel,
     });
   }
 
@@ -797,8 +803,14 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
   const maxPossible = activeMeds * windowDays;
   const adherence = maxPossible > 0 ? Math.round((logCount / maxPossible) * 100) : null;
 
-  const avgMoodScore = moodRows.length > 0
-    ? (moodRows.reduce((s, m) => s + m.mood_score, 0) / moodRows.length).toFixed(1)
+  const avgMoodRaw = moodRows.length > 0
+    ? moodRows.reduce((s, m) => s + m.mood_score, 0) / moodRows.length
+    : null;
+  // Whole numbers show as "5", fractional as "4.5" — no trailing ".0" and no "/5" suffix.
+  // Round to 1 decimal *before* checking integer-ness, so e.g. 4.96 -> "5" not "5.0".
+  const avgMoodRounded = avgMoodRaw != null ? Math.round(avgMoodRaw * 10) / 10 : null;
+  const avgMoodScore = avgMoodRounded != null
+    ? (Number.isInteger(avgMoodRounded) ? String(avgMoodRounded) : avgMoodRounded.toFixed(1))
     : null;
 
   const streakCheckinDates = new Set(
@@ -842,8 +854,8 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
     metrics: {
       medAdherence: adherence != null ? `${adherence}%` : '--',
       medTrend: adherence != null ? (adherence >= 80 ? '+Good' : 'Low') : '--',
-      avgMood: avgMoodScore ? `${avgMoodScore}/5` : '--',
-      moodTrend: avgMoodScore ? (Number(avgMoodScore) >= 3.5 ? 'Good' : 'Low') : '--',
+      avgMood: avgMoodScore ?? '--',
+      moodTrend: avgMoodRounded != null ? (avgMoodRounded >= 3.5 ? 'Good' : 'Low') : '--',
       checkinStreak: `${streak}d`,
       avgSleep: avgSleep ? `${avgSleep}h` : '--',
       totalCheckins,

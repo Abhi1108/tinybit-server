@@ -15,7 +15,7 @@ function mapMessageRow(row) {
   if (!row) return null;
 
   const sender = row.sender_full_name
-    ? { full_name: row.sender_full_name }
+    ? { full_name: row.sender_full_name, profile_image: row.sender_profile_image ?? null }
     : null;
 
   return {
@@ -32,7 +32,7 @@ function mapMessageRow(row) {
 
 async function getById(id) {
   const rows = await query(
-    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
+    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name, p.profile_image AS sender_profile_image
      FROM family_messages fm
      LEFT JOIN profiles p ON p.id = fm.sender_id
      WHERE fm.id = ?
@@ -51,7 +51,7 @@ async function listBetween(userId, otherUserId, limit = 50) {
   const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
 
   const rows = await query(
-    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
+    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name, p.profile_image AS sender_profile_image
      FROM family_messages fm
      LEFT JOIN profiles p ON p.id = fm.sender_id
      WHERE (fm.sender_id = ? AND fm.receiver_id = ?)
@@ -65,7 +65,7 @@ async function listBetween(userId, otherUserId, limit = 50) {
 
 async function latestForReceiver(receiverId) {
   const rows = await query(
-    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name
+    `SELECT ${MESSAGE_SELECT}, p.full_name AS sender_full_name, p.profile_image AS sender_profile_image
      FROM family_messages fm
      LEFT JOIN profiles p ON p.id = fm.sender_id
      WHERE fm.receiver_id = ?
