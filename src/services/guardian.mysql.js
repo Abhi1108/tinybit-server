@@ -677,7 +677,14 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
 
   if (!links[0]) {
     const emptyBars = Array.from({ length: emptyBucketCount }, () => 0);
-    return { elderName: 'Elder', bars: emptyBars, metrics: emptyMetrics };
+    return {
+      elderName: 'Elder',
+      bars: emptyBars,
+      todayIso: todayForTimezone(DEFAULT_TIMEZONE),
+      windowStartIso: null,
+      windowEndIso: null,
+      metrics: emptyMetrics,
+    };
   }
 
   const resolvedElderId = links[0].elder_id;
@@ -827,6 +834,11 @@ async function getGuardianReports(guardianId, period = 'weekly', elderId = null,
   return {
     elderName,
     bars,
+    // Elder's own resolved "today" and window bounds — the frontend uses these instead of
+    // the guardian's device clock, so date labels/display match what the data actually covers.
+    todayIso: today,
+    windowStartIso,
+    windowEndIso,
     metrics: {
       medAdherence: adherence != null ? `${adherence}%` : '--',
       medTrend: adherence != null ? (adherence >= 80 ? '+Good' : 'Low') : '--',
