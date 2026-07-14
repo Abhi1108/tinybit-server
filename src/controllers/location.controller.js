@@ -1,29 +1,38 @@
 const elderLocationsService = require('../services/elder-locations.service');
 const { query } = require('../config/mysql');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { getUserTimezone } = require('../services/timezone.service');
+const { todayForTimezone, dateOnlyForTimezone } = require('../utils/date');
 
 const LOCATION_UPDATE_MAX_PER_DAY = 3;
 const LOCATION_UPDATE_MIN_GAP_MS = 5 * 60 * 60 * 1000;
+const LOOKBACK_MS = 48 * 60 * 60 * 1000;
 
 /**
- * Throttles the "Location Update" guardian push to at most 3/day, at least 5h apart.
- * notifyGuardiansOfElder writes one notifications row per connected guardian, so a
- * single send can produce several rows with (near-)identical timestamps — bucketing
- * by minute collapses those into one logical "send" for counting purposes.
+ * Throttles the "Location Update" guardian push to at most 3/day, at least 5h apart —
+ * scoped to this elder's own calendar day (their stored timezone), not a fixed server
+ * offset. Pulls a generously wide raw window (48h — wider than any possible UTC offset
+ * span) and buckets precisely by the elder's own day in JS, same pattern as
+ * `calculateMedicineStreak`. notifyGuardiansOfElder writes one notifications row per
+ * connected guardian, so a single send can produce several rows with (near-)identical
+ * timestamps — bucketing by minute collapses those into one logical "send" for counting.
  */
 async function shouldSendLocationUpdate(elderId) {
-  const todayMidnight = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+  const timezone = await getUserTimezone(elderId);
+  const today = todayForTimezone(timezone);
+
   const rows = await query(
     `SELECT created_at FROM notifications
      WHERE sender_id = ? AND type = 'location_update' AND created_at >= ?
      ORDER BY created_at DESC`,
-    [elderId, todayMidnight],
+    [elderId, new Date(Date.now() - LOOKBACK_MS)],
   );
+  const todaysRows = rows.filter((r) => dateOnlyForTimezone(new Date(r.created_at), timezone) === today);
 
-  const sendBuckets = new Set(rows.map((r) => new Date(r.created_at).toISOString().slice(0, 16)));
+  const sendBuckets = new Set(todaysRows.map((r) => new Date(r.created_at).toISOString().slice(0, 16)));
   if (sendBuckets.size >= LOCATION_UPDATE_MAX_PER_DAY) return false;
 
-  if (rows.length > 0 && Date.now() - new Date(rows[0].created_at).getTime() < LOCATION_UPDATE_MIN_GAP_MS) {
+  if (todaysRows.length > 0 && Date.now() - new Date(todaysRows[0].created_at).getTime() < LOCATION_UPDATE_MIN_GAP_MS) {
     return false;
   }
 

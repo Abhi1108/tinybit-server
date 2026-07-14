@@ -5,7 +5,8 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "lint": "eslint ."
   },
   "keywords": [],
   "author": "",
@@ -31,6 +32,7 @@
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
+    "eslint": "^10.7.0",
     "nodemon": "^3.1.0"
   }
 }

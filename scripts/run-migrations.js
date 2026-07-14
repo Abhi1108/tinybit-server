@@ -21,6 +21,21 @@ async function runMigrations() {
     await checkAndAdd('email', 'VARCHAR(255) NULL');
     await checkAndAdd('about', 'TEXT NULL');
 
+    const profileColumns = await query('SHOW COLUMNS FROM profiles');
+    const profileColumnNames = new Set(profileColumns.map(c => c.Field));
+
+    const checkAndAddProfile = async (col, type) => {
+      if (!profileColumnNames.has(col)) {
+        console.log(`  Adding column "${col}" to profiles table...`);
+        await execute(`ALTER TABLE profiles ADD COLUMN ${col} ${type}`);
+        console.log(`  ✅ Column "${col}" added successfully.`);
+      } else {
+        console.log(`  Column "${col}" already exists in profiles table.`);
+      }
+    };
+
+    await checkAndAddProfile('timezone', 'VARCHAR(64) NULL');
+
     try {
       console.log('  Updating care_events type check constraint...');
       try {

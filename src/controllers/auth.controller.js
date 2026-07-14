@@ -389,6 +389,7 @@ async function updateProfile(req, res) {
       'country',
       'country_code',
       'preferred_language',
+      'timezone',
       'biological_sex',
       'height',
       'height_unit',

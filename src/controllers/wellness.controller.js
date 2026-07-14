@@ -7,6 +7,8 @@ const { insertHealthReadings, listByUser } = require('../services/health-reading
 const medicineLogsService = require('../services/medicine-logs.service');
 const familyMessagesService = require('../services/family-messages.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { resolveDate, addDays } = require('../utils/date');
+const { resolveTodayForUser } = require('../services/timezone.service');
 
 function isTableMissing(error) {
   return (
@@ -17,8 +19,8 @@ function isTableMissing(error) {
   );
 }
 
-function todayDateStr() {
-  return new Date().toISOString().split('T')[0];
+function todayDateStr(userId) {
+  return resolveTodayForUser(userId);
 }
 
 function normalizeSleepQuality(value) {
@@ -46,7 +48,7 @@ async function getTodayCheckIn(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const date = String(req.query.date ?? todayDateStr()).trim() || todayDateStr();
+    const date = String(req.query.date ?? await todayDateStr(userId)).trim() || await todayDateStr(userId);
     const checkIn = await findCheckInByUserAndDate(userId, date);
 
     return res.json({ success: true, checkIn });
@@ -90,7 +92,7 @@ async function upsertDailyCheckInHandler(req, res) {
 
     const upsertFields = {
       ...fields,
-      check_in_date: String(fields.check_in_date ?? todayDateStr()).trim() || todayDateStr(),
+      check_in_date: String(fields.check_in_date ?? await todayDateStr(userId)).trim() || await todayDateStr(userId),
     };
 
     if ('sleep_quality' in upsertFields) {
@@ -203,12 +205,11 @@ async function getYesterdaySummary(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const dateStr = yesterday.toISOString().split('T')[0];
+    const today = resolveDate(req.query.date);
+    const dateStr = addDays(today, -1);
 
     const checkIn = await findCheckInByUserAndDate(userId, dateStr);
-    const logs = await medicineLogsService.listForDay(userId, yesterday);
+    const logs = await medicineLogsService.listForDay(userId, dateStr);
     const messageCount = await familyMessagesService.countForReceiverOnDate(userId, dateStr);
 
     return res.json({

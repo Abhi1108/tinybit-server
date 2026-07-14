@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   country_code         VARCHAR(8)    NULL,
   location             VARCHAR(255)  NULL,
   preferred_language   VARCHAR(16)   NULL,
+  timezone             VARCHAR(64)   NULL,
+  -- IANA name, e.g. 'Asia/Kolkata', 'America/New_York'. NULL = not yet set (pre-rollout account).
   profile_image        TEXT          NULL,
   blood_group          VARCHAR(16)   NULL,
   height               DECIMAL(10,2) NULL,

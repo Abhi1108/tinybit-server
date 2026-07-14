@@ -256,7 +256,7 @@ async function listMedicineLogs(req, res) {
   }
 }
 
-/** POST /api/medicines/logs/toggle — { medicine_id, taken, date? YYYY-MM-DD } */
+/** POST /api/medicines/logs/toggle — { medicine_id, taken, from?, to? (ISO instants bounding the caller's local day) } */
 async function toggleMedicineLog(req, res) {
   try {
     const userId = resolveUserId(req);
@@ -267,15 +267,17 @@ async function toggleMedicineLog(req, res) {
     const body = readBody(req);
     const medicineId = String(body.medicine_id ?? '').trim();
     const taken = body.taken === true || body.taken === 'true';
-    const dateInput = body.date
-      ? String(body.date).trim().slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
+    // The client knows its own local day (any timezone); only fall back to the
+    // server's day when an older client doesn't send explicit bounds.
+    const dayBounds = body.from && body.to
+      ? { start: new Date(body.from), end: new Date(body.to) }
+      : undefined;
 
     if (!medicineId) {
       return res.status(400).json({ success: false, message: 'medicine_id is required.' });
     }
 
-    const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dateInput);
+    const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dayBounds);
     if (taken) {
       await notifyGuardiansOfDoseCompleted(userId, medicineId);
     }

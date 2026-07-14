@@ -1,4 +1,5 @@
 const { query } = require('../config/mysql');
+const { todayForTimezone, addDays, DEFAULT_TIMEZONE } = require('../utils/date');
 
 function toDateStr(value) {
   if (value == null) return null;
@@ -13,10 +14,10 @@ function toDateStr(value) {
  */
 async function getStreakSummary(userId) {
   const profileRows = await query(
-    'SELECT streak, best_streak FROM profiles WHERE id = ? LIMIT 1',
+    'SELECT streak, best_streak, timezone FROM profiles WHERE id = ? LIMIT 1',
     [userId],
   );
-  const profile = profileRows[0] ?? { streak: 0, best_streak: 0 };
+  const profile = profileRows[0] ?? { streak: 0, best_streak: 0, timezone: null };
 
   const totalRows = await query(
     'SELECT COUNT(*) AS total FROM streak_activity_log WHERE user_id = ?',
@@ -24,10 +25,9 @@ async function getStreakSummary(userId) {
   );
   const totalDays = Number(totalRows[0]?.total ?? 0);
 
-  const now = new Date();
-  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const sevenDaysAgo = new Date(now);
-  sevenDaysAgo.setUTCDate(sevenDaysAgo.getUTCDate() - 6);
+  const today = todayForTimezone(profile.timezone || DEFAULT_TIMEZONE);
+  const startOfMonth = `${today.slice(0, 7)}-01`;
+  const sevenDaysAgo = addDays(today, -6);
   const rangeStart = startOfMonth < sevenDaysAgo ? startOfMonth : sevenDaysAgo;
 
   const activityRows = await query(

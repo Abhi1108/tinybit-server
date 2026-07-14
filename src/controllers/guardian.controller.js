@@ -841,18 +841,12 @@ const listElderMedicineLogs = async (req, res) => {
 
   try {
     const scope = String(req.query.scope ?? '').toLowerCase();
-    let logs;
-    if (scope === 'week') {
-      logs = await medicineLogsService.listForWeek(elderId);
-    } else if (req.query.from && req.query.to) {
-      logs = await medicineLogsService.listInRange(
-        elderId,
-        new Date(String(req.query.from)),
-        new Date(String(req.query.to)),
-      );
-    } else {
-      logs = await medicineLogsService.listForDay(elderId);
-    }
+    // Day/week bounds are always resolved server-side from the elder's own stored
+    // timezone (see medicineLogsService.listForDay/listForWeek) — no client-supplied
+    // date range for this route, since the requester is the guardian, not the elder.
+    const logs = scope === 'week'
+      ? await medicineLogsService.listForWeek(elderId)
+      : await medicineLogsService.listForDay(elderId);
     return res.json({ success: true, logs });
   } catch (err) {
     console.error('listElderMedicineLogs error:', err);
