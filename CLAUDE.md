@@ -10,8 +10,8 @@ Single source of truth for AI sessions and developers working on **tinybit-serve
 | `tinybit-admin` (separate) | Admin UI — consumes `/admin/api/*` |
 | **This repo** | Node/Express API + embedded admin dashboard |
 
-**Production target (current):** AWS EC2 + RDS MySQL + PM2 (`tinybit-api`, port **5002**).  
-**Legacy target:** Vercel serverless (`vercel.json` still present; `VERCEL` env skips `listen()`).
+**Production target:** AWS EC2 + RDS MySQL + PM2 (`tinybit-api`, port **5002**), with S3 for
+media storage.
 
 ---
 
@@ -75,13 +75,6 @@ S3_REGION=ap-northeast-1
 ```
 
 EC2 instance IAM role needs S3: `PutObject`, `GetObject`, `DeleteObject` on `arn:aws:s3:::tinybit-media-prod/*`.
-
-### Vercel (legacy)
-
-- Entry: `src/index.js` exported as serverless handler.
-- Set all env vars in Vercel project settings.
-- `SERVER_URL` must be the public alias (used in health-card QR URLs).
-- Long-running uploads / large JSON bodies may be less suitable than EC2.
 
 ---
 
@@ -239,7 +232,7 @@ If `S3_BUCKET` is unset, storage endpoints return **503** — no silent fallback
 
 ## Mobile API reference (`/api`)
 
-Base URL examples: `https://<host>:5002/api` or Vercel alias.
+Base URL example: `https://<host>:5002/api`.
 
 Swagger covers most routes (admin excluded). Summary by router:
 
