@@ -1,5 +1,5 @@
 const journalService = require('../services/journal.service');
-const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 
 const VALID_TYPES = new Set(['Written', 'Voice']);
 
@@ -120,13 +120,18 @@ async function createJournalEntry(req, res) {
     });
 
     try {
-      const { title, body } = JOURNAL_COPY[type];
-      await notifyGuardiansOfElder(userId, {
-        type: 'journal_added',
-        title,
-        body,
-        data: { type: 'journal_added', elderId: userId },
-      });
+      // Debounced (plan Section 17.3), keyed by `type` so a genuine Voice entry and a genuine
+      // Written entry submitted close together both still notify — only a repeat of the same
+      // type within the window (a double-tap/retry) is suppressed.
+      if (await shouldSendActionNotification(userId, 'journal_added', type)) {
+        const { title, body } = JOURNAL_COPY[type];
+        await notifyGuardiansOfElder(userId, {
+          type: 'journal_added',
+          title,
+          body,
+          data: { type: 'journal_added', elderId: userId },
+        });
+      }
     } catch (notifyErr) {
       console.warn('[journal/create] guardian notify failed:', notifyErr.message);
     }

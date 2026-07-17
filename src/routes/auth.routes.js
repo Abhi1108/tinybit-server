@@ -10,6 +10,7 @@ const {
   googleAuthStatus,
   refreshSession,
   logout,
+  deleteAccount,
   getMe,
   updateProfile,
   getSettings,
@@ -26,6 +27,7 @@ router.post('/login',        login);
 router.post('/register',     register);
 router.post('/refresh',      refreshSession);
 router.post('/logout',       logout);
+router.post('/delete-account', requireJwtAuth, deleteAccount);
 router.get('/me',            requireJwtAuth, getMe);
 router.patch('/profile',     requireJwtAuth, updateProfile);
 router.get('/settings',      requireJwtAuth, getSettings);

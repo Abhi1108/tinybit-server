@@ -60,7 +60,7 @@ async function ensureGuardianProfile(guardianId, guardianName, email) {
 
 async function findProfileByEmail(elderEmail) {
   const rows = await query(
-    'SELECT id, push_token FROM profiles WHERE email = ? LIMIT 1',
+    'SELECT id FROM profiles WHERE email = ? LIMIT 1',
     [elderEmail],
   );
   return rows[0] ?? null;
@@ -255,22 +255,47 @@ async function getPendingInvitations(elderEmails) {
   );
 }
 
-async function savePushToken(userId, pushToken) {
-  const result = await execute(
-    'UPDATE profiles SET push_token = ? WHERE id = ?',
-    [pushToken, userId],
+/**
+ * Upserts a device's push token. `token` is globally unique (not per-user) — an Expo push
+ * token is scoped to the physical device + app install, not to whichever account is
+ * currently logged in, so re-saving an existing token just reassigns it to the new owner
+ * and refreshes last_seen_at, rather than erroring or creating a duplicate row.
+ */
+async function savePushToken({ userId, token, platform, deviceId = null }) {
+  await execute(
+    `INSERT INTO push_tokens (id, user_id, token, platform, device_id)
+     VALUES (?, ?, ?, ?, ?)
+     ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), platform = VALUES(platform),
+       device_id = VALUES(device_id), last_seen_at = CURRENT_TIMESTAMP(3)`,
+    [randomUUID(), userId, token, platform, deviceId],
   );
-
-  if (result.affectedRows === 0) {
-    throw new Error('Profile not found');
-  }
 }
 
-async function clearPushToken(userId) {
-  await execute(
-    'UPDATE profiles SET push_token = NULL WHERE id = ?',
-    [userId],
-  );
+/**
+ * Removes only the token row matching this device — never every token for the user, so
+ * logging out on one device must not stop push from reaching the user's other devices.
+ * Requires at least one of token/deviceId to scope the delete.
+ */
+async function clearPushToken({ userId, token = null, deviceId = null }) {
+  if (!token && !deviceId) return;
+
+  const conditions = ['user_id = ?'];
+  const params = [userId];
+  if (token) {
+    conditions.push('token = ?');
+    params.push(token);
+  } else {
+    conditions.push('device_id = ?');
+    params.push(deviceId);
+  }
+
+  await execute(`DELETE FROM push_tokens WHERE ${conditions.join(' AND ')}`, params);
+}
+
+/** All push tokens currently registered for a user, across every device. */
+async function getPushTokensForUser(userId) {
+  const rows = await query('SELECT token FROM push_tokens WHERE user_id = ?', [userId]);
+  return rows.map((r) => r.token);
 }
 
 async function getConnectedLinksForGuardian(guardianId) {
@@ -885,15 +910,25 @@ async function getConnectedGuardians(elderId) {
 
   const profiles = guardianIds.length > 0
     ? await query(
-      `SELECT id, full_name, location, mobile, push_token
+      `SELECT id, full_name, location, mobile
        FROM profiles
        WHERE id IN (${inSql})`,
+      inParams,
+    )
+    : [];
+  const tokenRows = guardianIds.length > 0
+    ? await query(
+      `SELECT user_id, token FROM push_tokens WHERE user_id IN (${inSql})`,
       inParams,
     )
     : [];
 
   const profileMap = {};
   profiles.forEach((p) => { profileMap[p.id] = p; });
+  const tokensByGuardian = {};
+  tokenRows.forEach((r) => {
+    (tokensByGuardian[r.user_id] ??= []).push(r.token);
+  });
 
   return links.map((link) => ({
     id: link.guardian_id,
@@ -901,7 +936,7 @@ async function getConnectedGuardians(elderId) {
     relation: link.relation,
     location: profileMap[link.guardian_id]?.location ?? null,
     phone: profileMap[link.guardian_id]?.mobile ?? null,
-    push_token: profileMap[link.guardian_id]?.push_token ?? null,
+    push_tokens: tokensByGuardian[link.guardian_id] ?? [],
   }));
 }
 
@@ -924,9 +959,8 @@ async function unlinkElder(guardianId, elderId) {
   return result.affectedRows > 0;
 }
 
-async function getElderPushToken(elderId) {
-  const rows = await query('SELECT push_token FROM profiles WHERE id = ? LIMIT 1', [elderId]);
-  return rows[0]?.push_token ?? null;
+async function getElderPushTokens(elderId) {
+  return getPushTokensForUser(elderId);
 }
 
 function isoDate(value) {
@@ -1415,6 +1449,7 @@ module.exports = {
   getPendingInvitations,
   savePushToken,
   clearPushToken,
+  getPushTokensForUser,
   getGuardianEldersDashboard,
   getGuardianAlerts,
   getGuardianLocationElders,
@@ -1423,7 +1458,7 @@ module.exports = {
   listSentInvitations,
   isConnectedToElder,
   unlinkElder,
-  getElderPushToken,
+  getElderPushTokens,
   getElderSummaryForGuardian,
   getElderDashboardForGuardian,
   getElderMedicineAdherenceWeek,

@@ -73,6 +73,7 @@ app.use('/api/storage',     require('./routes/storage.routes'));
 app.use('/api/calorie-tracker', require('./routes/calorie-tracker.routes'));
 app.use('/api/streak',      require('./routes/streak.routes'));
 app.use('/api/help',        require('./routes/help.routes'));
+app.use('/api/notifications', require('./routes/notifications.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
 // ── OpenAPI / Swagger UI (mobile API only — excludes /admin) ────────────────
@@ -110,6 +111,11 @@ if (!process.env.VERCEL) {
     if (!process.env.GEMINI_API_KEY)              console.warn('⚠️  GEMINI_API_KEY not set');
     if (!process.env.OTP_TOKEN_SECRET)            console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
   });
+
+  // Same guard as app.listen() above — only the one long-running EC2+PM2 process should run
+  // the scheduler, never a Vercel serverless invocation (plan Section 6).
+  require('./cron').startCronJobs();
+  console.log('✅ Cron notification checks scheduled (every 15 min)');
 }
 
 module.exports = app;

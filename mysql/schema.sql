@@ -201,14 +201,25 @@ CREATE TABLE IF NOT EXISTS guardian_elder_links (
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS user_settings (
-  user_id            CHAR(36)     NOT NULL,
-  voice_navigation   TINYINT(1)   NOT NULL DEFAULT 0,
-  vibration_alerts   TINYINT(1)   NOT NULL DEFAULT 1,
-  fall_detection     TINYINT(1)   NOT NULL DEFAULT 1,
-  night_mode         TINYINT(1)   NOT NULL DEFAULT 0,
-  font_scale         DECIMAL(4,2) NOT NULL DEFAULT 1.00,
-  language           VARCHAR(16)  NOT NULL DEFAULT 'en',
-  updated_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  user_id                CHAR(36)     NOT NULL,
+  voice_navigation       TINYINT(1)   NOT NULL DEFAULT 0,
+  fall_detection         TINYINT(1)   NOT NULL DEFAULT 1,
+  night_mode             TINYINT(1)   NOT NULL DEFAULT 0,
+  font_scale             DECIMAL(4,2) NOT NULL DEFAULT 1.00,
+  language               VARCHAR(16)  NOT NULL DEFAULT 'en',
+  -- Push-notification category opt-outs (Reminders & Alerts settings screen). Each gates only
+  -- the *push* for its category — the in-app notification inbox always stays complete
+  -- regardless, per this project's "every notification gets an inbox row" convention. Safety-
+  -- critical types (sos_alert, guardian_reminder) are intentionally NOT covered by any of
+  -- these — they're always sent, see ALWAYS_ON_NOTIFICATION_TYPES in notifications.service.js.
+  notify_medicine        TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_wellness        TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_journal         TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_health_reports  TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_care_calendar   TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_family          TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_location        TINYINT(1)   NOT NULL DEFAULT 1,
+  updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (user_id),
   CONSTRAINT chk_user_settings_font_scale
     CHECK (font_scale >= 0.5 AND font_scale <= 2.0),
@@ -692,6 +703,97 @@ CREATE TABLE IF NOT EXISTS notifications (
   KEY idx_notifications_type (type),
   CONSTRAINT fk_notifications_user
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Push tokens — one row per device/install. Replaces profiles.push_token
+-- (single column, one token per user — overwritten on every new device login,
+-- so a guardian with two devices silently loses push on one of them). token is
+-- globally unique, not (user_id, token): an Expo push token is scoped to the
+-- physical device + app install, not to whichever account is logged in, so a
+-- save is always an upsert — the token belongs to whoever registered it most
+-- recently, no orphaned dual-ownership possible. profiles.push_token is left
+-- in place for now (unused going forward) pending a confirmed follow-up to
+-- drop it — see docs/push-notifications-progress.md.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS push_tokens (
+  id           CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id      CHAR(36)     NOT NULL,
+  token        VARCHAR(255) NOT NULL,
+  platform     ENUM('ios','android','web') NOT NULL,
+  device_id    VARCHAR(255) NULL,
+  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  last_seen_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_push_tokens_token (token),
+  KEY idx_push_tokens_user (user_id),
+  CONSTRAINT fk_push_tokens_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Cron notification claim log (plan Section 15.1) — atomic claim-then-send so a
+-- 15-minute cron tick can never double-send the same (user, type, entity, date)
+-- combination, even if a tick overlaps a slow previous run or the host scales beyond
+-- one process. Mirrors streak_activity_log's INSERT IGNORE + unique-key idiom exactly
+-- (same pattern already proven in production, not a new one). entity_id disambiguates
+-- checks that can fire more than once per day per user (medicine_missed keys on
+-- medicine_id, care_event_reminder on the event id); every other check uses ''.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS cron_notification_log (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id    CHAR(36)     NOT NULL,
+  type       VARCHAR(64)  NOT NULL,
+  entity_id  VARCHAR(64)  NOT NULL DEFAULT '',
+  sent_date  DATE         NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_cron_notif (user_id, type, entity_id, sent_date),
+  CONSTRAINT fk_cron_notif_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Action-triggered notification debounce log (plan Section 17.3) — a sibling to
+-- cron_notification_log, but a rolling time window instead of a permanent once-per-day
+-- claim: a genuine repeat action (editing the same medicine again next week) must still
+-- notify, only a near-instant duplicate (a double-tap, a network retry) should be
+-- suppressed. See shouldSendActionNotification in notifications.service.js for the
+-- atomic INSERT ... ON DUPLICATE KEY UPDATE idiom that makes the race-safety work without
+-- a permanent unique-claim row blocking future legitimate sends.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS action_notification_log (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id    CHAR(36)     NOT NULL,
+  type       VARCHAR(64)  NOT NULL,
+  entity_id  VARCHAR(64)  NOT NULL DEFAULT '',
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_action_notif (user_id, type, entity_id),
+  CONSTRAINT fk_action_notif_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Push receipt tickets (plan Section 10 point 4 / 13.5) — every successful Expo push send
+-- returns a ticket with a receipt id; the actual delivery outcome (including
+-- `DeviceNotRegistered`, meaning the token is dead — app uninstalled, OS revoked it) is only
+-- available a while later via a separate receipts lookup. No FK to push_tokens: a token can be
+-- reassigned to a different user (Phase 2's design) or already deleted by the time its receipt
+-- is checked, and pruning matches on the raw token string regardless of current ownership.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS push_receipt_tickets (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  ticket_id  VARCHAR(64)  NOT NULL,
+  token      VARCHAR(255) NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_push_receipt_ticket (ticket_id),
+  KEY idx_push_receipt_tickets_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------

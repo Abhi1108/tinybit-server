@@ -1,6 +1,6 @@
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
-const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 
 const MEDICINE_CHANGE_COPY = {
   added:   { title: 'New Medicine Added', body: "A new medicine has been added to the user's schedule." },
@@ -10,6 +10,9 @@ const MEDICINE_CHANGE_COPY = {
 
 async function notifyGuardiansOfMedicineChange(elderId, action) {
   try {
+    // Debounced (plan Section 17.3) — a retried/double-tapped save would otherwise re-fire
+    // this for the same edit; a genuinely separate add/edit minutes later still notifies.
+    if (!(await shouldSendActionNotification(elderId, `medicine_${action}`))) return;
     const { title, body } = MEDICINE_CHANGE_COPY[action];
     await notifyGuardiansOfElder(elderId, {
       type: `medicine_${action}`,
@@ -278,7 +281,11 @@ async function toggleMedicineLog(req, res) {
     }
 
     const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dayBounds);
-    if (taken) {
+    // `alreadyLogged` distinguishes a genuinely new dose-taking event from a repeat
+    // toggle/retry that found the dose already logged (setTakenForDay returns the same row
+    // shape either way, and previously nothing here told them apart — a repeat request used
+    // to re-fire this notification for no new event).
+    if (taken && !log?.alreadyLogged) {
       await notifyGuardiansOfDoseCompleted(userId, medicineId);
     }
 

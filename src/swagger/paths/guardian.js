@@ -145,7 +145,7 @@
  * /api/guardian/save-push-token:
  *   post:
  *     tags: [Guardian]
- *     summary: Save Expo push token for notifications
+ *     summary: Upsert this device's Expo push token (one row per device — multi-device safe)
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -154,13 +154,45 @@
  *         application/json:
  *           schema:
  *             type: object
- *             required: [push_token]
+ *             required: [push_token, platform]
  *             properties:
  *               push_token:
  *                 type: string
+ *               platform:
+ *                 type: string
+ *                 enum: [ios, android, web]
+ *               device_id:
+ *                 type: string
+ *                 description: Stable per-install identifier, optional
  *     responses:
  *       200:
  *         description: Token saved
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SuccessResponse'
+ *
+ * /api/guardian/clear-push-token:
+ *   post:
+ *     tags: [Guardian]
+ *     summary: Remove this device's push token only (never every device for the user)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: At least one of push_token/device_id is required
+ *             properties:
+ *               push_token:
+ *                 type: string
+ *               device_id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Token cleared
  *         content:
  *           application/json:
  *             schema:

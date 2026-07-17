@@ -256,10 +256,17 @@ async function touchLastActive(userId) {
 
   const newBest = Math.max(row.best_streak || 0, newStreak);
 
-  await execute(
+  // The `alreadyToday` check above is a check-then-act race: touchLastActive fires on every
+  // authenticated request (jwtAuth.middleware.js), and a typical screen load fires several in
+  // parallel, so two requests can both pass that check before either inserts. `INSERT IGNORE`'s
+  // own affectedRows is the real, race-safe signal for "did *this* call win today's claim" —
+  // gate both the streak update and the notification on it, not just the earlier SELECT.
+  const claim = await execute(
     'INSERT IGNORE INTO streak_activity_log (id, user_id, activity_date) VALUES (UUID(), ?, ?)',
     [userId, todayStr],
   );
+  if (claim.affectedRows === 0) return;
+
   await execute(
     'UPDATE profiles SET streak = ?, best_streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',
     [newStreak, newBest, userId],
