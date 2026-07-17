@@ -102,19 +102,24 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
        LIMIT 1`,
       [userId, medicineId, start, end],
     );
-    if (existing.length > 0) {
-      await execute(
-        `DELETE FROM medicine_logs
-         WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?`,
-        [userId, medicineId, start, end],
-      );
-      // Increment stock
-      await execute(
-        `UPDATE medicines SET stock = stock + 1 WHERE id = ? AND user_id = ?`,
-        [medicineId, userId],
-      );
+    if (existing.length === 0) {
+      // Nothing to undo — same "no genuinely new event" reasoning as `alreadyLogged` below,
+      // just for the opposite direction. The controller uses this to skip notifying guardians
+      // of a reversal that didn't actually happen (e.g. a repeat toggle/retry).
+      return null;
     }
-    return null;
+
+    await execute(
+      `DELETE FROM medicine_logs
+       WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?`,
+      [userId, medicineId, start, end],
+    );
+    // Increment stock
+    await execute(
+      `UPDATE medicines SET stock = stock + 1 WHERE id = ? AND user_id = ?`,
+      [medicineId, userId],
+    );
+    return { reverted: true };
   }
 
   const existing = await query(

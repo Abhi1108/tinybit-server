@@ -1,7 +1,9 @@
 const familyMessagesService = require('../services/family-messages.service');
+const guardianService = require('../services/guardian.service');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
 const { resolveTodayForUser } = require('../services/timezone.service');
+const { notifyElder, shouldSendActionNotification } = require('../services/notifications.service');
 
 function isTableMissing(error) {
   return (
@@ -20,6 +22,30 @@ function isValidDateParam(value) {
 
 function todayDateParam(userId) {
   return resolveTodayForUser(userId);
+}
+
+/** Pushes the elder when the message came from one of their connected guardians — the reverse
+ * direction (elder messaging a guardian) isn't notified today; only the guardian-side
+ * voice-message screen exists as a caller of createMessage. Failure here never fails the
+ * request — the message is already durably saved by the time this runs. */
+async function notifyElderOfFamilyMessage(senderId, receiverId, created, isVoiceMessage) {
+  try {
+    if (!(await guardianService.isConnectedToElder(senderId, receiverId))) return;
+    if (!(await shouldSendActionNotification(receiverId, 'family_message', created.id))) return;
+
+    const senderName = created.sender?.full_name;
+    await notifyElder(receiverId, {
+      senderId,
+      type: 'family_message',
+      title: isVoiceMessage ? 'New Voice Message' : 'New Message',
+      body: senderName
+        ? `${senderName} sent you a${isVoiceMessage ? ' voice' : ''} message.`
+        : `You have a new${isVoiceMessage ? ' voice' : ''} message from a family member.`,
+      data: { type: 'family_message', messageId: created.id, senderId, senderName: senderName ?? null },
+    });
+  } catch (err) {
+    console.error('notifyElderOfFamilyMessage error:', err);
+  }
 }
 
 /** GET /api/family/messages/history?with=<userId>&limit=50 — full two-way thread, newest first. */
@@ -127,6 +153,7 @@ async function createMessage(req, res) {
     }
 
     const created = await familyMessagesService.create(senderId, receiverId, message, audioUrl || null);
+    await notifyElderOfFamilyMessage(senderId, receiverId, created, Boolean(audioUrl));
     return res.json({ success: true, message: created });
   } catch (err) {
     console.error('[family/messages] create', err);

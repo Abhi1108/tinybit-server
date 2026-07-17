@@ -78,6 +78,7 @@ const NOTIFICATION_TYPE_CATEGORY = {
   medicine_missed: 'notify_medicine',
   missed_medicines_aggregate: 'notify_medicine',
   medicine_dose_completed: 'notify_medicine',
+  medicine_dose_reverted: 'notify_medicine',
 
   checkin_reminder: 'notify_wellness',
   checkin_missed: 'notify_wellness',
@@ -99,6 +100,7 @@ const NOTIFICATION_TYPE_CATEGORY = {
   guardian_invite: 'notify_family',
   emergency_contact_updated: 'notify_family',
   guardian_alert_notify: 'notify_family',
+  family_message: 'notify_family',
 
   location_update: 'notify_location',
 };
