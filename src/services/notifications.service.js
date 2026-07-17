@@ -103,6 +103,8 @@ const NOTIFICATION_TYPE_CATEGORY = {
   family_message: 'notify_family',
 
   location_update: 'notify_location',
+  location_sharing_enabled: 'notify_location',
+  location_sharing_disabled: 'notify_location',
 };
 
 /** Safety-critical types that are never suppressible from the settings screen — an elder or
