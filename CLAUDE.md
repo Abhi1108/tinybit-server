@@ -629,9 +629,11 @@ via the EC2 box's OS crontab.
 | Script | Purpose | Suggested schedule |
 |--------|---------|---------------------|
 | `scripts/purge-deleted-users.js` | Permanently purges any user whose admin soft-delete grace period (`USER_PURGE_GRACE_DAYS`, default 30) has elapsed — real S3 cleanup + cascading DB delete. See "Admin user deletion" below. | Daily |
+| `scripts/send-reminders.js` | Push/in-app notification sweep for time-based reminders that have no request-triggered hook: missed medicine doses (30 min grace past scheduled time), stale health records (no upload in 30 days, re-nudges every 7 days), daily check-in not yet done (gated to ~12:00 UTC), and upcoming care_events (next 60 min). Dedup is via the `notifications` table itself (per user+type+day, or per user+type+entity via `data.medicineId`/`data.eventId`) — safe to run frequently. All time gates are UTC (no per-user timezone stored). | Every 15 min |
 
 ```cron
 15 3 * * * cd /path/to/tinybit-server && /usr/bin/node scripts/purge-deleted-users.js >> /var/log/tinybit-purge.log 2>&1
+*/15 * * * * cd /path/to/tinybit-server && /usr/bin/node scripts/send-reminders.js >> /var/log/tinybit-reminders.log 2>&1
 ```
 
 ---
