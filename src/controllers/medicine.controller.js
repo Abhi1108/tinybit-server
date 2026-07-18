@@ -1,6 +1,6 @@
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
-const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 
 const MEDICINE_CHANGE_COPY = {
@@ -11,6 +11,9 @@ const MEDICINE_CHANGE_COPY = {
 
 async function notifyGuardiansOfMedicineChange(elderId, action) {
   try {
+    // Debounced (plan Section 17.3) — a retried/double-tapped save would otherwise re-fire
+    // this for the same edit; a genuinely separate add/edit minutes later still notifies.
+    if (!(await shouldSendActionNotification(elderId, `medicine_${action}`))) return;
     const { title, body, type } = MEDICINE_CHANGE_COPY[action];
     await notifyGuardiansOfElder(elderId, {
       type,
@@ -47,6 +50,26 @@ async function notifyGuardiansOfDoseCompleted(elderId, medicineId) {
     });
   } catch (err) {
     console.error('notifyGuardiansOfDoseCompleted error:', err);
+  }
+}
+
+/** Mirrors notifyGuardiansOfDoseCompleted for the reverse action — a guardian who was already
+ * told "dose completed" otherwise has no way of learning it was undone (e.g. the elder
+ * corrected an accidental tap). Only fires when a log row was actually deleted (`reverted`),
+ * never for an untake toggle on a dose that wasn't logged in the first place. */
+async function notifyGuardiansOfDoseReverted(elderId, medicineId) {
+  try {
+    const medicine = await medicinesService.getById(elderId, medicineId);
+    if (!medicine) return;
+    const bucket = doseTimeBucket(medicine.time);
+    await notifyGuardiansOfElder(elderId, {
+      type: 'medicine_dose_reverted',
+      title: `${bucket} Dose Marked Not Taken`,
+      body: 'The user has marked their ' + bucket.toLowerCase() + ' medicine as not taken.',
+      data: { type: 'medicine_dose_reverted', elderId },
+    });
+  } catch (err) {
+    console.error('notifyGuardiansOfDoseReverted error:', err);
   }
 }
 
@@ -179,7 +202,14 @@ async function updateMedicine(req, res) {
       return res.status(404).json({ success: false, message: 'Medicine not found.' });
     }
 
-    await notifyGuardiansOfMedicineChange(userId, 'updated');
+    // A patch touching only `stock` isn't a schedule change — the client sends one of these per
+    // sibling dose-slot to mirror a shared bottle's stock count after a toggle on one slot
+    // (MedicineSelfView.tsx's toggleTaken), which used to trigger a spurious "medicine schedule
+    // has been updated" push alongside the real "Dose Completed" one for the same action.
+    const isStockOnlyPatch = Object.keys(patch).length === 1 && Object.prototype.hasOwnProperty.call(patch, 'stock');
+    if (!isStockOnlyPatch) {
+      await notifyGuardiansOfMedicineChange(userId, 'updated');
+    }
     return res.json({ success: true, medicine });
   } catch (err) {
     console.error('[medicines] update', err);
@@ -279,8 +309,15 @@ async function toggleMedicineLog(req, res) {
     }
 
     const log = await medicineLogsService.setTakenForDay(userId, medicineId, taken, dayBounds);
-    if (taken) {
+    // `alreadyLogged` distinguishes a genuinely new dose-taking event from a repeat
+    // toggle/retry that found the dose already logged (setTakenForDay returns the same row
+    // shape either way, and previously nothing here told them apart — a repeat request used
+    // to re-fire this notification for no new event).
+    if (taken && !log?.alreadyLogged) {
       await notifyGuardiansOfDoseCompleted(userId, medicineId);
+    }
+    if (!taken && log?.reverted) {
+      await notifyGuardiansOfDoseReverted(userId, medicineId);
     }
 
     return res.json({ success: true, log });

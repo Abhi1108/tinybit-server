@@ -2,7 +2,7 @@ const healthRecordsService = require('../services/health-records.service');
 const savedDoctorsService = require('../services/saved-doctors.service');
 const healthInsightsService = require('../services/health-insights.service');
 const storageService = require('../services/storage.service');
-const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 
 function isTableMissing(error) {
@@ -127,12 +127,16 @@ async function createRecord(req, res) {
     const record = await healthRecordsService.create(userId, payload);
 
     try {
-      await notifyGuardiansOfElder(userId, {
-        type: NOTIFICATION_TYPES.REPORT_UPLOADED,
-        title: 'Report Uploaded',
-        body: 'The user has uploaded a new health report.',
-        data: { type: NOTIFICATION_TYPES.REPORT_UPLOADED, elderId: userId },
-      });
+      // Debounced (plan Section 17.3) — a retried/double-tapped upload would otherwise notify
+      // guardians twice for what's most likely the same file.
+      if (await shouldSendActionNotification(userId, NOTIFICATION_TYPES.REPORT_UPLOADED)) {
+        await notifyGuardiansOfElder(userId, {
+          type: NOTIFICATION_TYPES.REPORT_UPLOADED,
+          title: 'Report Uploaded',
+          body: 'The user has uploaded a new health report.',
+          data: { type: NOTIFICATION_TYPES.REPORT_UPLOADED, elderId: userId },
+        });
+      }
     } catch (notifyErr) {
       console.warn('[health-vault/create] guardian notify failed:', notifyErr.message);
     }

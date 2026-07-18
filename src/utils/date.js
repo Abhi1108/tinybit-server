@@ -54,6 +54,25 @@ function offsetMinutesForTimezone(timezone, atDate = new Date()) {
   return sign * (hours * 60 + minutes);
 }
 
+/** Current local hour/minute in `timezone` at `atDate` — for "has the elder-local time
+ *  reached hour X yet" cron-check comparisons (plan Section 7/15.2). */
+function currentTimeForTimezone(timezone, atDate = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone || DEFAULT_TIMEZONE,
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(atDate);
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? 0) % 24;
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+  return { hour, minute };
+}
+
+/** True once local time in `timezone` has reached `hour:minute` today (and stays true for
+ *  the rest of that local day) — the standard gate for every fixed-local-time cron check. */
+function hasLocalTimeReached(timezone, hour, minute = 0, atDate = new Date()) {
+  const now = currentTimeForTimezone(timezone, atDate);
+  return now.hour > hour || (now.hour === hour && now.minute >= minute);
+}
+
 /**
  * UTC instant range `[start, end]` covering one full local calendar day (`dateStr`,
  * YYYY-MM-DD) in `timezone` — i.e. `[localMidnight, localMidnight + 24h - 1ms]` expressed
@@ -103,4 +122,5 @@ module.exports = {
   resolveDate, addDays, weekDatesFor,
   todayForTimezone, dateOnlyForTimezone, DEFAULT_TIMEZONE,
   offsetMinutesForTimezone, localDayBoundsForTimezone, localWeekBoundsForTimezone,
+  currentTimeForTimezone, hasLocalTimeReached,
 };

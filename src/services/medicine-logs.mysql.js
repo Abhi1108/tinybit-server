@@ -2,6 +2,7 @@ const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
 const { resolveTodayForUser, getUserTimezone } = require('./timezone.service');
 const { localDayBoundsForTimezone, localWeekBoundsForTimezone, dateOnlyForTimezone } = require('../utils/date');
+const { notifyElder, notifyGuardiansOfElder } = require('./notifications.service');
 
 function toIso(value) {
   if (value == null) return null;
@@ -101,19 +102,24 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
        LIMIT 1`,
       [userId, medicineId, start, end],
     );
-    if (existing.length > 0) {
-      await execute(
-        `DELETE FROM medicine_logs
-         WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?`,
-        [userId, medicineId, start, end],
-      );
-      // Increment stock
-      await execute(
-        `UPDATE medicines SET stock = stock + 1 WHERE id = ? AND user_id = ?`,
-        [medicineId, userId],
-      );
+    if (existing.length === 0) {
+      // Nothing to undo — same "no genuinely new event" reasoning as `alreadyLogged` below,
+      // just for the opposite direction. The controller uses this to skip notifying guardians
+      // of a reversal that didn't actually happen (e.g. a repeat toggle/retry).
+      return null;
     }
-    return null;
+
+    await execute(
+      `DELETE FROM medicine_logs
+       WHERE user_id = ? AND medicine_id = ? AND taken_at >= ? AND taken_at <= ?`,
+      [userId, medicineId, start, end],
+    );
+    // Increment stock
+    await execute(
+      `UPDATE medicines SET stock = stock + 1 WHERE id = ? AND user_id = ?`,
+      [medicineId, userId],
+    );
+    return { reverted: true };
   }
 
   const existing = await query(
@@ -125,7 +131,10 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
   );
 
   if (existing.length > 0) {
-    return mapRow(existing[0], timezone);
+    // Already logged — not a new dose-taking event, so the caller must not re-fire
+    // medicine_dose_completed for it (that was the actual bug: a repeat toggle/retry
+    // returned this same row shape as a fresh log, so the controller couldn't tell them apart).
+    return { ...mapRow(existing[0], timezone), alreadyLogged: true };
   }
 
   const takenAt = new Date();
@@ -160,7 +169,9 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
         [userId, medicineId, start, end],
       );
       if (rows.length > 0) {
-        return mapRow(rows[0], timezone);
+        // Same reasoning as the early-return above — a concurrent request already logged
+        // this dose (and already handled the stock decrement/notification).
+        return { ...mapRow(rows[0], timezone), alreadyLogged: true };
       }
       const conflictErr = new Error(
         'Could not log this dose because it falls right at your local midnight boundary. Please try again in a few minutes.',
@@ -207,32 +218,20 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
         ? `Your stock of ${med.name} is completely exhausted. Please replenish it soon.`
         : `Only ${stockVal} doses of ${med.name} remaining. Please replenish your stock soon.`;
 
-      const createNotif = async (targetId, t, b) => {
-        const notifId = randomUUID();
-        const dataJson = JSON.stringify({ source: 'medicine_stock_alert', medicine_id: medicineId });
-        await execute(
-          `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
-           VALUES (?, ?, NULL, 'medicine_alert', ?, ?, ?, 0)`,
-          [notifId, targetId, t, b, dataJson],
-        );
-      };
+      // Routed through the same notifyElder/notifyGuardiansOfElder helpers every other
+      // notification type uses — previously this wrote inbox rows via a raw INSERT with no
+      // push and a `data` shape (`{ source, medicine_id }`) inconsistent with every other type
+      // (no `type`/`elderId`), so it never actually reached anyone unless they happened to open
+      // the in-app inbox.
+      const data = { type: 'medicine_alert', elderId: userId, medicine_id: medicineId };
 
-      // Notify Elder
-      await createNotif(userId, title, body);
-
-      // Notify Connected Guardians
-      const guardians = await query(
-        `SELECT guardian_id FROM guardian_elder_links WHERE elder_id = ? AND status = 'connected'`,
-        [userId],
-      );
+      await notifyElder(userId, { type: 'medicine_alert', title, body, data });
 
       const guardianBody = stockVal === 0
         ? `Stock of ${med.name} for ${elderName} is completely exhausted. Please replenish it soon.`
         : `Only ${stockVal} doses of ${med.name} left for ${elderName}. Please replenish it soon.`;
 
-      for (const g of guardians) {
-        await createNotif(g.guardian_id, title, guardianBody);
-      }
+      await notifyGuardiansOfElder(userId, { type: 'medicine_alert', title, body: guardianBody, data });
     }
   }
 
@@ -241,7 +240,7 @@ async function setTakenForDay(userId, medicineId, taken, dayBounds) {
      FROM medicine_logs WHERE id = ? LIMIT 1`,
     [id],
   );
-  return mapRow(rows[0], timezone);
+  return { ...mapRow(rows[0], timezone), alreadyLogged: false };
 }
 
 module.exports = {

@@ -1,5 +1,7 @@
 const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
+const { execute } = require('../config/mysql');
+const { softDeleteProfile } = require('../services/admin.service');
 const {
   findOrCreateByPhone,
   findByPhone,
@@ -178,6 +180,32 @@ async function logout(req, res) {
   } catch (err) {
     console.error('[auth/logout]', err);
     return res.status(500).json({ success: false, message: 'Logout failed' });
+  }
+}
+
+/**
+ * POST /api/auth/delete-account — self-service account deletion.
+ * Soft-delete only (sets profiles.deleted_at via the same softDeleteProfile the admin "trash
+ * user" path already uses — no data is actually erased here; a separate, already-existing
+ * grace-period/purge flow handles hard deletion later). Explicitly clears every push_tokens row
+ * for this user across all devices — unlike logout (which only clears the current device),
+ * account deletion must stop push to every device immediately, and can't rely on the
+ * push_tokens table's ON DELETE CASCADE since the profile row itself isn't being deleted here.
+ */
+async function deleteAccount(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    await softDeleteProfile(userId, 'self');
+    await execute('DELETE FROM push_tokens WHERE user_id = ?', [userId]);
+
+    return res.json({ success: true, message: 'Account deleted' });
+  } catch (err) {
+    console.error('[auth/delete-account]', err);
+    return res.status(err.status || 500).json({ success: false, message: err.message || 'Could not delete account' });
   }
 }
 
@@ -512,11 +540,17 @@ async function updateSettings(req, res) {
     const body = req.body ?? {};
     const allowed = [
       'voice_navigation',
-      'vibration_alerts',
       'fall_detection',
       'night_mode',
       'font_scale',
       'language',
+      'notify_medicine',
+      'notify_wellness',
+      'notify_journal',
+      'notify_health_reports',
+      'notify_care_calendar',
+      'notify_family',
+      'notify_location',
     ];
 
     const patch = {};
@@ -552,6 +586,7 @@ module.exports = {
   googleAuthStatus,
   refreshSession,
   logout,
+  deleteAccount,
   getMe,
   updateProfile,
   getSettings,

@@ -297,6 +297,26 @@
  *                   type: string
  *                   example: Logged out
  *
+ * /api/auth/delete-account:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Self-service account deletion — soft-delete only (sets deleted_at; hard purge happens later via the existing grace-period flow), and clears every push_tokens row for this user across all devices
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Account soft-deleted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                   example: Account deleted
+ *
  * /api/auth/me:
  *   get:
  *     tags: [Auth]
@@ -445,8 +465,6 @@
  *                   properties:
  *                     voice_navigation:
  *                       type: boolean
- *                     vibration_alerts:
- *                       type: boolean
  *                     fall_detection:
  *                       type: boolean
  *                     night_mode:
@@ -455,6 +473,20 @@
  *                       type: number
  *                     language:
  *                       type: string
+ *                     notify_medicine:
+ *                       type: boolean
+ *                     notify_wellness:
+ *                       type: boolean
+ *                     notify_journal:
+ *                       type: boolean
+ *                     notify_health_reports:
+ *                       type: boolean
+ *                     notify_care_calendar:
+ *                       type: boolean
+ *                     notify_family:
+ *                       type: boolean
+ *                     notify_location:
+ *                       type: boolean
  *       401:
  *         description: Unauthorized
  *   patch:
@@ -471,8 +503,6 @@
  *             properties:
  *               voice_navigation:
  *                 type: boolean
- *               vibration_alerts:
- *                 type: boolean
  *               fall_detection:
  *                 type: boolean
  *               night_mode:
@@ -481,6 +511,20 @@
  *                 type: number
  *               language:
  *                 type: string
+ *               notify_medicine:
+ *                 type: boolean
+ *               notify_wellness:
+ *                 type: boolean
+ *               notify_journal:
+ *                 type: boolean
+ *               notify_health_reports:
+ *                 type: boolean
+ *               notify_care_calendar:
+ *                 type: boolean
+ *               notify_family:
+ *                 type: boolean
+ *               notify_location:
+ *                 type: boolean
  *     responses:
  *       200:
  *         description: Settings saved

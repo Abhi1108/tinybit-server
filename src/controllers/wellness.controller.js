@@ -4,7 +4,7 @@ const {
   insertMoodEntry,
 } = require('../services/daily-checkins.service');
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
-const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const { resolveTodayForUser } = require('../services/timezone.service');
 
@@ -113,19 +113,24 @@ async function upsertDailyCheckInHandler(req, res) {
     }
 
     try {
-      const checkInType = isMoodLift ? NOTIFICATION_TYPES.MOOD_LIFT_COMPLETED : NOTIFICATION_TYPES.DAILY_CHECKIN;
-      await notifyGuardiansOfElder(userId, {
-        type: checkInType,
-        title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
-        body: isMoodLift
-          ? "The user has completed today's Mood Lift activity."
-          : "The user has completed today's wellness check-in.",
-        data: {
-          type: checkInType,
-          elderId: userId,
-          mood: upsertFields.mood,
-        },
-      });
+      // Debounced (plan Section 17.3) — upsertDailyCheckIn succeeds on every call (it's an
+      // upsert, not a plain insert), so unlike a unique-constrained insert, a retried/
+      // double-tapped submit would otherwise notify guardians twice for one real check-in.
+      const notifType = isMoodLift ? NOTIFICATION_TYPES.MOOD_LIFT_COMPLETED : NOTIFICATION_TYPES.DAILY_CHECKIN;
+      if (await shouldSendActionNotification(userId, notifType)) {
+        await notifyGuardiansOfElder(userId, {
+          type: notifType,
+          title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
+          body: isMoodLift
+            ? "The user has completed today's Mood Lift activity."
+            : "The user has completed today's wellness check-in.",
+          data: {
+            type: notifType,
+            elderId: userId,
+            mood: upsertFields.mood,
+          },
+        });
+      }
     } catch (notifyErr) {
       console.warn('[wellness/daily-checkin] guardian notify failed:', notifyErr.message);
     }

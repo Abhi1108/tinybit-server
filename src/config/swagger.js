@@ -61,6 +61,7 @@ const options = {
       { name: 'Content', description: 'Daily quiz and inspiration' },
       { name: 'Mood Media', description: 'Mood Lift media' },
       { name: 'Storage', description: 'S3 presigned upload and download' },
+      { name: 'Notifications', description: 'In-app notification inbox' },
     ],
   },
   apis: [

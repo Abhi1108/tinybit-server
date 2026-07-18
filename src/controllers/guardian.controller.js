@@ -8,7 +8,7 @@ const emergencyContactsService = require('../services/emergency-contacts.service
 const { normalizeCreatePayload, loadRecordBase64 } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
-const { sendExpoPush, notifyElder } = require('../services/notifications.service');
+const { sendExpoPush, notifyElder, createNotification, shouldSendActionNotification, isPushEnabledForType } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
@@ -23,6 +23,11 @@ const MEDICINE_CHANGE_COPY = {
 
 async function notifyElderOfMedicineChange(elderId, guardianId, action) {
   try {
+    // Debounced (plan Section 17.3); `elder-copy` keeps this distinct from
+    // medicine.controller.js's guardian-facing debounce for the same action string, though the
+    // two are never triggered by the same request today (elder-self-edit vs guardian-on-behalf-
+    // of-elder are different endpoints).
+    if (!(await shouldSendActionNotification(elderId, `medicine_${action}`, 'elder-copy'))) return;
     const { title, body, type } = MEDICINE_CHANGE_COPY[action];
     await notifyElder(elderId, {
       senderId: guardianId,
@@ -55,14 +60,6 @@ async function requireElderConnection(req, res) {
   return elderId;
 }
 
-async function sendPushNotification(token, guardianName, relation) {
-  await sendExpoPush(token, {
-    title: 'Guardian Connection Request',
-    body: `${guardianName} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
-    data: { type: NOTIFICATION_TYPES.GUARDIAN_INVITE },
-  });
-}
-
 const STATIC_SAFE_ZONES = [
   { id: 'z1', name: 'Home', note: 'Primary safe zone · 300m radius', badge: { text: 'Primary', bg: '#D1FADF', fg: '#16A34A' } },
   { id: 'z2', name: 'Hospital / Clinic', note: 'Doctor visits', badge: { text: 'Medical', bg: '#E9D5FF', fg: '#7C3AED' } },
@@ -92,7 +89,6 @@ const inviteParent = async (req, res) => {
 
     const elderProfile = await guardianService.findProfileByEmail(elder_email);
     const elder_id = elderProfile?.id ?? null;
-    const push_token = elderProfile?.push_token ?? null;
 
     if (await guardianService.hasPendingInvite(guardian_id, elder_email)) {
       return res.status(409).json({ success: false, message: 'A pending invitation already exists for this email' });
@@ -129,8 +125,16 @@ const inviteParent = async (req, res) => {
       relation,
     });
 
-    if (push_token) {
-      await sendPushNotification(push_token, guardian_name, relation);
+    // Debounced (plan Section 17.3) — the hasPendingInvite check above is a check-then-act
+    // race (two near-simultaneous retries could both pass it before either creates the
+    // invitation); this closes the same gap at the notification layer.
+    if (elder_id && await shouldSendActionNotification(elder_id, 'guardian_invite', guardian_id)) {
+      await notifyElder(elder_id, {
+        type: 'guardian_invite',
+        title: 'Guardian Connection Request',
+        body: `${guardian_name} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
+        data: { type: 'guardian_invite' },
+      });
     }
 
     return res.json({
@@ -349,32 +353,44 @@ const getPendingInvitations = async (req, res) => {
   }
 };
 
-// POST /api/guardian/save-push-token
+const VALID_PUSH_PLATFORMS = new Set(['ios', 'android', 'web']);
+
+// POST /api/guardian/save-push-token — { push_token, platform, device_id? }
+// Upserts one row per device; works for both elder and guardian callers (see routes file note).
 const savePushToken = async (req, res) => {
   const user_id = req.auth?.userId;
-  const { push_token } = req.body;
+  const { push_token, platform, device_id } = req.body;
 
-  if (!user_id || !push_token) {
-    return res.status(400).json({ success: false, message: 'Missing user_id or push_token' });
+  if (!user_id || !push_token || !platform) {
+    return res.status(400).json({ success: false, message: 'Missing push_token or platform' });
+  }
+  if (!VALID_PUSH_PLATFORMS.has(platform)) {
+    return res.status(400).json({ success: false, message: 'platform must be ios, android, or web' });
   }
 
   try {
-    await guardianService.savePushToken(user_id, push_token);
+    await guardianService.savePushToken({ userId: user_id, token: push_token, platform, deviceId: device_id ?? null });
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 };
 
-// POST /api/guardian/clear-push-token
+// POST /api/guardian/clear-push-token — { push_token } or { device_id }
+// Scoped to exactly one device's row — never clears every token for this user, so logging
+// out on one device must not stop push from reaching the caller's other devices.
 const clearPushToken = async (req, res) => {
   const user_id = req.auth?.userId;
   if (!user_id) {
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
+  const { push_token, device_id } = req.body;
+  if (!push_token && !device_id) {
+    return res.status(400).json({ success: false, message: 'Missing push_token or device_id' });
+  }
 
   try {
-    await guardianService.clearPushToken(user_id);
+    await guardianService.clearPushToken({ userId: user_id, token: push_token ?? null, deviceId: device_id ?? null });
     return res.json({ success: true });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -495,17 +511,36 @@ const notifyOtherGuardians = async (req, res) => {
 
   try {
     const message = String(req.body?.message ?? '').trim() || 'Please check on this alert.';
+
+    // Debounced (plan Section 17.3) — a double-tap on "notify other guardians" shouldn't
+    // re-broadcast the same message to everyone twice. Keyed by the triggering guardian +
+    // elder, not a fixed message, so a different real alert (even worded identically) just
+    // outside the window still sends.
+    if (!(await shouldSendActionNotification(guardianId, 'guardian_alert_notify', elderId))) {
+      return res.json({ success: true, notified: 0 });
+    }
+
     const allGuardians = await guardianService.getConnectedGuardians(elderId);
     const others = allGuardians.filter((g) => g.id !== guardianId);
 
-    await Promise.all(
-      others
-        .filter((g) => g.push_token)
-        .map((g) => sendExpoPush(g.push_token, {
+    await Promise.allSettled(
+      others.map(async (g) => {
+        await createNotification({
+          userId: g.id,
+          senderId: guardianId,
+          type: 'guardian_alert_notify',
           title: 'Care Alert',
           body: message,
-          data: { type: NOTIFICATION_TYPES.GUARDIAN_ALERT_NOTIFY, elderId },
-        }).catch(() => {})),
+          data: { type: 'guardian_alert_notify', elderId },
+        });
+        if (await isPushEnabledForType(g.id, 'guardian_alert_notify')) {
+          await Promise.allSettled((g.push_tokens ?? []).map((token) => sendExpoPush(token, {
+            title: 'Care Alert',
+            body: message,
+            data: { type: 'guardian_alert_notify', elderId },
+          })));
+        }
+      }),
     );
 
     return res.json({ success: true, notified: others.length });
@@ -557,11 +592,24 @@ const sendElderReminder = async (req, res) => {
     if (!message) {
       return res.status(400).json({ success: false, message: 'message is required.' });
     }
-    const token = await guardianService.getElderPushToken(elderId);
-    if (!token) {
-      return res.status(404).json({ success: false, message: 'This elder has no device registered for notifications.' });
+    // Always records an inbox row via notifyElder, even if the elder has no push token
+    // registered yet — the reminder is still durably delivered (visible next time they open
+    // the app), rather than hard-failing the request with no record anywhere.
+    const guardianId = req.auth?.userId;
+
+    // Debounced (plan Section 17.3) — keyed on the message text itself (truncated), not just
+    // guardian+elder, since a guardian could legitimately send two different real reminders in
+    // quick succession; only an identical repeat within the window (a double-tap/retry) should
+    // be suppressed.
+    // entity_id column is VARCHAR(64) — guardianId (a UUID, 36 chars) + ':' leaves 27 for the
+    // message slice, kept comfortably under that.
+    if (!(await shouldSendActionNotification(elderId, 'guardian_reminder', `${guardianId}:${message.slice(0, 25)}`))) {
+      return res.json({ success: true });
     }
-    await sendExpoPush(token, {
+
+    await notifyElder(elderId, {
+      senderId: guardianId,
+      type: 'guardian_reminder',
       title: 'Reminder from your family',
       body: message,
       data: { type: NOTIFICATION_TYPES.GUARDIAN_REMINDER },

@@ -27,6 +27,7 @@ const NOTIFICATION_TYPES = Object.freeze({
 
   // Location
   LOCATION_UPDATE: 'location_update',
+  LOCATION_SHARING_ENABLED: 'location_sharing_enabled',
 });
 
 module.exports = { NOTIFICATION_TYPES };
