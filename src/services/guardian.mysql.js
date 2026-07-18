@@ -219,6 +219,15 @@ async function createElderProfile({
 async function respondToInvitation(linkId, action, elderId) {
   const newStatus = action === 'accept' ? 'connected' : 'declined';
 
+  const rows = await query(
+    'SELECT guardian_id, parent_name, relation FROM guardian_elder_links WHERE id = ?',
+    [linkId],
+  );
+  const link = rows[0];
+  if (!link) {
+    throw new Error('Invitation not found');
+  }
+
   const result = await execute(
     `UPDATE guardian_elder_links
      SET status = ?, elder_id = ?, updated_at = CURRENT_TIMESTAMP(3)
@@ -230,7 +239,7 @@ async function respondToInvitation(linkId, action, elderId) {
     throw new Error('Failed to update invitation');
   }
 
-  return newStatus;
+  return { status: newStatus, guardianId: link.guardian_id, parentName: link.parent_name, relation: link.relation };
 }
 
 /** `elderEmails` — every identifier this elder is known by (login email, profile email,

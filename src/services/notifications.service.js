@@ -98,6 +98,7 @@ const NOTIFICATION_TYPE_CATEGORY = {
   care_event_reminder: 'notify_care_calendar',
 
   guardian_invite: 'notify_family',
+  guardian_invite_accepted: 'notify_family',
   emergency_contact_updated: 'notify_family',
   guardian_alert_notify: 'notify_family',
   family_message: 'notify_family',
@@ -284,6 +285,27 @@ async function notifyElder(elderId, { senderId = null, type, title, body, data =
 }
 
 /**
+ * Notifies a single guardian — one in-app notification row plus a best-effort push to every
+ * device that guardian has registered, for elder-initiated events about the connection itself
+ * (e.g. accepting an invite). Mirrors notifyElder.
+ */
+async function notifyGuardian(guardianId, { senderId = null, type, title, body, data = null }) {
+  const tokens = await guardianService.getPushTokensForUser(guardianId);
+
+  await createNotification({
+    userId: guardianId,
+    senderId,
+    type,
+    title,
+    body,
+    data,
+  });
+  if (await isPushEnabledForType(guardianId, type)) {
+    await Promise.allSettled(tokens.map((token) => sendExpoPush(token, { title, body, data })));
+  }
+}
+
+/**
  * Paginated inbox listing for a user, newest first, plus their current unread count.
  * `limit`/`offset` are inlined as validated integers rather than passed as `?` placeholders —
  * `LIMIT ?`/`OFFSET ?` bound params are a known mysql2 inconsistency across versions (see the
@@ -336,6 +358,7 @@ module.exports = {
   sendExpoPush,
   notifyGuardiansOfElder,
   notifyElder,
+  notifyGuardian,
   listNotifications,
   markNotificationRead,
   shouldSendActionNotification,

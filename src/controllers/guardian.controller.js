@@ -8,7 +8,7 @@ const emergencyContactsService = require('../services/emergency-contacts.service
 const { normalizeCreatePayload, loadRecordBase64 } = require('./health-vault.controller');
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
-const { sendExpoPush, notifyElder, createNotification, shouldSendActionNotification, isPushEnabledForType } = require('../services/notifications.service');
+const { sendExpoPush, notifyElder, notifyGuardian, createNotification, shouldSendActionNotification, isPushEnabledForType } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
@@ -315,7 +315,26 @@ const respondToInvitation = async (req, res) => {
   }
 
   try {
-    const newStatus = await guardianService.respondToInvitation(link_id, action, elder_id);
+    const { status: newStatus, guardianId } = await guardianService.respondToInvitation(link_id, action, elder_id);
+
+    if (action === 'accept') {
+      try {
+        if (await shouldSendActionNotification(guardianId, 'guardian_invite_accepted', link_id)) {
+          const elderProfile = await profilesService.getProfileById(elder_id);
+          const elderName = elderProfile?.full_name ?? 'Your elder';
+          await notifyGuardian(guardianId, {
+            senderId: elder_id,
+            type: 'guardian_invite_accepted',
+            title: 'Invite Accepted',
+            body: `${elderName} accepted your invitation.`,
+            data: { type: 'guardian_invite_accepted', elderId: elder_id, link_id },
+          });
+        }
+      } catch (notifyErr) {
+        console.error('respondToInvitation notifyGuardian error:', notifyErr);
+      }
+    }
+
     return res.json({ success: true, status: newStatus });
   } catch (err) {
     console.error('respondToInvitation error:', err);

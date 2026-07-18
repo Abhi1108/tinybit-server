@@ -6,6 +6,7 @@
 const NOTIFICATION_TYPES = Object.freeze({
   // Guardian <-> elder connection
   GUARDIAN_INVITE: 'guardian_invite',
+  GUARDIAN_INVITE_ACCEPTED: 'guardian_invite_accepted',
   GUARDIAN_ALERT_NOTIFY: 'guardian_alert_notify',
   GUARDIAN_REMINDER: 'guardian_reminder',
 
