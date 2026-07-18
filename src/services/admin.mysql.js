@@ -723,6 +723,89 @@ async function getMindGames({ page, limit, game_type }) {
   }));
 }
 
+async function getSosAlerts({ page, limit, status } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const params = [];
+  let where = '';
+  if (status) {
+    where = 'WHERE s.status = ?';
+    params.push(status);
+  }
+
+  const rows = await query(
+    `SELECT s.id, s.user_id, s.triggered_at, s.resolved_at, s.status,
+            p.full_name AS user_name,
+            loc.latitude, loc.longitude, loc.address
+     FROM sos_alerts s
+     LEFT JOIN profiles p ON p.id = s.user_id
+     LEFT JOIN elder_locations loc ON loc.elder_id = s.user_id
+     ${where}
+     ORDER BY s.triggered_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    user_name: r.user_name || '—',
+    triggered_at: toIso(r.triggered_at),
+    resolved_at: r.resolved_at ? toIso(r.resolved_at) : null,
+    status: r.status,
+    location: r.latitude != null ? {
+      latitude: Number(r.latitude),
+      longitude: Number(r.longitude),
+      address: r.address || null,
+    } : null,
+  }));
+}
+
+async function getNotifications({ page, limit, type, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('n.type = ?');
+    params.push(type);
+  }
+  if (search) {
+    clauses.push('(n.title LIKE ? OR n.body LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT n.id, n.user_id, n.sender_id, n.type, n.title, n.body, n.data, n.\`read\`, n.created_at,
+            p.full_name AS user_name
+     FROM notifications n
+     LEFT JOIN profiles p ON p.id = n.user_id
+     ${where}
+     ORDER BY n.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    user_name: r.user_name || '—',
+    sender_id: r.sender_id,
+    type: r.type,
+    title: r.title,
+    body: r.body,
+    data: typeof r.data === 'string' ? (() => { try { return JSON.parse(r.data); } catch { return r.data; } })() : r.data,
+    read: !!r.read,
+    created_at: toIso(r.created_at),
+  }));
+}
+
 async function broadcastNotification(title, body) {
   const rows = await query('SELECT id FROM profiles WHERE is_banned = 0');
   const userIds = rows.map((r) => r.id);
@@ -770,33 +853,327 @@ async function getHealthRecords(params = {}) {
     queryParams.push(q, q, q);
   }
 
-  const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const rows = await query(
+    `SELECT * FROM health_records ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    queryParams,
+  );
+  const [{ total }] = await query(
+    `SELECT COUNT(*) AS total FROM health_records ${where}`,
+    queryParams,
+  );
 
-  const [countRow] = await query(`SELECT COUNT(*) as count FROM health_records ${whereStr}`, queryParams);
-  const total = countRow?.count || 0;
+  const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
+  return {
+    records: rows.map((r) => ({
+      ...normalizeRow(r),
+      user_name: userMap[r.user_id]?.full_name ?? '—',
+    })),
+    total: Number(total) || 0,
+    page,
+    limit,
+    pages: Math.ceil((Number(total) || 0) / limit),
+  };
+}
+
+async function getEmergencyContacts({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (search) {
+    clauses.push('(c.name LIKE ? OR c.phone LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT hr.id, hr.user_id, hr.title, hr.date, hr.timestamp, hr.size, hr.\`type\`, hr.category,
-            hr.icon_name, hr.badge_bg, hr.badge_color, hr.uri, hr.mime_type, hr.ai_read, hr.created_at,
-            p.full_name as user_name, p.email as user_email
-     FROM health_records hr
-     LEFT JOIN profiles p ON hr.user_id = p.id
-     ${whereStr}
-     ORDER BY hr.timestamp DESC
-     LIMIT ? OFFSET ?`,
-    [...queryParams, limit, offset]
+    `SELECT c.id, c.user_id, c.name, c.role, c.phone, c.color, c.created_at,
+            p.full_name AS user_name
+     FROM emergency_contacts c
+     LEFT JOIN profiles p ON p.id = c.user_id
+     ${where}
+     ORDER BY c.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+  }));
+}
+
+async function getJournalEntries({ page, limit, type, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('j.type = ?');
+    params.push(type);
+  }
+  if (search) {
+    clauses.push('(j.content LIKE ? OR j.prompt LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT j.id, j.user_id, j.type, j.content, j.audio_uri, j.prompt, j.created_at,
+            p.full_name AS user_name
+     FROM journal j
+     LEFT JOIN profiles p ON p.id = j.user_id
+     ${where}
+     ORDER BY j.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+    content_preview: (r.content || '').slice(0, 160),
+  }));
+}
+
+async function getFamilyMessages({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (search) {
+    clauses.push('(m.message LIKE ? OR s.full_name LIKE ? OR r.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT m.id, m.sender_id, m.receiver_id, m.message, m.audio_url, m.created_at,
+            s.full_name AS sender_name,
+            r.full_name AS receiver_name
+     FROM family_messages m
+     LEFT JOIN profiles s ON s.id = m.sender_id
+     LEFT JOIN profiles r ON r.id = m.receiver_id
+     ${where}
+     ORDER BY m.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    sender_name: r.sender_name || '—',
+    receiver_name: r.receiver_name || '—',
+    message_preview: (r.message || '').slice(0, 160),
+  }));
+}
+
+async function getElderLocations({ page, limit, sharing } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (sharing === 'true' || sharing === '1') {
+    clauses.push('l.is_sharing = 1');
+  } else if (sharing === 'false' || sharing === '0') {
+    clauses.push('l.is_sharing = 0');
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT l.elder_id, l.latitude, l.longitude, l.accuracy, l.address, l.is_sharing, l.updated_at,
+            p.full_name AS user_name, p.location AS profile_location
+     FROM elder_locations l
+     LEFT JOIN profiles p ON p.id = l.elder_id
+     ${where}
+     ORDER BY l.updated_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    elder_id: r.elder_id,
+    user_name: r.user_name || '—',
+    latitude: Number(r.latitude),
+    longitude: Number(r.longitude),
+    accuracy: r.accuracy == null ? null : Number(r.accuracy),
+    address: r.address || r.profile_location || null,
+    is_sharing: !!r.is_sharing,
+    updated_at: toIso(r.updated_at),
+  }));
+}
+
+async function getAppointments({ page, limit, status, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (status) {
+    clauses.push('a.status = ?');
+    params.push(status);
+  }
+  if (search) {
+    clauses.push('(a.doctor_name LIKE ? OR a.specialty LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT a.id, a.user_id, a.doctor_name, a.specialty, a.date, a.time, a.fee, a.reason, a.status, a.created_at,
+            p.full_name AS user_name
+     FROM appointments a
+     LEFT JOIN profiles p ON p.id = a.user_id
+     ${where}
+     ORDER BY a.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+  }));
+}
+
+async function getStreaks({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = ['p.deleted_at IS NULL', "p.role = 'elder'"];
+  const params = [];
+  if (search) {
+    clauses.push('(p.full_name LIKE ? OR p.location LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q);
+  }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+
+  const rows = await query(
+    `SELECT p.id, p.full_name, p.location, p.streak, p.best_streak, p.last_active, p.created_at
+     FROM profiles p
+     ${where}
+     ORDER BY p.streak DESC, p.best_streak DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.full_name || '—',
+    location: r.location || '—',
+    current_streak: Number(r.streak) || 0,
+    longest_streak: Number(r.best_streak) || 0,
+    last_activity: toIso(r.last_active),
+    status: (Number(r.streak) || 0) > 0 ? 'active' : 'broken',
+  }));
+}
+
+async function getUserSubscriptions({ page, limit, status, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = ['p.deleted_at IS NULL', "p.role = 'guardian'"];
+  const params = [];
+  if (status) {
+    clauses.push('p.plan_status = ?');
+    params.push(status);
+  }
+  if (search) {
+    clauses.push('(p.full_name LIKE ? OR p.plan_type LIKE ? OR p.email LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+
+  const rows = await query(
+    `SELECT p.id, p.full_name, p.role, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
+            p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at
+     FROM profiles p
+     ${where}
+     ORDER BY p.plan_expires_at DESC, p.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    user_name: r.full_name || '—',
+    user_type: r.role === 'elder' ? 'Elder' : 'Guardian',
+    plan: r.plan_type || 'free',
+    status: r.plan_status || 'inactive',
+    start_date: toIso(r.plan_started_at),
+    renewal_date: toIso(r.plan_expires_at),
+    amount: r.plan_amount == null ? 0 : Number(r.plan_amount),
+    currency: r.plan_currency || 'INR',
+    elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
+    interval: r.plan_interval,
+  }));
+}
+
+async function getRevenueSummary() {
+  const [captured] = await query(
+    `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+     FROM payments WHERE status = 'captured'`,
+  );
+
+  const monthly = await query(
+    `SELECT DATE_FORMAT(COALESCE(captured_at, created_at), '%Y-%m') AS month,
+            COALESCE(SUM(amount), 0) AS revenue,
+            COUNT(*) AS payments
+     FROM payments
+     WHERE status = 'captured'
+       AND COALESCE(captured_at, created_at) >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 6 MONTH)
+     GROUP BY DATE_FORMAT(COALESCE(captured_at, created_at), '%Y-%m')
+     ORDER BY month ASC`,
+  );
+
+  const byTier = await query(
+    `SELECT o.elder_count_at_purchase AS elder_count,
+            COALESCE(SUM(p.amount), 0) AS revenue,
+            COUNT(DISTINCT o.guardian_id) AS subscribers
+     FROM payment_orders o
+     INNER JOIN payments p ON p.order_id = o.id AND p.status = 'captured'
+     GROUP BY o.elder_count_at_purchase
+     ORDER BY o.elder_count_at_purchase ASC`,
+  );
+
+  const [activeSubs] = await query(
+    `SELECT COUNT(*) AS cnt FROM profiles
+     WHERE deleted_at IS NULL AND role = 'guardian' AND plan_status = 'active'`,
   );
 
   return {
-    records: rows.map(r => ({
-      ...r,
-      timestamp: r.timestamp == null ? null : Number(r.timestamp),
-      ai_read: Boolean(r.ai_read)
+    total_revenue: Number(captured?.total) || 0,
+    captured_payments: Number(captured?.count) || 0,
+    active_subscriptions: Number(activeSubs?.cnt) || 0,
+    monthly: monthly.map((m) => ({
+      month: m.month,
+      revenue: Number(m.revenue) || 0,
+      payments: Number(m.payments) || 0,
     })),
-    total,
-    page,
-    limit,
-    pages: Math.ceil(total / limit)
+    by_tier: byTier.map((t) => ({
+      plan: `${t.elder_count} elder${Number(t.elder_count) === 1 ? '' : 's'}`,
+      elder_count: Number(t.elder_count),
+      revenue: Number(t.revenue) || 0,
+      subscribers: Number(t.subscribers) || 0,
+    })),
   };
 }
 
@@ -826,6 +1203,16 @@ module.exports = {
   getAIConversations,
   getCareEvents,
   getMindGames,
+  getSosAlerts,
+  getNotifications,
   broadcastNotification,
   getHealthRecords,
+  getEmergencyContacts,
+  getJournalEntries,
+  getFamilyMessages,
+  getElderLocations,
+  getAppointments,
+  getStreaks,
+  getUserSubscriptions,
+  getRevenueSummary,
 };

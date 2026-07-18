@@ -1,21 +1,22 @@
 const medicinesService = require('../services/medicines.service');
 const medicineLogsService = require('../services/medicine-logs.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 
 const MEDICINE_CHANGE_COPY = {
-  added:   { title: 'New Medicine Added', body: "A new medicine has been added to the user's schedule." },
-  updated: { title: 'Medicine Updated',   body: "The user's medicine schedule has been updated." },
-  removed: { title: 'Medicine Removed',   body: "A medicine has been removed from the user's schedule." },
+  added:   { title: 'New Medicine Added', body: "A new medicine has been added to the user's schedule.", type: NOTIFICATION_TYPES.MEDICINE_ADDED },
+  updated: { title: 'Medicine Updated',   body: "The user's medicine schedule has been updated.", type: NOTIFICATION_TYPES.MEDICINE_UPDATED },
+  removed: { title: 'Medicine Removed',   body: "A medicine has been removed from the user's schedule.", type: NOTIFICATION_TYPES.MEDICINE_REMOVED },
 };
 
 async function notifyGuardiansOfMedicineChange(elderId, action) {
   try {
-    const { title, body } = MEDICINE_CHANGE_COPY[action];
+    const { title, body, type } = MEDICINE_CHANGE_COPY[action];
     await notifyGuardiansOfElder(elderId, {
-      type: `medicine_${action}`,
+      type,
       title,
       body,
-      data: { type: `medicine_${action}`, elderId },
+      data: { type, elderId },
     });
   } catch (err) {
     console.error('notifyGuardiansOfMedicineChange error:', err);
@@ -39,10 +40,10 @@ async function notifyGuardiansOfDoseCompleted(elderId, medicineId) {
     if (!medicine) return;
     const bucket = doseTimeBucket(medicine.time);
     await notifyGuardiansOfElder(elderId, {
-      type: 'medicine_dose_completed',
+      type: NOTIFICATION_TYPES.MEDICINE_DOSE_COMPLETED,
       title: `${bucket} Dose Completed`,
       body: 'The user has successfully completed their ' + bucket.toLowerCase() + ' medicine.',
-      data: { type: 'medicine_dose_completed', elderId },
+      data: { type: NOTIFICATION_TYPES.MEDICINE_DOSE_COMPLETED, elderId },
     });
   } catch (err) {
     console.error('notifyGuardiansOfDoseCompleted error:', err);

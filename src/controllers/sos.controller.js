@@ -2,14 +2,15 @@ const emergencyContactsService = require('../services/emergency-contacts.service
 const sosService = require('../services/sos.service');
 const elderLocationsService = require('../services/elder-locations.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 
 async function notifyGuardiansOfEmergencyContactChange(userId) {
   try {
     await notifyGuardiansOfElder(userId, {
-      type: 'emergency_contact_updated',
+      type: NOTIFICATION_TYPES.EMERGENCY_CONTACT_UPDATED,
       title: 'Emergency Contact Updated',
       body: "The user's emergency contact information has been updated.",
-      data: { type: 'emergency_contact_updated', elderId: userId },
+      data: { type: NOTIFICATION_TYPES.EMERGENCY_CONTACT_UPDATED, elderId: userId },
     });
   } catch (err) {
     console.warn('[sos/emergency-contacts] guardian notify failed:', err.message);
@@ -188,11 +189,11 @@ async function triggerSos(req, res) {
       // an SOS is the elder's own explicit signal that their guardians should see it.
       const location = await elderLocationsService.getByElderId(userId);
       await notifyGuardiansOfElder(userId, {
-        type: 'sos_alert',
+        type: NOTIFICATION_TYPES.SOS_ALERT,
         title: `🚨 ${elderName} IMMEDIATE HELP!!`,
         body: 'Needs immediate help right now. Tap for live location and blood group.',
         data: {
-          type:       'sos_alert',
+          type:       NOTIFICATION_TYPES.SOS_ALERT,
           elderId:    userId,
           time:       triggeredAt,
           bloodGroup: profile.blood_group ?? null,

@@ -9,26 +9,27 @@ const { normalizeCreatePayload, loadRecordBase64 } = require('./health-vault.con
 const storageService = require('../services/storage.service');
 const { mapStorageError } = require('./storage.controller');
 const { sendExpoPush, notifyElder } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
 const authUsersService = require('../services/auth-users.service');
 const { toE164 } = require('../utils/phone');
 
 const MEDICINE_CHANGE_COPY = {
-  added:   { title: 'New Medicine Added', body: 'A new medicine has been added to your schedule.' },
-  updated: { title: 'Medicine Updated',   body: 'Your medicine schedule has been updated successfully.' },
-  removed: { title: 'Medicine Removed',   body: 'The selected medicine has been removed from your schedule.' },
+  added:   { title: 'New Medicine Added', body: 'A new medicine has been added to your schedule.', type: NOTIFICATION_TYPES.MEDICINE_ADDED },
+  updated: { title: 'Medicine Updated',   body: 'Your medicine schedule has been updated successfully.', type: NOTIFICATION_TYPES.MEDICINE_UPDATED },
+  removed: { title: 'Medicine Removed',   body: 'The selected medicine has been removed from your schedule.', type: NOTIFICATION_TYPES.MEDICINE_REMOVED },
 };
 
 async function notifyElderOfMedicineChange(elderId, guardianId, action) {
   try {
-    const { title, body } = MEDICINE_CHANGE_COPY[action];
+    const { title, body, type } = MEDICINE_CHANGE_COPY[action];
     await notifyElder(elderId, {
       senderId: guardianId,
-      type: `medicine_${action}`,
+      type,
       title,
       body,
-      data: { type: `medicine_${action}` },
+      data: { type },
     });
   } catch (err) {
     console.error('notifyElderOfMedicineChange error:', err);
@@ -58,7 +59,7 @@ async function sendPushNotification(token, guardianName, relation) {
   await sendExpoPush(token, {
     title: 'Guardian Connection Request',
     body: `${guardianName} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
-    data: { type: 'guardian_invite' },
+    data: { type: NOTIFICATION_TYPES.GUARDIAN_INVITE },
   });
 }
 
@@ -503,7 +504,7 @@ const notifyOtherGuardians = async (req, res) => {
         .map((g) => sendExpoPush(g.push_token, {
           title: 'Care Alert',
           body: message,
-          data: { type: 'guardian_alert_notify', elderId },
+          data: { type: NOTIFICATION_TYPES.GUARDIAN_ALERT_NOTIFY, elderId },
         }).catch(() => {})),
     );
 
@@ -563,7 +564,7 @@ const sendElderReminder = async (req, res) => {
     await sendExpoPush(token, {
       title: 'Reminder from your family',
       body: message,
-      data: { type: 'guardian_reminder' },
+      data: { type: NOTIFICATION_TYPES.GUARDIAN_REMINDER },
     });
     return res.json({ success: true });
   } catch (err) {

@@ -458,9 +458,11 @@ async function listAllOrders({ guardianId, page, limit } = {}) {
 
   const orders = await query(
     `SELECT o.*,
+            pr.full_name AS guardian_name,
             p.id AS payment_id, p.razorpay_payment_id, p.status AS payment_status,
             p.method, p.captured_at, p.failure_reason
      FROM payment_orders o
+     LEFT JOIN profiles pr ON pr.id = o.guardian_id
      LEFT JOIN payments p ON p.order_id = o.id
      ${where}
      ORDER BY o.created_at DESC
@@ -470,6 +472,7 @@ async function listAllOrders({ guardianId, page, limit } = {}) {
 
   return orders.map((row) => ({
     ...mapOrder(row),
+    guardian_name: row.guardian_name || null,
     payment: row.payment_id ? {
       id: row.payment_id,
       razorpay_payment_id: row.razorpay_payment_id,

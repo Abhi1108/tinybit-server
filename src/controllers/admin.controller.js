@@ -560,6 +560,26 @@ const getMindGames = async (req, res) => {
   }
 };
 
+const getSosAlerts = async (req, res) => {
+  const { page = 1, limit = 20, status } = req.query;
+  try {
+    const alerts = await adminService.getSosAlerts({ page, limit, status });
+    return res.json({ success: true, alerts });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getNotifications = async (req, res) => {
+  const { page = 1, limit = 50, type, search } = req.query;
+  try {
+    const notifications = await adminService.getNotifications({ page, limit, type, search });
+    return res.json({ success: true, notifications });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Broadcast Notification ────────────────────────────────────────────────────
 
 const broadcast = async (req, res) => {
@@ -588,6 +608,85 @@ const getHealthRecords = async (req, res) => {
   try {
     const result = await adminService.getHealthRecords({ page, limit, category, user_id, search });
     return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getEmergencyContacts = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const contacts = await adminService.getEmergencyContacts({ page, limit, search });
+    return res.json({ success: true, contacts });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getJournalEntries = async (req, res) => {
+  const { page = 1, limit = 50, type, search } = req.query;
+  try {
+    const entries = await adminService.getJournalEntries({ page, limit, type, search });
+    return res.json({ success: true, entries });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getFamilyMessages = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const messages = await adminService.getFamilyMessages({ page, limit, search });
+    return res.json({ success: true, messages });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getElderLocations = async (req, res) => {
+  const { page = 1, limit = 100, sharing } = req.query;
+  try {
+    const locations = await adminService.getElderLocations({ page, limit, sharing });
+    return res.json({ success: true, locations });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getAppointments = async (req, res) => {
+  const { page = 1, limit = 50, status, search } = req.query;
+  try {
+    const appointments = await adminService.getAppointments({ page, limit, status, search });
+    return res.json({ success: true, appointments });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getStreaks = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const streaks = await adminService.getStreaks({ page, limit, search });
+    return res.json({ success: true, streaks });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getUserSubscriptions = async (req, res) => {
+  const { page = 1, limit = 50, status, search } = req.query;
+  try {
+    const subscriptions = await adminService.getUserSubscriptions({ page, limit, status, search });
+    return res.json({ success: true, subscriptions });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getRevenueSummary = async (req, res) => {
+  try {
+    const summary = await adminService.getRevenueSummary();
+    return res.json({ success: true, summary });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -667,9 +766,19 @@ module.exports = {
   createCareEvent,
   deleteCareEvent,
   getMindGames,
+  getSosAlerts,
+  getNotifications,
   broadcast,
   getHealthRecords,
   deleteHealthRecord,
+  getEmergencyContacts,
+  getJournalEntries,
+  getFamilyMessages,
+  getElderLocations,
+  getAppointments,
+  getStreaks,
+  getUserSubscriptions,
+  getRevenueSummary,
   getAuditLogs,
   exportAuditLogs,
 };

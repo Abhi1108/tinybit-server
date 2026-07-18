@@ -1,6 +1,7 @@
 const elderLocationsService = require('../services/elder-locations.service');
 const { query } = require('../config/mysql');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const { getUserTimezone } = require('../services/timezone.service');
 const { todayForTimezone, dateOnlyForTimezone } = require('../utils/date');
 
@@ -111,10 +112,10 @@ async function upsertLocation(req, res) {
       try {
         if (await shouldSendLocationUpdate(userId)) {
           await notifyGuardiansOfElder(userId, {
-            type: 'location_update',
+            type: NOTIFICATION_TYPES.LOCATION_UPDATE,
             title: 'Location Update',
             body: "The user's live location has been updated.",
-            data: { type: 'location_update', elderId: userId },
+            data: { type: NOTIFICATION_TYPES.LOCATION_UPDATE, elderId: userId },
           });
         }
       } catch (notifyErr) {

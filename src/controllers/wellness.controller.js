@@ -4,10 +4,8 @@ const {
   insertMoodEntry,
 } = require('../services/daily-checkins.service');
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
-const medicineLogsService = require('../services/medicine-logs.service');
-const familyMessagesService = require('../services/family-messages.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
-const { resolveDate, addDays } = require('../utils/date');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const { resolveTodayForUser } = require('../services/timezone.service');
 
 function isTableMissing(error) {
@@ -115,14 +113,15 @@ async function upsertDailyCheckInHandler(req, res) {
     }
 
     try {
+      const checkInType = isMoodLift ? NOTIFICATION_TYPES.MOOD_LIFT_COMPLETED : NOTIFICATION_TYPES.DAILY_CHECKIN;
       await notifyGuardiansOfElder(userId, {
-        type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+        type: checkInType,
         title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
         body: isMoodLift
           ? "The user has completed today's Mood Lift activity."
           : "The user has completed today's wellness check-in.",
         data: {
-          type: isMoodLift ? 'mood_lift_completed' : 'daily_checkin',
+          type: checkInType,
           elderId: userId,
           mood: upsertFields.mood,
         },
@@ -197,43 +196,9 @@ async function getHealthMetrics(req, res) {
   }
 }
 
-/** GET /api/wellness/yesterday-summary */
-async function getYesterdaySummary(req, res) {
-  try {
-    const userId = resolveUserId(req);
-    if (!userId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const today = resolveDate(req.query.date);
-    const dateStr = addDays(today, -1);
-
-    const checkIn = await findCheckInByUserAndDate(userId, dateStr);
-    const logs = await medicineLogsService.listForDay(userId, dateStr);
-    const messageCount = await familyMessagesService.countForReceiverOnDate(userId, dateStr);
-
-    return res.json({
-      success: true,
-      summary: {
-        checkIn,
-        medicineLogs: logs,
-        familyMessageCount: messageCount,
-        date: dateStr,
-      },
-    });
-  } catch (err) {
-    console.error('[wellness/yesterday-summary]', err);
-    return res.status(500).json({
-      success: false,
-      message: err.message || 'Could not load yesterday summary.',
-    });
-  }
-}
-
 module.exports = {
   getTodayCheckIn,
   upsertDailyCheckIn: upsertDailyCheckInHandler,
   insertHealthMetrics,
   getHealthMetrics,
-  getYesterdaySummary,
 };

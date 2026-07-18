@@ -23,6 +23,16 @@ const {
   deleteHealthRecord,
   getAuditLogs,
   exportAuditLogs,
+  getSosAlerts,
+  getNotifications,
+  getEmergencyContacts,
+  getJournalEntries,
+  getFamilyMessages,
+  getElderLocations,
+  getAppointments,
+  getStreaks,
+  getUserSubscriptions,
+  getRevenueSummary,
 } = require('../controllers/admin.controller');
 const {
   getDoctors,
@@ -114,6 +124,17 @@ router.get('/api/care-events', sessionAuth, getCareEvents);
 router.post('/api/care-events', sessionAuth, createCareEvent);
 router.delete('/api/care-events/:id', sessionAuth, deleteCareEvent);
 router.get('/api/mind-games', sessionAuth, getMindGames);
+router.get('/api/sos-alerts', sessionAuth, getSosAlerts);
+router.get('/api/notifications', sessionAuth, getNotifications);
+
+router.get('/api/emergency-contacts', sessionAuth, getEmergencyContacts);
+router.get('/api/journal', sessionAuth, getJournalEntries);
+router.get('/api/family-messages', sessionAuth, getFamilyMessages);
+router.get('/api/elder-locations', sessionAuth, getElderLocations);
+router.get('/api/appointments', sessionAuth, getAppointments);
+router.get('/api/streaks', sessionAuth, getStreaks);
+router.get('/api/user-subscriptions', sessionAuth, getUserSubscriptions);
+router.get('/api/revenue', sessionAuth, getRevenueSummary);
 
 router.get('/api/health-records', sessionAuth, getHealthRecords);
 router.delete('/api/health-records/:id', sessionAuth, deleteHealthRecord);

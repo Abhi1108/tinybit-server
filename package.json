@@ -27,6 +27,7 @@
     "mysql2": "^3.22.5",
     "qrcode": "^1.5.4",
     "razorpay": "^2.9.6",
+    "socket.io": "^4.8.3",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "tesseract.js": "^7.0.0"

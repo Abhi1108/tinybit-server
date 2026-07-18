@@ -1,5 +1,6 @@
 const journalService = require('../services/journal.service');
 const { notifyGuardiansOfElder } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 
 const VALID_TYPES = new Set(['Written', 'Voice']);
 
@@ -122,10 +123,10 @@ async function createJournalEntry(req, res) {
     try {
       const { title, body } = JOURNAL_COPY[type];
       await notifyGuardiansOfElder(userId, {
-        type: 'journal_added',
+        type: NOTIFICATION_TYPES.JOURNAL_ADDED,
         title,
         body,
-        data: { type: 'journal_added', elderId: userId },
+        data: { type: NOTIFICATION_TYPES.JOURNAL_ADDED, elderId: userId },
       });
     } catch (notifyErr) {
       console.warn('[journal/create] guardian notify failed:', notifyErr.message);
