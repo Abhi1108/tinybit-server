@@ -164,7 +164,10 @@ async function getAnalytics() {
     query('SELECT mood_score, created_at FROM mood_entries WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT created_at FROM daily_checkins WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT category FROM medicines'),
-    query('SELECT created_at, role, total_tokens FROM ai_conversations WHERE created_at >= ?', [thirtyDaysAgo]),
+    query(
+      'SELECT created_at, role, prompt_tokens, completion_tokens, total_tokens FROM ai_conversations WHERE created_at >= ?',
+      [thirtyDaysAgo],
+    ),
     query('SELECT type FROM care_events'),
     query('SELECT game_type, score FROM mind_games_scores'),
   ]);
@@ -193,10 +196,14 @@ async function getAnalytics() {
 
   const aiByDay = {};
   const aiTokensByDay = {};
+  const aiPromptByDay = {};
+  const aiCompletionByDay = {};
   for (let i = 6; i >= 0; i--) {
     const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
     aiByDay[day] = 0;
     aiTokensByDay[day] = 0;
+    aiPromptByDay[day] = 0;
+    aiCompletionByDay[day] = 0;
   }
   ai.filter((a) => a.role === 'user').forEach((a) => {
     const k = toIso(a.created_at).slice(0, 10);
@@ -204,9 +211,10 @@ async function getAnalytics() {
   });
   ai.forEach((a) => {
     const k = toIso(a.created_at).slice(0, 10);
-    if (k in aiTokensByDay && a.total_tokens != null) {
-      aiTokensByDay[k] += Number(a.total_tokens) || 0;
-    }
+    if (!(k in aiTokensByDay)) return;
+    if (a.total_tokens != null) aiTokensByDay[k] += Number(a.total_tokens) || 0;
+    if (a.prompt_tokens != null) aiPromptByDay[k] += Number(a.prompt_tokens) || 0;
+    if (a.completion_tokens != null) aiCompletionByDay[k] += Number(a.completion_tokens) || 0;
   });
 
   const careDist = { Doctor: 0, Family: 0, Medicine: 0, Wellness: 0 };
@@ -232,6 +240,8 @@ async function getAnalytics() {
       labels: Object.keys(aiByDay),
       data: Object.values(aiByDay),
       tokens: Object.values(aiTokensByDay),
+      prompt_tokens: Object.values(aiPromptByDay),
+      completion_tokens: Object.values(aiCompletionByDay),
     },
     care_by_type: { labels: Object.keys(careDist), data: Object.values(careDist) },
     game_avg_scores: { labels: Object.keys(gameAvg), data: Object.values(gameAvg) },
