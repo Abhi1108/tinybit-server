@@ -800,6 +800,94 @@ CREATE TABLE IF NOT EXISTS push_receipt_tickets (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- Admin panel roles (dynamic). Env Super Admin is not a row in admin_users.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS admin_roles (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  name        VARCHAR(64)  NOT NULL,
+  label       VARCHAR(128) NOT NULL,
+  description TEXT         NULL,
+  permissions JSON         NOT NULL,
+  status      ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  is_system   TINYINT(1)   NOT NULL DEFAULT 0,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_roles_name (name),
+  KEY idx_admin_roles_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO admin_roles (id, name, label, description, permissions, status, is_system) VALUES
+(
+  'a0000001-0000-4000-8000-000000000001',
+  'super_admin',
+  'Super Admin',
+  'Full access to all modules and settings',
+  JSON_ARRAY('*'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000002',
+  'operations_admin',
+  'Operations Admin',
+  'Manages daily operations, users, and SOS events',
+  JSON_ARRAY('User Management', 'SOS Management', 'Support Tickets', 'Notifications', 'Dashboard'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000003',
+  'content_manager',
+  'Content Manager',
+  'Manages videos, FAQs, and content library',
+  JSON_ARRAY('Content Management', 'FAQ Management', 'Notifications (Read)', 'Dashboard (Read)'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000004',
+  'support_manager',
+  'Support Manager',
+  'Handles all support tickets and user queries',
+  JSON_ARRAY('Support Tickets', 'User Queries', 'Chat Support', 'Escalation', 'Dashboard (Read)'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000005',
+  'moderator',
+  'Moderator',
+  'Read-only access with basic moderation actions',
+  JSON_ARRAY('Dashboard (Read)', 'Users (Read)', 'SOS (Read)'),
+  'active',
+  1
+);
+
+-- Managed admin accounts. Super Admin uses env credentials only.
+CREATE TABLE IF NOT EXISTS admin_users (
+  id            CHAR(36)     NOT NULL DEFAULT (UUID()),
+  username      VARCHAR(64)  NOT NULL,
+  email         VARCHAR(255) NOT NULL,
+  name          VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role_id       CHAR(36)     NOT NULL,
+  status        ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  last_login_at DATETIME(3)  NULL,
+  created_by    VARCHAR(255) NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_users_username (username),
+  UNIQUE KEY uq_admin_users_email (email),
+  KEY idx_admin_users_status (status),
+  KEY idx_admin_users_role (role_id),
+  CONSTRAINT fk_admin_users_role
+    FOREIGN KEY (role_id) REFERENCES admin_roles (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- Admin audit log
 -- -----------------------------------------------------------------------------
 

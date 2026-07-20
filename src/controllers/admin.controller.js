@@ -1,5 +1,4 @@
 const path = require('path');
-const jwt = require('jsonwebtoken');
 const { toE164, phoneToAuthEmail } = require('../utils/phone');
 const {
   createUserWithPassword,
@@ -9,21 +8,21 @@ const {
 } = require('../services/auth-users.service');
 const adminService = require('../services/admin.service');
 const auditService = require('../services/admin-audit.mysql');
+const adminUsersService = require('../services/admin-users.mysql');
+const adminRolesService = require('../services/admin-roles.mysql');
+const { signAdminToken, checkSession } = require('../services/admin-jwt');
 const { purgeUserById } = require('../services/user-purge.service');
 
-const ADMIN_JWT_AUD = 'tinybit-admin';
-const ADMIN_SESSION_TTL = '24h';
-
-function getAdminJwtSecret() {
-  return process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET || 'tinybit-admin-dev-secret';
-}
-
-function signAdminToken(username) {
-  return jwt.sign(
-    { sub: 'admin', username, role: 'admin' },
-    getAdminJwtSecret(),
-    { expiresIn: ADMIN_SESSION_TTL, audience: ADMIN_JWT_AUD },
-  );
+function publicAdminUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    role_id: user.role_id ?? null,
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
+  };
 }
 
 const PROFILE_PATCH_FIELDS = [
@@ -36,41 +35,325 @@ const PROFILE_PATCH_FIELDS = [
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-const checkSession = (token) => {
-  try {
-    return jwt.verify(token, getAdminJwtSecret(), { audience: ADMIN_JWT_AUD });
-  } catch {
-    return null;
-  }
-};
-
-const login = (req, res) => {
+const login = async (req, res) => {
   const { username, password } = req.body ?? {};
-  const validUser = process.env.ADMIN_USERNAME ?? 'admin';
-  const validPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
-  if (username === validUser && password === validPass) {
-    const token = signAdminToken(username);
+  const loginId = String(username ?? '').trim();
+  const pass = String(password ?? '');
+
+  if (!loginId || !pass) {
+    return res.status(400).json({ success: false, error: 'Username and password are required' });
+  }
+
+  const envUser = process.env.ADMIN_USERNAME ?? 'admin';
+  const envPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
+
+  // Super Admin — shared env credentials (never stored in admin_users).
+  if (loginId === envUser && pass === envPass) {
+    const permissions = ['*'];
+    const token = signAdminToken({
+      id: 'env-super-admin',
+      username: envUser,
+      role: 'super_admin',
+      roleId: adminRolesService.SYSTEM_SUPER_ADMIN_ID,
+      name: 'Super Admin',
+      permissions,
+    });
     void auditService.recordSafe({
-      actor: username,
+      actor: envUser,
       action: 'auth.login',
       targetType: 'auth',
-      details: { username },
+      details: { username: envUser, role: 'super_admin' },
       ip: req.ip,
     });
-    return res.json({ success: true, token, user: { username, role: 'admin' } });
+    return res.json({
+      success: true,
+      token,
+      user: publicAdminUser({
+        id: 'env-super-admin',
+        username: envUser,
+        name: 'Super Admin',
+        email: envUser,
+        role: 'super_admin',
+        role_id: adminRolesService.SYSTEM_SUPER_ADMIN_ID,
+        permissions,
+      }),
+    });
   }
-  void auditService.recordSafe({
-    actor: String(username ?? 'unknown'),
-    action: 'auth.login_failed',
-    targetType: 'auth',
-    details: { username: String(username ?? '') },
-    ip: req.ip,
-  });
-  return res.status(401).json({ success: false, error: 'Invalid credentials' });
+
+  try {
+    const row = await adminUsersService.findByLogin(loginId);
+    if (!row || !(await adminUsersService.verifyPassword(row, pass))) {
+      void auditService.recordSafe({
+        actor: loginId || 'unknown',
+        action: 'auth.login_failed',
+        targetType: 'auth',
+        details: { username: loginId },
+        ip: req.ip,
+      });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+    if (row.status !== 'active') {
+      void auditService.recordSafe({
+        actor: row.username,
+        action: 'auth.login_failed',
+        targetType: 'auth',
+        details: { username: row.username, reason: 'inactive' },
+        ip: req.ip,
+      });
+      return res.status(403).json({ success: false, error: 'Account is inactive' });
+    }
+
+    const permissions = adminRolesService.parsePermissions(row.role_permissions);
+    if (!row.role_name || row.role_status !== 'active') {
+      return res.status(403).json({ success: false, error: 'Assigned role is inactive or missing' });
+    }
+
+    await adminUsersService.touchLastLogin(row.id);
+    const token = signAdminToken({
+      id: row.id,
+      username: row.username,
+      role: row.role_name,
+      roleId: row.role_id,
+      name: row.name,
+      permissions,
+    });
+    void auditService.recordSafe({
+      actor: row.username,
+      action: 'auth.login',
+      targetType: 'auth',
+      details: { username: row.username, role: row.role_name },
+      ip: req.ip,
+    });
+    return res.json({
+      success: true,
+      token,
+      user: publicAdminUser({
+        id: row.id,
+        username: row.username,
+        name: row.name,
+        email: row.email,
+        role: row.role_name,
+        role_id: row.role_id,
+        permissions,
+      }),
+    });
+  } catch (err) {
+    console.error('[admin.login]', err);
+    return res.status(500).json({ success: false, error: 'Login failed' });
+  }
 };
 
 const logout = (_req, res) => {
   return res.json({ success: true });
+};
+
+// ── Managed admin accounts (super_admin only) ───────────────────────────────
+
+const listAdminAccounts = async (req, res) => {
+  try {
+    const admins = await adminUsersService.listAdmins({
+      search: req.query.search,
+      status: req.query.status,
+    });
+    return res.json({ success: true, admins });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const createAdminAccount = async (req, res) => {
+  try {
+    const { username, email, name, password, role_id: roleId } = req.body ?? {};
+    if (!username?.trim() || !email?.trim() || !name?.trim() || !password || !roleId) {
+      return res.status(400).json({
+        success: false,
+        error: 'username, email, name, password, and role_id are required',
+      });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+    }
+
+    const envUser = process.env.ADMIN_USERNAME ?? 'admin';
+    if (String(username).trim() === envUser) {
+      return res.status(409).json({
+        success: false,
+        error: 'Username is reserved for the Super Admin shared credential',
+      });
+    }
+
+    const admin = await adminUsersService.createAdmin({
+      username,
+      email,
+      name,
+      password,
+      roleId,
+      createdBy: req.admin?.username ?? 'unknown',
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.create',
+      targetType: 'admin_user',
+      targetId: admin.id,
+      details: { username: admin.username, email: admin.email, role_id: roleId },
+      ip: req.ip,
+    });
+    return res.status(201).json({ success: true, admin });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Username or email already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const updateAdminAccount = async (req, res) => {
+  try {
+    const admin = await adminUsersService.updateAdmin(req.params.id, {
+      name: req.body?.name,
+      email: req.body?.email,
+      status: req.body?.status,
+      roleId: req.body?.role_id,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.update',
+      targetType: 'admin_user',
+      targetId: admin.id,
+      details: { username: admin.username, status: admin.status, role_id: admin.role_id },
+      ip: req.ip,
+    });
+    return res.json({ success: true, admin });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Email already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const resetAdminPassword = async (req, res) => {
+  try {
+    const { password } = req.body ?? {};
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+    }
+    await adminUsersService.resetPassword(req.params.id, password);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.password_reset',
+      targetType: 'admin_user',
+      targetId: req.params.id,
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteAdminAccount = async (req, res) => {
+  try {
+    const existing = await adminUsersService.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Admin not found' });
+    }
+    await adminUsersService.deleteAdmin(req.params.id);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.delete',
+      targetType: 'admin_user',
+      targetId: req.params.id,
+      details: { username: existing.username },
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+// ── Roles ───────────────────────────────────────────────────────────────────
+
+const listRoles = async (_req, res) => {
+  try {
+    const roles = await adminRolesService.listRoles();
+    return res.json({
+      success: true,
+      roles,
+      permission_catalog: adminRolesService.PERMISSION_CATALOG,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const createRole = async (req, res) => {
+  try {
+    const role = await adminRolesService.createRole({
+      label: req.body?.label,
+      description: req.body?.description,
+      permissions: req.body?.permissions,
+      status: req.body?.status,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.create',
+      targetType: 'admin_role',
+      targetId: role.id,
+      details: { name: role.name, label: role.label },
+      ip: req.ip,
+    });
+    return res.status(201).json({ success: true, role });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Role name already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const updateRole = async (req, res) => {
+  try {
+    const role = await adminRolesService.updateRole(req.params.id, {
+      label: req.body?.label,
+      description: req.body?.description,
+      permissions: req.body?.permissions,
+      status: req.body?.status,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.update',
+      targetType: 'admin_role',
+      targetId: role.id,
+      details: { name: role.name, label: role.label },
+      ip: req.ip,
+    });
+    return res.json({ success: true, role });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteRole = async (req, res) => {
+  try {
+    const existing = await adminRolesService.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Role not found' });
+    }
+    await adminRolesService.deleteRole(req.params.id);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.delete',
+      targetType: 'admin_role',
+      targetId: req.params.id,
+      details: { name: existing.name },
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
 };
 
 // ── Dashboard ───────────────────────────────────────────────────────────────
@@ -751,8 +1034,17 @@ const serveDashboard = (req, res) => {
 };
 
 module.exports = {
-  checkSession,
+  checkSession, // re-export from admin-jwt for any legacy imports
   login, logout,
+  listAdminAccounts,
+  createAdminAccount,
+  updateAdminAccount,
+  resetAdminPassword,
+  deleteAdminAccount,
+  listRoles,
+  createRole,
+  updateRole,
+  deleteRole,
   serveDashboard,
   getStats, getAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
