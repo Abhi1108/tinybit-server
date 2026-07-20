@@ -86,6 +86,7 @@ const getMoodMediaTracks = async (req, res) => {
     const tracks = await catalogService.listMoodMediaTracks({
       ...listQuery(req),
       category: req.query.category,
+      media_type: req.query.media_type,
     });
     return res.json({ success: true, tracks });
   } catch (err) {

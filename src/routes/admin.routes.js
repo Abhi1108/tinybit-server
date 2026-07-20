@@ -21,6 +21,7 @@ const {
   getMedicines,
   getCheckIns,
   getMoods,
+  getHealthReadings,
   getAIConversations,
   getCareEvents,
   createCareEvent,
@@ -32,6 +33,7 @@ const {
   getAuditLogs,
   exportAuditLogs,
   getSosAlerts,
+  updateSosAlert,
   getNotifications,
   getEmergencyContacts,
   getJournalEntries,
@@ -130,6 +132,7 @@ router.delete('/api/connections/:id', sessionAuth, requirePermission('User Manag
 router.get('/api/medicines', sessionAuth, requirePermission('User Management', 'Users (Read)'), getMedicines);
 router.get('/api/check-ins', sessionAuth, requirePermission('User Management', 'Users (Read)'), getCheckIns);
 router.get('/api/moods', sessionAuth, requirePermission('User Management', 'Users (Read)'), getMoods);
+router.get('/api/health-readings', sessionAuth, requirePermission('User Management', 'Users (Read)'), getHealthReadings);
 router.get('/api/care-events', sessionAuth, requirePermission('User Management', 'Users (Read)'), getCareEvents);
 router.post('/api/care-events', sessionAuth, requirePermission('User Management'), createCareEvent);
 router.delete('/api/care-events/:id', sessionAuth, requirePermission('User Management'), deleteCareEvent);
@@ -149,6 +152,7 @@ router.post('/api/ai-forecast-multi', sessionAuth, requirePermission('AI Managem
 });
 
 router.get('/api/sos-alerts', sessionAuth, requirePermission('SOS Management', 'SOS (Read)'), getSosAlerts);
+router.patch('/api/sos-alerts/:id', sessionAuth, requirePermission('SOS Management'), updateSosAlert);
 router.get('/api/emergency-contacts', sessionAuth, requirePermission('SOS Management', 'SOS (Read)'), getEmergencyContacts);
 
 router.get('/api/notifications', sessionAuth, requirePermission('Notifications', 'Notifications (Read)'), getNotifications);

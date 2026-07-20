@@ -159,7 +159,7 @@ async function getDashboardStats() {
 async function getAnalytics() {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000);
 
-  const [users, moods, checkIns, meds, ai, care, games] = await Promise.all([
+  const [users, moods, checkIns, meds, ai, care, games, sos] = await Promise.all([
     query('SELECT created_at FROM profiles WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT mood_score, created_at FROM mood_entries WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT created_at FROM daily_checkins WHERE created_at >= ?', [thirtyDaysAgo]),
@@ -170,6 +170,10 @@ async function getAnalytics() {
     ),
     query('SELECT type FROM care_events'),
     query('SELECT game_type, score FROM mind_games_scores'),
+    query(
+      'SELECT triggered_at, status FROM sos_alerts WHERE triggered_at >= ?',
+      [new Date(Date.now() - 7 * 86_400_000)],
+    ),
   ]);
 
   const growth = {};
@@ -231,6 +235,19 @@ async function getAnalytics() {
     gameAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
   });
 
+  const sosByDay = {};
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    sosByDay[day] = { alerts: 0, resolved: 0, cancelled: 0 };
+  }
+  sos.forEach((row) => {
+    const k = toIso(row.triggered_at).slice(0, 10);
+    if (!(k in sosByDay)) return;
+    sosByDay[k].alerts += 1;
+    if (row.status === 'resolved') sosByDay[k].resolved += 1;
+    if (row.status === 'cancelled') sosByDay[k].cancelled += 1;
+  });
+
   return {
     user_growth: { labels: Object.keys(growth), data: Object.values(growth) },
     mood_dist: { labels: Object.keys(moodDist), data: Object.values(moodDist) },
@@ -242,6 +259,12 @@ async function getAnalytics() {
       tokens: Object.values(aiTokensByDay),
       prompt_tokens: Object.values(aiPromptByDay),
       completion_tokens: Object.values(aiCompletionByDay),
+    },
+    sos_by_day: {
+      labels: Object.keys(sosByDay),
+      alerts: Object.values(sosByDay).map((d) => d.alerts),
+      resolved: Object.values(sosByDay).map((d) => d.resolved),
+      cancelled: Object.values(sosByDay).map((d) => d.cancelled),
     },
     care_by_type: { labels: Object.keys(careDist), data: Object.values(careDist) },
     game_avg_scores: { labels: Object.keys(gameAvg), data: Object.values(gameAvg) },
@@ -600,8 +623,8 @@ async function getMedicines({ page, limit, category, priority, active }) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT id, user_id, name, category, priority, schedule_time, frequency,
-            is_active, stock, start_date, end_date, created_at
+    `SELECT id, user_id, name, generic_name, dosage, dosage_unit, category, priority,
+            schedule_time, frequency, prescribed_by, is_active, stock, start_date, end_date, created_at
      FROM medicines
      ${where}
      ORDER BY created_at DESC
@@ -610,10 +633,75 @@ async function getMedicines({ page, limit, category, priority, active }) {
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((m) => m.user_id))]);
-  return rows.map((m) => ({
-    ...normalizeRow(m),
-    user_name: userMap[m.user_id]?.full_name ?? '—',
-    user_email: userMap[m.user_id]?.email ?? '—',
+  const medIds = rows.map((m) => m.id);
+  const logByMed = {};
+  if (medIds.length) {
+    const placeholders = medIds.map(() => '?').join(',');
+    const logRows = await query(
+      `SELECT medicine_id,
+              MAX(taken_at) AS last_taken,
+              COUNT(DISTINCT CASE
+                WHEN taken_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 7 DAY)
+                THEN taken_date
+              END) AS days_taken_7d
+       FROM medicine_logs
+       WHERE medicine_id IN (${placeholders})
+       GROUP BY medicine_id`,
+      medIds,
+    );
+    logRows.forEach((r) => {
+      logByMed[r.medicine_id] = {
+        last_taken: r.last_taken,
+        days_taken_7d: Number(r.days_taken_7d) || 0,
+        has_logs: true,
+      };
+    });
+  }
+
+  return rows.map((m) => {
+    const log = logByMed[m.id];
+    const adherence = log?.has_logs
+      ? Math.round((log.days_taken_7d / 7) * 100)
+      : null;
+    return {
+      ...normalizeRow(m),
+      user_name: userMap[m.user_id]?.full_name ?? '—',
+      user_email: userMap[m.user_id]?.email ?? '—',
+      last_taken: log?.last_taken
+        ? (log.last_taken instanceof Date ? log.last_taken.toISOString() : String(log.last_taken))
+        : null,
+      adherence_7d: adherence,
+    };
+  });
+}
+
+async function getHealthReadings({ page, limit, type }) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('`type` = ?');
+    params.push(type);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT id, user_id, \`type\`, value, unit, notes, created_at
+     FROM health_readings
+     ${where}
+     ORDER BY created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: userMap[r.user_id]?.full_name ?? '—',
+    user_email: userMap[r.user_id]?.email ?? '—',
   }));
 }
 
@@ -630,8 +718,9 @@ async function getCheckIns({ page, limit, mood }) {
   }
 
   const rows = await query(
-    `SELECT id, user_id, created_at, mood_score, sleep_quality, sleep_hours,
-            energy_level, pain_level, medicines_taken, physical_activity
+    `SELECT id, user_id, check_in_date, mood, mood_score, sleep_rested, breakfast_done,
+            hydration_done, pain_reported, water_glasses, medicines_taken, sleep_quality,
+            sleep_hours, energy_level, pain_level, physical_activity, created_at
      FROM daily_checkins
      ${where}
      ORDER BY created_at DESC
@@ -640,10 +729,58 @@ async function getCheckIns({ page, limit, mood }) {
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
-  return rows.map((r) => ({
-    ...normalizeRow(r),
-    user_name: userMap[r.user_id]?.full_name ?? '—',
-  }));
+
+  // Match optional BP readings logged the same calendar day (app stores sys/dia separately).
+  const vitalsByKey = {};
+  if (rows.length) {
+    const userIds = [...new Set(rows.map((r) => r.user_id))];
+    const dates = [...new Set(rows.map((r) => {
+      const d = r.check_in_date;
+      if (d instanceof Date) return d.toISOString().slice(0, 10);
+      return String(d).slice(0, 10);
+    }).filter(Boolean))];
+
+    if (userIds.length && dates.length) {
+      const uPlaceholders = userIds.map(() => '?').join(',');
+      const dPlaceholders = dates.map(() => '?').join(',');
+      const readingRows = await query(
+        `SELECT user_id, DATE(created_at) AS reading_date, \`type\`, value, unit
+         FROM health_readings
+         WHERE user_id IN (${uPlaceholders})
+           AND DATE(created_at) IN (${dPlaceholders})
+           AND \`type\` IN ('blood_pressure_systolic', 'blood_pressure_diastolic')
+         ORDER BY created_at DESC`,
+        [...userIds, ...dates],
+      );
+      readingRows.forEach((rr) => {
+        const dateStr = rr.reading_date instanceof Date
+          ? rr.reading_date.toISOString().slice(0, 10)
+          : String(rr.reading_date).slice(0, 10);
+        const key = `${rr.user_id}|${dateStr}`;
+        if (!vitalsByKey[key]) vitalsByKey[key] = {};
+        // First row wins (newest) since ORDER BY created_at DESC
+        if (rr.type === 'blood_pressure_systolic' && vitalsByKey[key].bp_systolic == null) {
+          vitalsByKey[key].bp_systolic = rr.value == null ? null : Number(rr.value);
+        }
+        if (rr.type === 'blood_pressure_diastolic' && vitalsByKey[key].bp_diastolic == null) {
+          vitalsByKey[key].bp_diastolic = rr.value == null ? null : Number(rr.value);
+        }
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    const dateStr = r.check_in_date instanceof Date
+      ? r.check_in_date.toISOString().slice(0, 10)
+      : String(r.check_in_date || '').slice(0, 10);
+    const vitals = vitalsByKey[`${r.user_id}|${dateStr}`] || {};
+    return {
+      ...normalizeRow(r),
+      user_name: userMap[r.user_id]?.full_name ?? '—',
+      bp_systolic: vitals.bp_systolic ?? null,
+      bp_diastolic: vitals.bp_diastolic ?? null,
+    };
+  });
 }
 
 async function getMoods({ page, limit, mood }) {
@@ -794,10 +931,102 @@ async function getSosAlerts({ page, limit, status } = {}) {
     params,
   );
 
-  return rows.map((r) => ({
+  const guardianNamesByElder = {};
+  const elderIds = [...new Set(rows.map((r) => r.user_id).filter(Boolean))];
+  if (elderIds.length) {
+    const placeholders = elderIds.map(() => '?').join(',');
+    const guardianRows = await query(
+      `SELECT gel.elder_id, p.full_name
+       FROM guardian_elder_links gel
+       JOIN profiles p ON p.id = gel.guardian_id
+       WHERE gel.elder_id IN (${placeholders})
+         AND gel.status = 'connected'
+       ORDER BY gel.created_at ASC`,
+      elderIds,
+    );
+    guardianRows.forEach((g) => {
+      if (!guardianNamesByElder[g.elder_id]) guardianNamesByElder[g.elder_id] = [];
+      if (g.full_name) guardianNamesByElder[g.elder_id].push(g.full_name);
+    });
+  }
+
+  return rows.map((r) => {
+    const guardians = guardianNamesByElder[r.user_id] || [];
+    return {
+      id: r.id,
+      user_id: r.user_id,
+      user_name: r.user_name || '—',
+      guardian_name: guardians.length ? guardians.join(', ') : '—',
+      triggered_at: toIso(r.triggered_at),
+      resolved_at: r.resolved_at ? toIso(r.resolved_at) : null,
+      status: r.status,
+      location: r.latitude != null ? {
+        latitude: Number(r.latitude),
+        longitude: Number(r.longitude),
+        address: r.address || null,
+      } : null,
+    };
+  });
+}
+
+async function updateSosAlert(id, { status }) {
+  const allowed = new Set(['active', 'resolved', 'cancelled']);
+  if (!allowed.has(status)) {
+    const err = new Error('status must be active, resolved, or cancelled');
+    err.status = 400;
+    throw err;
+  }
+
+  const existing = await query('SELECT id, status FROM sos_alerts WHERE id = ? LIMIT 1', [id]);
+  if (!existing[0]) {
+    const err = new Error('SOS alert not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (status === 'resolved' || status === 'cancelled') {
+    await execute(
+      `UPDATE sos_alerts
+       SET status = ?, resolved_at = COALESCE(resolved_at, UTC_TIMESTAMP(3))
+       WHERE id = ?`,
+      [status, id],
+    );
+  } else {
+    await execute(
+      `UPDATE sos_alerts SET status = ?, resolved_at = NULL WHERE id = ?`,
+      [status, id],
+    );
+  }
+
+  const rows = await query(
+    `SELECT s.id, s.user_id, s.triggered_at, s.resolved_at, s.status,
+            p.full_name AS user_name,
+            loc.latitude, loc.longitude, loc.address
+     FROM sos_alerts s
+     LEFT JOIN profiles p ON p.id = s.user_id
+     LEFT JOIN elder_locations loc ON loc.elder_id = s.user_id
+     WHERE s.id = ?
+     LIMIT 1`,
+    [id],
+  );
+  const r = rows[0];
+  if (!r) return null;
+
+  const guardianRows = await query(
+    `SELECT p.full_name
+     FROM guardian_elder_links gel
+     JOIN profiles p ON p.id = gel.guardian_id
+     WHERE gel.elder_id = ? AND gel.status = 'connected'
+     ORDER BY gel.created_at ASC`,
+    [r.user_id],
+  );
+  const guardians = guardianRows.map((g) => g.full_name).filter(Boolean);
+
+  return {
     id: r.id,
     user_id: r.user_id,
     user_name: r.user_name || '—',
+    guardian_name: guardians.length ? guardians.join(', ') : '—',
     triggered_at: toIso(r.triggered_at),
     resolved_at: r.resolved_at ? toIso(r.resolved_at) : null,
     status: r.status,
@@ -806,7 +1035,7 @@ async function getSosAlerts({ page, limit, status } = {}) {
       longitude: Number(r.longitude),
       address: r.address || null,
     } : null,
-  }));
+  };
 }
 
 async function getNotifications({ page, limit, type, search } = {}) {
@@ -852,25 +1081,39 @@ async function getNotifications({ page, limit, type, search } = {}) {
   }));
 }
 
-async function broadcastNotification(title, body) {
-  const rows = await query('SELECT id FROM profiles WHERE is_banned = 0');
+async function broadcastNotification(title, body, { audience } = {}) {
+  const clauses = ['is_banned = 0', 'deleted_at IS NULL'];
+  const params = [];
+  if (audience === 'elders') {
+    clauses.push("role = 'elder'");
+  } else if (audience === 'guardians') {
+    clauses.push("role = 'guardian'");
+  }
+
+  const rows = await query(
+    `SELECT id FROM profiles WHERE ${clauses.join(' AND ')}`,
+    params,
+  );
   const userIds = rows.map((r) => r.id);
   if (!userIds.length) return 0;
 
-  const dataJson = JSON.stringify({ source: 'admin_broadcast' });
+  const dataJson = JSON.stringify({
+    source: 'admin_broadcast',
+    audience: audience || 'all',
+  });
 
   for (let i = 0; i < userIds.length; i += 100) {
     const batch = userIds.slice(i, i + 100);
     const valuePlaceholders = batch.map(() => '(?, ?, NULL, ?, ?, ?, ?, 0)').join(', ');
-    const params = [];
+    const insertParams = [];
     batch.forEach((uid) => {
-      params.push(randomUUID(), uid, 'announcement', title, body, dataJson);
+      insertParams.push(randomUUID(), uid, 'announcement', title, body, dataJson);
     });
 
     await execute(
       `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
        VALUES ${valuePlaceholders}`,
-      params,
+      insertParams,
     );
   }
 
@@ -1246,10 +1489,12 @@ module.exports = {
   getMedicines,
   getCheckIns,
   getMoods,
+  getHealthReadings,
   getAIConversations,
   getCareEvents,
   getMindGames,
   getSosAlerts,
+  updateSosAlert,
   getNotifications,
   broadcastNotification,
   getHealthRecords,

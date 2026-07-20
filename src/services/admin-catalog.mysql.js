@@ -248,7 +248,7 @@ function mapMoodTrack(row) {
   };
 }
 
-async function listMoodMediaTracks({ page, limit, category, active, search }) {
+async function listMoodMediaTracks({ page, limit, category, active, search, media_type }) {
   const { limitNum, offset } = parsePageLimit(page, limit);
   const clauses = [];
   const params = [];
@@ -260,6 +260,19 @@ async function listMoodMediaTracks({ page, limit, category, active, search }) {
   if (active !== undefined && active !== '') {
     clauses.push('is_active = ?');
     params.push(active === 'true' || active === true || active === '1' ? 1 : 0);
+  }
+  if (media_type) {
+    const types = String(media_type)
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => MOOD_MEDIA_TYPES.has(t));
+    if (types.length === 1) {
+      clauses.push('media_type = ?');
+      params.push(types[0]);
+    } else if (types.length > 1) {
+      clauses.push(`media_type IN (${types.map(() => '?').join(',')})`);
+      params.push(...types);
+    }
   }
   if (search) {
     clauses.push('(title LIKE ? OR subtitle LIKE ?)');

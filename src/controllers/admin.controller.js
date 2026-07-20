@@ -677,6 +677,17 @@ const getMedicines = async (req, res) => {
   }
 };
 
+const getHealthReadings = async (req, res) => {
+  const { page = 1, limit = 100, type } = req.query;
+
+  try {
+    const readings = await adminService.getHealthReadings({ page, limit, type });
+    return res.json({ success: true, readings });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Daily Check-ins ──────────────────────────────────────────────────────────
 
 const getCheckIns = async (req, res) => {
@@ -853,6 +864,25 @@ const getSosAlerts = async (req, res) => {
   }
 };
 
+const updateSosAlert = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body ?? {};
+  try {
+    const alert = await adminService.updateSosAlert(id, { status });
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: `sos.${status}`,
+      targetType: 'sos_alert',
+      targetId: id,
+      details: { status },
+      ip: req.ip,
+    });
+    return res.json({ success: true, alert });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
 const getNotifications = async (req, res) => {
   const { page = 1, limit = 50, type, search } = req.query;
   try {
@@ -866,21 +896,24 @@ const getNotifications = async (req, res) => {
 // ── Broadcast Notification ────────────────────────────────────────────────────
 
 const broadcast = async (req, res) => {
-  const { title, body } = req.body ?? {};
+  const { title, body, audience } = req.body ?? {};
   if (!title || !body) {
     return res.status(400).json({ success: false, error: 'title and body are required' });
   }
 
+  const allowedAudience = new Set(['all', 'elders', 'guardians']);
+  const target = audience && allowedAudience.has(audience) ? audience : 'all';
+
   try {
-    const sent = await adminService.broadcastNotification(title, body);
+    const sent = await adminService.broadcastNotification(title, body, { audience: target === 'all' ? undefined : target });
     await auditService.recordSafe({
       actor: req.admin?.username ?? 'unknown',
       action: 'notification.broadcast',
       targetType: 'notification',
-      details: { title, sent },
+      details: { title, sent, audience: target },
       ip: req.ip,
     });
-    return res.json({ success: true, sent });
+    return res.json({ success: true, sent, audience: target });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -1053,12 +1086,14 @@ module.exports = {
   getMedicines,
   getCheckIns,
   getMoods,
+  getHealthReadings,
   getAIConversations,
   getCareEvents,
   createCareEvent,
   deleteCareEvent,
   getMindGames,
   getSosAlerts,
+  updateSosAlert,
   getNotifications,
   broadcast,
   getHealthRecords,
