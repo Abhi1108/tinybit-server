@@ -105,23 +105,39 @@ async function countRows(table, whereSql = '', params = []) {
 async function getDashboardStats() {
   const yesterday = new Date(Date.now() - 86_400_000);
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
 
   const [
     elders, guardians, active_connections, pending_invitations, new_this_week,
     active_medicines, check_ins_today, moods_this_week, ai_messages_today,
-    sos_today,
+    sos_today, active_subscriptions, active_ai_users,
   ] = await Promise.all([
-    countRows('profiles', 'role = ?', ['elder']),
-    countRows('profiles', 'role = ?', ['guardian']),
+    countRows('profiles', 'role = ? AND deleted_at IS NULL', ['elder']),
+    countRows('profiles', 'role = ? AND deleted_at IS NULL', ['guardian']),
     countRows('guardian_elder_links', 'status = ?', ['connected']),
     countRows('guardian_elder_links', 'status = ?', ['pending']),
-    countRows('profiles', 'created_at >= ?', [weekAgo]),
+    countRows('profiles', 'created_at >= ? AND deleted_at IS NULL', [weekAgo]),
     countRows('medicines', 'is_active = 1'),
     countRows('daily_checkins', 'created_at >= ?', [yesterday]),
     countRows('mood_entries', 'created_at >= ?', [weekAgo]),
     countRows('ai_conversations', 'created_at >= ?', [yesterday]),
     countRows('sos_alerts', 'triggered_at >= ?', [yesterday]),
+    countRows('profiles', "deleted_at IS NULL AND role = 'guardian' AND plan_status = 'active'"),
+    query(
+      `SELECT COUNT(DISTINCT user_id) AS cnt FROM ai_conversations WHERE created_at >= ?`,
+      [yesterday],
+    ).then((rows) => Number(rows[0]?.cnt ?? 0)),
   ]);
+
+  const [monthRevenueRow] = await query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM payments
+     WHERE status = 'captured'
+       AND COALESCE(captured_at, created_at) >= ?`,
+    [monthStart],
+  );
 
   return {
     elders,
@@ -134,6 +150,9 @@ async function getDashboardStats() {
     moods_this_week,
     ai_messages_today,
     sos_today,
+    active_subscriptions,
+    active_ai_users,
+    month_revenue: Number(monthRevenueRow?.total) || 0,
   };
 }
 
