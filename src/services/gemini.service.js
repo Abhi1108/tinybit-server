@@ -26,4 +26,23 @@ function geminiText(json) {
   return json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 }
 
-module.exports = { geminiFetch, geminiText, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION };
+/** Exact token usage from Gemini usageMetadata (nulls if provider omitted it). */
+function geminiUsage(json) {
+  const u = json?.usageMetadata;
+  if (!u || typeof u !== 'object') {
+    return { prompt_tokens: null, completion_tokens: null, total_tokens: null };
+  }
+  const prompt = u.promptTokenCount == null ? null : Number(u.promptTokenCount);
+  const completion = u.candidatesTokenCount == null ? null : Number(u.candidatesTokenCount);
+  let total = u.totalTokenCount == null ? null : Number(u.totalTokenCount);
+  if (total == null && (prompt != null || completion != null)) {
+    total = (prompt || 0) + (completion || 0);
+  }
+  return {
+    prompt_tokens: Number.isFinite(prompt) ? prompt : null,
+    completion_tokens: Number.isFinite(completion) ? completion : null,
+    total_tokens: Number.isFinite(total) ? total : null,
+  };
+}
+
+module.exports = { geminiFetch, geminiText, geminiUsage, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION };

@@ -575,12 +575,15 @@ CREATE TABLE IF NOT EXISTS family_messages (
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS ai_conversations (
-  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
-  user_id    CHAR(36)     NULL,
-  role       VARCHAR(32)  NOT NULL,
-  content    TEXT         NOT NULL,
-  provider   VARCHAR(64)  NULL,
-  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  id                CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id           CHAR(36)     NULL,
+  role              VARCHAR(32)  NOT NULL,
+  content           TEXT         NOT NULL,
+  provider          VARCHAR(64)  NULL,
+  prompt_tokens     INT          NULL,
+  completion_tokens INT          NULL,
+  total_tokens      INT          NULL,
+  created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_ai_conversations_user (user_id, created_at DESC),
   KEY idx_ai_conversations_created (created_at),

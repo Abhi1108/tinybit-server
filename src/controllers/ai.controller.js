@@ -1,6 +1,6 @@
 const { Buffer } = require('buffer');
 const aiService = require('../services/ai.service');
-const { geminiFetch, geminiText, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
+const { geminiFetch, geminiText, geminiUsage, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
 const healthInsightsService = require('../services/health-insights.service');
 const sathiContextService = require('../services/sathi-context.service');
 const helpService = require('../services/help.service');
@@ -148,6 +148,7 @@ const chat = async (req, res) => {
     const systemPrompt = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}\n\nUSER CONTEXT:\n${contextText}`;
 
     let replyContent = '';
+    let usage = { prompt_tokens: null, completion_tokens: null, total_tokens: null };
     const provider = 'gemini';
 
     try {
@@ -165,6 +166,7 @@ const chat = async (req, res) => {
       if (geminiResp.ok) {
         const json = await geminiResp.json();
         replyContent = geminiText(json);
+        usage = geminiUsage(json);
       } else {
         const errBody = await geminiResp.text();
         console.warn('[Sathi] Gemini error:', geminiResp.status, errBody);
@@ -179,14 +181,21 @@ const chat = async (req, res) => {
       return res.status(502).json({ success: false, message: 'AI service error: Gemini request failed' });
     }
 
-    // Save assistant response
+    // Save assistant response with exact Gemini usageMetadata for this turn
     await aiService.saveMessage(userId, {
       role: 'assistant',
       content: replyContent,
       provider,
+      prompt_tokens: usage.prompt_tokens,
+      completion_tokens: usage.completion_tokens,
+      total_tokens: usage.total_tokens,
     });
 
-    return res.json({ success: true, data: { content: replyContent }, provider });
+    return res.json({
+      success: true,
+      data: { content: replyContent, usage },
+      provider,
+    });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }

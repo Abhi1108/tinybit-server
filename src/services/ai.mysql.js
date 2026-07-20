@@ -12,7 +12,8 @@ function mapRow(row) {
 async function getChatHistory(userId, limit = 50) {
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
   const rows = await query(
-    `SELECT id, user_id, role, content, provider, created_at
+    `SELECT id, user_id, role, content, provider,
+            prompt_tokens, completion_tokens, total_tokens, created_at
      FROM ai_conversations
      WHERE user_id = ?
      ORDER BY created_at DESC
@@ -23,15 +24,24 @@ async function getChatHistory(userId, limit = 50) {
   return rows.map(mapRow).reverse();
 }
 
-async function saveMessage(userId, { role, content, provider = null }) {
+async function saveMessage(userId, {
+  role,
+  content,
+  provider = null,
+  prompt_tokens = null,
+  completion_tokens = null,
+  total_tokens = null,
+}) {
   const id = randomUUID();
   await execute(
-    `INSERT INTO ai_conversations (id, user_id, role, content, provider)
-     VALUES (?, ?, ?, ?, ?)`,
-    [id, userId, role, content, provider]
+    `INSERT INTO ai_conversations
+       (id, user_id, role, content, provider, prompt_tokens, completion_tokens, total_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, userId, role, content, provider, prompt_tokens, completion_tokens, total_tokens]
   );
   const rows = await query(
-    `SELECT id, user_id, role, content, provider, created_at
+    `SELECT id, user_id, role, content, provider,
+            prompt_tokens, completion_tokens, total_tokens, created_at
      FROM ai_conversations
      WHERE id = ? LIMIT 1`,
     [id]

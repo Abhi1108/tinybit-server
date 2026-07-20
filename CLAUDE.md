@@ -106,9 +106,18 @@ src/
 ├── utils/                   # phone, otp, verificationToken
 └── db/index.js              # getDriver(), isDuplicateKeyError()
 
-mysql/schema.sql             # Canonical schema (27 tables) — apply to RDS manually
+mysql/schema.sql             # Canonical CREATE schema (new DBs) — keep in sync with patches
+mysql/patches/*.sql          # ALTER patches for existing DBs — required when schema changes
 public/admin/                # Bundled admin dashboard static files
 ```
+
+**Schema rule:** `mysql/schema.sql` is the full CREATE script for new databases. When an existing DB
+must gain columns/tables, add a dated file under `mysql/patches/` and also update `schema.sql` so
+both stay aligned. That is the correct ops workflow — **not** a “code patch.”
+
+**No code patches:** Never ship temporary app/server workarounds (fabricated metrics, dummy rows
+passed off as live data, hardcoded fake values, “estimate” math standing in for real fields).
+If data isn’t available yet, return/show honest empties (`null` / `—`) or build the real feature.
 
 ### Request flow
 
@@ -136,7 +145,7 @@ public/admin/                # Bundled admin dashboard static files
 
 ## Database (MySQL)
 
-**Schema file:** `mysql/schema.sql`  
+**Schema file:** `mysql/schema.sql` (CREATE for new DBs) + `mysql/patches/` (ALTER for existing DBs)  
 **Driver:** `DB_DRIVER=mysql` (default). All active `*.service.js` files point to `*.mysql.js`.
 
 ### Tables (39)
@@ -427,16 +436,13 @@ QR generation (uses `SERVER_URL`) + public read by token.
 ### Family messages — `/api/family/messages`
 
 Latest, count, create — accepts `content` or `message` alias; default date today. Create also
-accepts an optional `audio_url` (voice message; requires migration below). `POST
+accepts an optional `audio_url` (voice message; column is in `mysql/schema.sql`). `POST
 /presign-download` `{ audio_url }` lets either the sender or receiver play a voice message back —
 needed because the object is keyed under the *sender's* id, so the generic
 `/api/storage/presign-download` would reject the receiver. `GET /history?with=<userId>&limit=` —
 full two-way thread between the caller and `with`, newest first (default limit 50, max 200); safe
 by construction since the query only ever returns rows where the caller is sender or receiver, so
 an arbitrary `with` value just yields an empty/existing thread, never another pair's messages.
-
-**Pending manual migration**: `mysql/add_family_messages_audio.sql` adds `family_messages.audio_url`
-— run it against RDS before voice messages go live.
 
 ---
 

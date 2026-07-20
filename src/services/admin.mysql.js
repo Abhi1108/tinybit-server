@@ -164,7 +164,7 @@ async function getAnalytics() {
     query('SELECT mood_score, created_at FROM mood_entries WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT created_at FROM daily_checkins WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT category FROM medicines'),
-    query('SELECT created_at, role FROM ai_conversations WHERE created_at >= ?', [thirtyDaysAgo]),
+    query('SELECT created_at, role, total_tokens FROM ai_conversations WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT type FROM care_events'),
     query('SELECT game_type, score FROM mind_games_scores'),
   ]);
@@ -192,12 +192,21 @@ async function getAnalytics() {
   meds.forEach((m) => { if (m.category in medCat) medCat[m.category]++; });
 
   const aiByDay = {};
+  const aiTokensByDay = {};
   for (let i = 6; i >= 0; i--) {
-    aiByDay[new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10)] = 0;
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    aiByDay[day] = 0;
+    aiTokensByDay[day] = 0;
   }
   ai.filter((a) => a.role === 'user').forEach((a) => {
     const k = toIso(a.created_at).slice(0, 10);
     if (k in aiByDay) aiByDay[k]++;
+  });
+  ai.forEach((a) => {
+    const k = toIso(a.created_at).slice(0, 10);
+    if (k in aiTokensByDay && a.total_tokens != null) {
+      aiTokensByDay[k] += Number(a.total_tokens) || 0;
+    }
   });
 
   const careDist = { Doctor: 0, Family: 0, Medicine: 0, Wellness: 0 };
@@ -219,7 +228,11 @@ async function getAnalytics() {
     mood_dist: { labels: Object.keys(moodDist), data: Object.values(moodDist) },
     check_in_dow: { labels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], data: dowCounts },
     med_category: { labels: Object.keys(medCat), data: Object.values(medCat) },
-    ai_by_day: { labels: Object.keys(aiByDay), data: Object.values(aiByDay) },
+    ai_by_day: {
+      labels: Object.keys(aiByDay),
+      data: Object.values(aiByDay),
+      tokens: Object.values(aiTokensByDay),
+    },
     care_by_type: { labels: Object.keys(careDist), data: Object.values(careDist) },
     game_avg_scores: { labels: Object.keys(gameAvg), data: Object.values(gameAvg) },
   };
@@ -664,7 +677,8 @@ async function getAIConversations({ page, limit, role }) {
   }
 
   const rows = await query(
-    `SELECT id, user_id, role, content, created_at
+    `SELECT id, user_id, role, content, provider,
+            prompt_tokens, completion_tokens, total_tokens, created_at
      FROM ai_conversations
      ${where}
      ORDER BY created_at DESC
@@ -677,6 +691,9 @@ async function getAIConversations({ page, limit, role }) {
     ...normalizeRow(r),
     user_name: userMap[r.user_id]?.full_name ?? '—',
     content_preview: (r.content ?? '').slice(0, 120),
+    prompt_tokens: r.prompt_tokens == null ? null : Number(r.prompt_tokens),
+    completion_tokens: r.completion_tokens == null ? null : Number(r.completion_tokens),
+    total_tokens: r.total_tokens == null ? null : Number(r.total_tokens),
   }));
 }
 
