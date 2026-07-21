@@ -1030,9 +1030,9 @@ const deleteHealthRecord = async (req, res) => {
 // ── Audit log ────────────────────────────────────────────────────────────────
 
 const getAuditLogs = async (req, res) => {
-  const { page = '1', limit = '50', action, search } = req.query;
+  const { page = '1', limit = '50', action, search, target_type: targetType, status } = req.query;
   try {
-    const result = await auditService.list({ page, limit, action, search });
+    const result = await auditService.list({ page, limit, action, search, targetType, status });
     return res.json({ success: true, ...result });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });

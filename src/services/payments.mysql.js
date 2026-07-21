@@ -225,26 +225,38 @@ async function createUpgradeOrder(guardianId, prospectiveElderCount) {
   return { order, appliedImmediately: false };
 }
 
-/** Apply a successful payment's effects to profiles.plan_*. Renewals extend expiry; upgrades don't (ADR 0003). */
+/** Apply a successful payment's effects to profiles.plan_*. Renewals extend expiry; upgrades don't (ADR 0003).
+ * Sets plan_type='guardian' and plan_interval from interval_days (CONTEXT.md display labels). */
 async function applyPlanUpdate(guardianId, { planAmount, planCurrency, planElderCount, extendExpiry, intervalDays }) {
+  const days = intervalDays == null ? null : Number(intervalDays);
+  const planInterval = days == null || Number.isNaN(days)
+    ? null
+    : (days >= 300 ? 'annual' : 'monthly');
+
   if (extendExpiry) {
     await execute(
       `UPDATE profiles
        SET plan_status = 'active',
+           plan_type = 'guardian',
            plan_started_at = COALESCE(plan_started_at, CURRENT_TIMESTAMP(3)),
            plan_expires_at = DATE_ADD(CURRENT_TIMESTAMP(3), INTERVAL ? DAY),
            plan_amount = ?,
            plan_currency = ?,
-           plan_elder_count = ?
+           plan_elder_count = ?,
+           plan_interval = COALESCE(?, plan_interval)
        WHERE id = ?`,
-      [intervalDays, planAmount, planCurrency, planElderCount, guardianId],
+      [days, planAmount, planCurrency, planElderCount, planInterval, guardianId],
     );
   } else {
     await execute(
       `UPDATE profiles
-       SET plan_amount = ?, plan_currency = ?, plan_elder_count = ?
+       SET plan_type = 'guardian',
+           plan_amount = ?,
+           plan_currency = ?,
+           plan_elder_count = ?,
+           plan_interval = COALESCE(?, plan_interval)
        WHERE id = ?`,
-      [planAmount, planCurrency, planElderCount, guardianId],
+      [planAmount, planCurrency, planElderCount, planInterval, guardianId],
     );
   }
 }

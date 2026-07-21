@@ -52,13 +52,32 @@ async function recordSafe(entry) {
   }
 }
 
-function buildLogFilters({ action, search }) {
+function buildLogFilters({ action, search, targetType, status }) {
   const clauses = [];
   const params = [];
 
   if (action) {
     clauses.push('action = ?');
     params.push(action);
+  }
+
+  const types = String(targetType ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (types.length === 1) {
+    clauses.push('target_type = ?');
+    params.push(types[0]);
+  } else if (types.length > 1) {
+    clauses.push(`target_type IN (${types.map(() => '?').join(',')})`);
+    params.push(...types);
+  }
+
+  // Failed = login failures only; success = everything else (matches admin UI).
+  if (status === 'failed') {
+    clauses.push("action = 'auth.login_failed'");
+  } else if (status === 'success') {
+    clauses.push("action <> 'auth.login_failed'");
   }
 
   const term = String(search ?? '').trim();
@@ -71,15 +90,20 @@ function buildLogFilters({ action, search }) {
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
-async function list({ page, limit, action, search }) {
+async function list({ page, limit, action, search, targetType, status }) {
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
   const offset = (pageNum - 1) * limitNum;
 
-  const { where, params } = buildLogFilters({ action, search });
+  const { where, params } = buildLogFilters({ action, search, targetType, status });
+  const base = buildLogFilters({ action, search, targetType, status: undefined });
 
-  const [totalRows, rows] = await Promise.all([
+  const [totalRows, failedRows, rows] = await Promise.all([
     query(`SELECT COUNT(*) AS cnt FROM admin_audit_log WHERE ${where}`, params),
+    query(
+      `SELECT COUNT(*) AS cnt FROM admin_audit_log WHERE ${base.where} AND action = 'auth.login_failed'`,
+      base.params,
+    ),
     query(
       `SELECT id, actor, action, target_type, target_id, details, ip, created_at
        FROM admin_audit_log
@@ -90,11 +114,17 @@ async function list({ page, limit, action, search }) {
     ),
   ]);
 
+  const total = Number(totalRows[0]?.cnt ?? rows.length);
+  const failedBase = Number(failedRows[0]?.cnt ?? 0);
+  const failedScoped = status === 'failed' ? total : status === 'success' ? 0 : failedBase;
+  const successScoped = status === 'success' ? total : status === 'failed' ? 0 : Math.max(0, total - failedBase);
+
   return {
     logs: rows.map(normalizeLog),
-    total: Number(totalRows[0]?.cnt ?? rows.length),
+    total,
     page: pageNum,
     limit: limitNum,
+    counts: { success: successScoped, failed: failedScoped },
   };
 }
 

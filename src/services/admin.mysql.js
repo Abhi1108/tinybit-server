@@ -1170,20 +1170,51 @@ async function getEmergencyContacts({ page, limit, search } = {}) {
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
 
+  // App SOS/home merges profile.emergency_* (primary) with emergency_contacts rows.
+  // Admin previously only listed the table — so primary contacts looked "blank".
   const clauses = [];
   const params = [];
   if (search) {
-    clauses.push('(c.name LIKE ? OR c.phone LIKE ? OR p.full_name LIKE ?)');
+    clauses.push('(c.name LIKE ? OR c.phone LIKE ? OR c.user_name LIKE ? OR c.role LIKE ?)');
     const q = `%${search}%`;
-    params.push(q, q, q);
+    params.push(q, q, q, q);
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT c.id, c.user_id, c.name, c.role, c.phone, c.color, c.created_at,
-            p.full_name AS user_name
-     FROM emergency_contacts c
-     LEFT JOIN profiles p ON p.id = c.user_id
+    `SELECT c.id, c.user_id, c.name, c.role, c.phone, c.color, c.created_at, c.user_name, c.source
+     FROM (
+       SELECT c.id,
+              c.user_id,
+              c.name,
+              c.role,
+              c.phone,
+              c.color,
+              c.created_at,
+              p.full_name AS user_name,
+              'saved' AS source
+       FROM emergency_contacts c
+       LEFT JOIN profiles p ON p.id = c.user_id AND p.deleted_at IS NULL
+
+       UNION ALL
+
+       SELECT CONCAT('profile:', p.id) AS id,
+              p.id AS user_id,
+              COALESCE(NULLIF(TRIM(p.emergency_name), ''), 'Primary contact') AS name,
+              COALESCE(NULLIF(TRIM(p.emergency_relation), ''), 'Primary') AS role,
+              COALESCE(NULLIF(TRIM(p.emergency_phone), ''), '') AS phone,
+              '#F0F4FF' AS color,
+              p.created_at AS created_at,
+              p.full_name AS user_name,
+              'profile' AS source
+       FROM profiles p
+       WHERE p.deleted_at IS NULL
+         AND p.role = 'elder'
+         AND (
+           NULLIF(TRIM(p.emergency_phone), '') IS NOT NULL
+           OR NULLIF(TRIM(p.emergency_name), '') IS NOT NULL
+         )
+     ) c
      ${where}
      ORDER BY c.created_at DESC
      LIMIT ${limitNum} OFFSET ${offset}`,
@@ -1193,6 +1224,7 @@ async function getEmergencyContacts({ page, limit, search } = {}) {
   return rows.map((r) => ({
     ...normalizeRow(r),
     user_name: r.user_name || '—',
+    source: r.source === 'profile' ? 'profile' : 'saved',
   }));
 }
 
@@ -1401,19 +1433,28 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
     params,
   );
 
-  return rows.map((r) => ({
-    id: r.id,
-    user_name: r.full_name || '—',
-    user_type: r.role === 'elder' ? 'Elder' : 'Guardian',
-    plan: r.plan_type || 'free',
-    status: r.plan_status || 'inactive',
-    start_date: toIso(r.plan_started_at),
-    renewal_date: toIso(r.plan_expires_at),
-    amount: r.plan_amount == null ? 0 : Number(r.plan_amount),
-    currency: r.plan_currency || 'INR',
-    elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
-    interval: r.plan_interval,
-  }));
+  return rows.map((r) => {
+    const amount = r.plan_amount == null ? 0 : Number(r.plan_amount);
+    const rawType = (r.plan_type || '').trim();
+    // Paid guardians created before applyPlanUpdate set plan_type still have 'free'.
+    const plan = (rawType && rawType !== 'free')
+      ? rawType
+      : ((r.plan_status === 'active' && amount > 0) ? 'guardian' : (rawType || 'free'));
+
+    return {
+      id: r.id,
+      user_name: r.full_name || '—',
+      user_type: r.role === 'elder' ? 'Elder' : 'Guardian',
+      plan,
+      status: r.plan_status || 'inactive',
+      start_date: toIso(r.plan_started_at),
+      renewal_date: toIso(r.plan_expires_at),
+      amount,
+      currency: r.plan_currency || 'INR',
+      elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
+      interval: r.plan_interval,
+    };
+  });
 }
 
 async function getRevenueSummary() {
@@ -1445,7 +1486,11 @@ async function getRevenueSummary() {
 
   const [activeSubs] = await query(
     `SELECT COUNT(*) AS cnt FROM profiles
-     WHERE deleted_at IS NULL AND role = 'guardian' AND plan_status = 'active'`,
+     WHERE deleted_at IS NULL
+       AND role = 'guardian'
+       AND plan_status = 'active'
+       AND plan_expires_at IS NOT NULL
+       AND plan_expires_at > UTC_TIMESTAMP(3)`,
   );
 
   return {
