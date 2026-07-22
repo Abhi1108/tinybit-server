@@ -18,6 +18,11 @@ async function findByPhone(phoneE164) {
   return rows[0] ?? null;
 }
 
+async function findById(id) {
+  const rows = await query('SELECT * FROM app_users WHERE id = ? LIMIT 1', [id]);
+  return rows[0] ?? null;
+}
+
 async function findExistingProfileId(phoneE164, email) {
   const byMobile = await query(
     'SELECT id FROM profiles WHERE mobile = ? LIMIT 1',
@@ -49,7 +54,31 @@ async function findOrCreateByPhone(phoneE164, email) {
     return { user: existing, isNewUser: false };
   }
 
+  // No app_users row matches this phone, but a profile for the same person may still exist —
+  // matched by mobile or by the derived phone auth email. This happens for guardian-created
+  // "shadow" elders, and for accounts whose app_users.phone_e164 has drifted from profiles.mobile
+  // (e.g. a normalization mismatch, or a mobile added to the profile after a Google/email signup).
   const preservedId = await findExistingProfileId(phoneE164, email);
+
+  if (preservedId) {
+    // profiles.id is an FK onto app_users.id, so a found profile id almost always ALREADY has an
+    // app_users row. Adopt it (and repair the phone drift that caused the lookup miss) instead of
+    // inserting — an INSERT with this id would collide on the PRIMARY key (the bug this fixes).
+    const existingById = await findById(preservedId);
+    if (existingById) {
+      if (existingById.phone_e164 !== phoneE164) {
+        try {
+          await execute('UPDATE app_users SET phone_e164 = ? WHERE id = ?', [phoneE164, preservedId]);
+        } catch (err) {
+          // Another account already owns this phone (unique key) — leave the row as-is rather than
+          // failing the sign-in; the caller still gets a valid, existing account back.
+          if (!isDuplicateKeyError(err)) throw err;
+        }
+      }
+      const refreshed = await findById(preservedId);
+      return { user: refreshed ?? existingById, isNewUser: false };
+    }
+  }
 
   try {
     const user = await insertAppUser({
@@ -60,7 +89,9 @@ async function findOrCreateByPhone(phoneE164, email) {
     return { user, isNewUser: true };
   } catch (err) {
     if (isDuplicateKeyError(err)) {
-      const retry = await findByPhone(phoneE164);
+      // Lost a race (or drift we didn't catch above): recover by phone, then by the preserved id.
+      const retry =
+        (await findByPhone(phoneE164)) || (preservedId ? await findById(preservedId) : null);
       if (retry) return { user: retry, isNewUser: false };
     }
     throw err;

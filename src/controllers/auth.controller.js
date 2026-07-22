@@ -1,4 +1,4 @@
-const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
+const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164 } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
 const { execute } = require('../config/mysql');
 const { softDeleteProfile } = require('../services/admin.service');
@@ -369,9 +369,10 @@ async function phoneAuth(req, res) {
       });
     }
 
-    const phoneE164 = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber.replace(/\D/g, '')}`;
-    const digitsOnly = phoneE164.replace(/\D/g, '');
-    const email = `${digitsOnly}@phone.tinybit.app`;
+    // Same canonicalizer the guardian "create elder" path uses, so a phone that was stored at
+    // create time resolves to the identical E.164 here (Firebase already returns E.164 form).
+    const phoneE164 = canonicalizeE164(phoneNumber);
+    const email = authEmailFromE164(phoneE164);
 
     const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
 
