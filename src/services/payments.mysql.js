@@ -121,7 +121,9 @@ async function insertOrder({
   guardianId, kind, tier, chargeAmount, elderCount, previousTierAmount, previousElderCount, notes,
 }) {
   const id = randomUUID();
-  const receipt = `${kind}_${id}`.slice(0, 64);
+  // Razorpay caps `receipt` at 40 chars; `${kind}_${uuid}` is up to 44, so trim to fit or the
+  // order create fails with "receipt: the length must be no more than 40." (BAD_REQUEST_ERROR).
+  const receipt = `${kind}_${id}`.slice(0, 40);
 
   const rzpOrder = await razorpayService.createOrder({
     amount:   chargeAmount,
