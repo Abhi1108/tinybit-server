@@ -66,6 +66,7 @@ const {
   updateInspiration,
   deleteInspiration,
   getHelpTutorials,
+  getHelpTutorialCategories,
   getHelpTutorial,
   createHelpTutorial,
   updateHelpTutorial,
@@ -191,6 +192,7 @@ router.patch('/api/inspirations/:id', sessionAuth, requirePermission('Content Ma
 router.delete('/api/inspirations/:id', sessionAuth, requirePermission('Content Management'), deleteInspiration);
 
 router.get('/api/help-tutorials', sessionAuth, requirePermission('Content Management', 'FAQ Management'), getHelpTutorials);
+router.get('/api/help-tutorials/categories', sessionAuth, requirePermission('Content Management', 'FAQ Management'), getHelpTutorialCategories);
 router.post('/api/help-tutorials', sessionAuth, requirePermission('Content Management', 'FAQ Management'), createHelpTutorial);
 router.get('/api/help-tutorials/:id', sessionAuth, requirePermission('Content Management', 'FAQ Management'), getHelpTutorial);
 router.patch('/api/help-tutorials/:id', sessionAuth, requirePermission('Content Management', 'FAQ Management'), updateHelpTutorial);

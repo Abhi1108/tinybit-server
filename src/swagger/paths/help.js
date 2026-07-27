@@ -13,7 +13,7 @@
  *         name: category
  *         schema:
  *           type: string
- *           enum: [getting_started, health_tracking, medicine_management, talking_with_sathi, emergency_features, family_features]
+ *           description: Optional snake_case category slug (dynamic; not a fixed enum)
  *     responses:
  *       200:
  *         description: Active tutorials

@@ -939,7 +939,7 @@ CREATE TABLE IF NOT EXISTS doctors (
 
 CREATE TABLE IF NOT EXISTS help_tutorials (
   id               CHAR(36)     NOT NULL DEFAULT (UUID()),
-  category         VARCHAR(32)  NOT NULL,
+  category         VARCHAR(64)  NOT NULL,
   title            VARCHAR(255) NOT NULL,
   description      TEXT         NULL,
   video_url        TEXT         NULL,
@@ -952,8 +952,6 @@ CREATE TABLE IF NOT EXISTS help_tutorials (
   updated_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_help_tutorials_category (category, is_active, sort_order),
-  CONSTRAINT chk_help_tutorials_category
-    CHECK (category IN ('getting_started', 'health_tracking', 'medicine_management', 'talking_with_sathi', 'emergency_features', 'family_features')),
   CONSTRAINT chk_help_tutorials_difficulty
     CHECK (difficulty IN ('beginner', 'intermediate', 'advanced'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

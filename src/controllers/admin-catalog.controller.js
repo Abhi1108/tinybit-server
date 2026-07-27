@@ -250,6 +250,15 @@ const getHelpTutorials = async (req, res) => {
   }
 };
 
+const getHelpTutorialCategories = async (req, res) => {
+  try {
+    const categories = await catalogService.listHelpTutorialCategories();
+    return res.json({ success: true, categories });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
 const getHelpTutorial = async (req, res) => {
   try {
     const tutorial = await catalogService.getHelpTutorialById(req.params.id);
@@ -363,6 +372,7 @@ module.exports = {
   updateInspiration,
   deleteInspiration,
   getHelpTutorials,
+  getHelpTutorialCategories,
   getHelpTutorial,
   createHelpTutorial,
   updateHelpTutorial,

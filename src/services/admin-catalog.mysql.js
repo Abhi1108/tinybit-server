@@ -7,11 +7,8 @@ const CATALOG_DELETE_ACTOR = 'admin-catalog';
 
 const MOOD_CATEGORIES = new Set(['bhajans', 'meditation', 'jokes_fun', 'nature_sounds']);
 const MOOD_MEDIA_TYPES = new Set(['audio', 'video', 'youtube']);
-const HELP_TUTORIAL_CATEGORIES = new Set([
-  'getting_started', 'health_tracking', 'medicine_management',
-  'talking_with_sathi', 'emergency_features', 'family_features',
-]);
 const HELP_TUTORIAL_DIFFICULTIES = new Set(['beginner', 'intermediate', 'advanced']);
+const HELP_TUTORIAL_CATEGORY_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const YOUTUBE_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const YOUTUBE_URL_RE = /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)[a-zA-Z0-9_-]{11}(&.*)?$/i;
 
@@ -729,9 +726,11 @@ function mapHelpTutorial(row) {
 }
 
 function requireHelpTutorialCategory(value) {
-  const raw = String(value ?? '').trim();
-  if (!HELP_TUTORIAL_CATEGORIES.has(raw)) {
-    const err = new Error(`category must be one of: ${[...HELP_TUTORIAL_CATEGORIES].join(', ')}`);
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!HELP_TUTORIAL_CATEGORY_RE.test(raw)) {
+    const err = new Error(
+      'category must be a snake_case slug starting with a letter (a-z, 0-9, _; max 64 chars)',
+    );
     err.status = 400;
     throw err;
   }
@@ -746,6 +745,16 @@ function requireHelpTutorialDifficulty(value) {
     throw err;
   }
   return raw;
+}
+
+async function listHelpTutorialCategories() {
+  const rows = await query(
+    `SELECT DISTINCT category
+     FROM help_tutorials
+     WHERE category IS NOT NULL AND category <> ''
+     ORDER BY category ASC`,
+  );
+  return rows.map((r) => r.category);
 }
 
 async function listHelpTutorials({ page, limit, category, active, search }) {
@@ -994,6 +1003,7 @@ module.exports = {
   updateInspiration,
   deleteInspiration,
   listHelpTutorials,
+  listHelpTutorialCategories,
   getHelpTutorialById,
   createHelpTutorial,
   updateHelpTutorial,
