@@ -141,6 +141,12 @@ If data isn’t available yet, return/show honest empties (`null` / `—`) or bu
 
 **Admin clients:** `POST /admin/api/login` → Bearer admin session token on `/admin/api/*`.
 
+**Admin roles (panel):**
+- Tables: `admin_roles` (seeded system + custom), `admin_users.role_id` FK.
+- **Super Admin** — env credentials; JWT `permissions: ['*']`; manages `/admin/api/admins*` and role mutations.
+- **Managed admins** — bcrypt users with assigned role; route middleware `requirePermission(...)`.
+- Patches: `mysql/patches/2026-07-20-admin-users.sql`, `mysql/patches/2026-07-20-admin-roles.sql`.
+
 ---
 
 ## Database (MySQL)

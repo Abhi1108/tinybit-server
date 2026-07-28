@@ -230,6 +230,10 @@
  *               context:
  *                 type: string
  *                 description: User health context injected into system prompt (age, conditions, allergies, etc.)
+ *               diet_type:
+ *                 type: string
+ *                 enum: [balanced, diabetic, heart-healthy, high-protein, vegetarian, low-sodium, weight-loss]
+ *                 description: The user's calorie goal diet_type. When 'vegetarian', enforced as a strict no-meat/fish/egg constraint.
  *     responses:
  *       200:
  *         description: Meal suggestions
