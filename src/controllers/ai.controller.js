@@ -173,10 +173,13 @@ const chat = async (req, res) => {
       console.warn('[Sathi] FAQ fetch failed:', faqErr.message);
     }
 
+    // Stable prefix first (system + FAQ rarely change) so implicit context
+    // caching can hit on the largest contiguous block; the live per-user
+    // context trails at the end where it changes every turn.
     const systemPrompt = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}\n\nUSER CONTEXT:\n${contextText}`;
 
     let replyContent = '';
-    let usage = { prompt_tokens: null, completion_tokens: null, total_tokens: null };
+    let usage = { prompt_tokens: null, completion_tokens: null, total_tokens: null, cached_tokens: null };
     const provider = 'gemini';
 
     try {
@@ -217,6 +220,7 @@ const chat = async (req, res) => {
       prompt_tokens: usage.prompt_tokens,
       completion_tokens: usage.completion_tokens,
       total_tokens: usage.total_tokens,
+      cached_tokens: usage.cached_tokens,
     });
 
     return res.json({

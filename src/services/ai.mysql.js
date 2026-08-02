@@ -13,7 +13,7 @@ async function getChatHistory(userId, limit = 50) {
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
   const rows = await query(
     `SELECT id, user_id, role, content, provider,
-            prompt_tokens, completion_tokens, total_tokens, created_at
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens, created_at
      FROM ai_conversations
      WHERE user_id = ?
      ORDER BY created_at DESC
@@ -31,17 +31,18 @@ async function saveMessage(userId, {
   prompt_tokens = null,
   completion_tokens = null,
   total_tokens = null,
+  cached_tokens = null,
 }) {
   const id = randomUUID();
   await execute(
     `INSERT INTO ai_conversations
-       (id, user_id, role, content, provider, prompt_tokens, completion_tokens, total_tokens)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, userId, role, content, provider, prompt_tokens, completion_tokens, total_tokens]
+       (id, user_id, role, content, provider, prompt_tokens, completion_tokens, total_tokens, cached_tokens)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, userId, role, content, provider, prompt_tokens, completion_tokens, total_tokens, cached_tokens]
   );
   const rows = await query(
     `SELECT id, user_id, role, content, provider,
-            prompt_tokens, completion_tokens, total_tokens, created_at
+            prompt_tokens, completion_tokens, total_tokens, cached_tokens, created_at
      FROM ai_conversations
      WHERE id = ? LIMIT 1`,
     [id]

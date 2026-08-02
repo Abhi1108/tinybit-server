@@ -1,6 +1,6 @@
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL_TEXT   = 'gemini-3.1-flash-lite';   // fast text + vision + audio
-const GEMINI_MODEL_VISION = 'gemini-3.1-flash-lite';   // supports image input
+const GEMINI_MODEL_TEXT   = 'gemini-flash-latest';   // fast text + vision + audio
+const GEMINI_MODEL_VISION = 'gemini-flash-latest';   // supports image input
 
 function getGeminiKey() { return process.env.GEMINI_API_KEY; }
 
@@ -30,7 +30,7 @@ function geminiText(json) {
 function geminiUsage(json) {
   const u = json?.usageMetadata;
   if (!u || typeof u !== 'object') {
-    return { prompt_tokens: null, completion_tokens: null, total_tokens: null };
+    return { prompt_tokens: null, completion_tokens: null, total_tokens: null, cached_tokens: null };
   }
   const prompt = u.promptTokenCount == null ? null : Number(u.promptTokenCount);
   const completion = u.candidatesTokenCount == null ? null : Number(u.candidatesTokenCount);
@@ -38,10 +38,12 @@ function geminiUsage(json) {
   if (total == null && (prompt != null || completion != null)) {
     total = (prompt || 0) + (completion || 0);
   }
+  const cached = u.cachedContentTokenCount == null ? null : Number(u.cachedContentTokenCount);
   return {
     prompt_tokens: Number.isFinite(prompt) ? prompt : null,
     completion_tokens: Number.isFinite(completion) ? completion : null,
     total_tokens: Number.isFinite(total) ? total : null,
+    cached_tokens: Number.isFinite(cached) ? cached : null,
   };
 }
 
