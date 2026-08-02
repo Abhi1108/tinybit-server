@@ -1,6 +1,6 @@
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL_TEXT   = 'gemini-flash-latest';   // fast text + vision + audio
-const GEMINI_MODEL_VISION = 'gemini-flash-latest';   // supports image input
+const GEMINI_MODEL_TEXT   = 'gemini-3.5-flash-lite';   // fast text + vision + audio
+const GEMINI_MODEL_VISION = 'gemini-3.5-flash-lite';   // supports image input
 
 function getGeminiKey() { return process.env.GEMINI_API_KEY; }
 
