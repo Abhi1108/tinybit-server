@@ -80,6 +80,7 @@ app.use('/api/calorie-tracker', require('./routes/calorie-tracker.routes'));
 app.use('/api/streak',      require('./routes/streak.routes'));
 app.use('/api/help',        require('./routes/help.routes'));
 app.use('/api/notifications', require('./routes/notifications.routes'));
+app.use('/api/contact-us',  require('./routes/contact-us.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
 // ── OpenAPI / Swagger UI (mobile API only — excludes /admin) ────────────────

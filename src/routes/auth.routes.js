@@ -5,6 +5,7 @@ const {
   deprecatedOtpEndpoint,
   login,
   register,
+  monitorLogin,
   googleAuth,
   phoneAuth,
   googleAuthStatus,
@@ -25,6 +26,7 @@ router.post('/google',       googleAuth);
 router.post('/phone',        phoneAuth);
 router.post('/login',        login);
 router.post('/register',     register);
+router.post('/monitor-login', monitorLogin);
 router.post('/refresh',      refreshSession);
 router.post('/logout',       logout);
 router.post('/delete-account', requireJwtAuth, deleteAccount);

@@ -1,5 +1,6 @@
 const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164 } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
+const crypto = require('crypto');
 const { execute } = require('../config/mysql');
 const { softDeleteProfile } = require('../services/admin.service');
 const {
@@ -13,6 +14,7 @@ const {
   findOrCreateByGoogle,
   isProfileDeleted,
 } = require('../services/auth-users.service');
+const { getOrCreateMonitorUser } = require('../services/monitor-user.service');
 
 const DEACTIVATED_MESSAGE = 'This account has been deactivated.';
 const {
@@ -78,6 +80,49 @@ async function login(req, res) {
     console.error('[auth/login]', err);
     const status = err.message?.includes('expired') ? 400 : 500;
     return res.status(status).json({ success: false, message: err.message || 'Login failed' });
+  }
+}
+
+/**
+ * POST /api/auth/monitor-login — programmatic login for the n8n morning health-report bot.
+ * Env-gated by MONITOR_LOGIN_USERNAME / MONITOR_LOGIN_PASSWORD (404 if unset, same pattern as
+ * /api/payments/dev-complete). Credentials are compared in constant time and NEVER stored in the
+ * DB; the underlying user is a passwordless, lazily-created "monitor" account (see
+ * src/services/monitor-user.service.js) that the normal /api/auth/login can never authenticate.
+ * Returns the standard session shape so the rest of the flow is unchanged.
+ */
+async function monitorLogin(req, res) {
+  const envUsername = process.env.MONITOR_LOGIN_USERNAME;
+  const envPassword = process.env.MONITOR_LOGIN_PASSWORD;
+  if (!envUsername || !envPassword) {
+    // Hide the route when the feature is off — don't reveal it exists.
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+
+  const { username, password } = req.body ?? {};
+  const loginId = String(username ?? '').trim();
+  const pass = String(password ?? '');
+
+  if (!loginId || !pass) {
+    return res.status(400).json({ success: false, message: 'Username and password are required' });
+  }
+
+  const validUsername = Buffer.from(loginId).length === Buffer.from(envUsername).length
+    && crypto.timingSafeEqual(Buffer.from(loginId), Buffer.from(envUsername));
+  const validPassword = Buffer.from(pass).length === Buffer.from(envPassword).length
+    && crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(envPassword));
+
+  if (!validUsername || !validPassword) {
+    return res.status(401).json({ success: false, message: 'Invalid credentials', code: 'AUTH_FAILED' });
+  }
+
+  try {
+    const user = await getOrCreateMonitorUser();
+    const session = await issueSession(user);
+    return res.json({ success: true, session });
+  } catch (err) {
+    console.error('[auth/monitor-login]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Monitor login failed' });
   }
 }
 
@@ -582,6 +627,7 @@ module.exports = {
   deprecatedOtpEndpoint,
   login,
   register,
+  monitorLogin,
   googleAuth,
   phoneAuth,
   googleAuthStatus,
