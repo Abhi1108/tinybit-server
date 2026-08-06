@@ -1,4 +1,5 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 
@@ -48,6 +49,11 @@ app.get('/api/health', async (req, res) => {
     storage: process.env.STORAGE_TYPE || 'filesystem',
     timestamp: new Date().toISOString()
   });
+});
+
+// ── Public pages (no auth) ───────────────────────────────────────────────────
+app.get('/delete-account', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'delete-account.html'));
 });
 
 // ── Routes — static requires so Vercel bundles all route files ─────────────
