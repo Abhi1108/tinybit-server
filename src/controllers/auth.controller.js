@@ -12,6 +12,7 @@ const {
   revokeRefreshToken,
   refreshSessionFromToken,
   findOrCreateByGoogle,
+  findOrCreateByApple,
   isProfileDeleted,
 } = require('../services/auth-users.service');
 const { getOrCreateMonitorUser } = require('../services/monitor-user.service');
@@ -355,6 +356,87 @@ async function googleAuth(req, res) {
   }
 }
 
+/** POST /api/auth/apple — Firebase Apple ID token → TinyBit session */
+async function appleAuth(req, res) {
+  try {
+    const { idToken } = req.body ?? {};
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'idToken is required' });
+    }
+
+    let token;
+    try {
+      token = normalizeIdToken(idToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'idToken is invalid',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(token);
+    } catch (err) {
+      const status = getFirebaseAdminStatus();
+      const claims = peekJwtClaims(token);
+      console.error('[auth/apple] token verify failed:', err.code || err.message, {
+        adminProjectId: status.projectId,
+        expectedProjectId: status.expectedProjectId,
+        tokenLength: token.length,
+        tokenClaims: claims,
+      });
+
+      let hint;
+      if (token.length < MIN_FIREBASE_ID_TOKEN_LENGTH) {
+        hint = 'App sent a value that is too short to be a Firebase ID token. Rebuild the app — OTP digits must not be sent as idToken.';
+      } else if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+        hint = 'App sent an Apple OAuth token, not a Firebase ID token. Rebuild the app and sign in again.';
+      } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
+        hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;
+      } else if (status.projectMatchesApp === false) {
+        hint = `Server Firebase project (${status.projectId}) does not match app (${status.expectedProjectId}).`;
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Apple sign-in token',
+        hint,
+      });
+    }
+
+    const email = decoded.email;
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Apple account must include an email address',
+      });
+    }
+
+    // See findOrCreateByGoogle above / auth-users.mysql.js#upsertSocialProfile — same
+    // deliberate omission of full_name/role from the provider applies here.
+    const { user, isNewUser } = await findOrCreateByApple({
+      email,
+      firebaseUid: decoded.uid,
+    });
+
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+    }
+
+    const session = await issueSession(user);
+
+    return res.json({
+      success: true,
+      isNewUser,
+      session,
+    });
+  } catch (err) {
+    console.error('[auth/apple]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Apple sign-in failed' });
+  }
+}
+
 /** POST /api/auth/phone — Firebase phone ID token → TinyBit session */
 async function phoneAuth(req, res) {
   try {
@@ -629,6 +711,7 @@ module.exports = {
   register,
   monitorLogin,
   googleAuth,
+  appleAuth,
   phoneAuth,
   googleAuthStatus,
   refreshSession,

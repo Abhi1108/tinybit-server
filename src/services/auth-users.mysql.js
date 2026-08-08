@@ -242,7 +242,7 @@ async function findByEmail(email) {
   return rows[0] ?? null;
 }
 
-function googlePlaceholderPhone(firebaseUid) {
+function socialPlaceholderPhone(firebaseUid) {
   const digits = firebaseUid.replace(/\D/g, '').slice(0, 15);
   return `+99${digits.padEnd(15, '0').slice(0, 15)}`;
 }
@@ -250,14 +250,14 @@ function googlePlaceholderPhone(firebaseUid) {
 /**
  * Deliberately does NOT persist `fullName` (or a real `role`) to `profiles` on creation —
  * only `email`. The mobile onboarding flow (role.tsx -> your-name.tsx) is the single place
- * `full_name`/`role` get confirmed, for both Google and phone-OTP sign-in alike. If this
- * pre-filled `full_name` from Google, the app's `needsNameSetup`/`needsRoleSetup` checks
+ * `full_name`/`role` get confirmed, for Google, Apple, and phone-OTP sign-in alike. If this
+ * pre-filled `full_name` from the provider, the app's `needsNameSetup`/`needsRoleSetup` checks
  * would treat onboarding as already complete and skip role selection entirely, permanently
- * defaulting every Google sign-up to the `role` column's DB default ('elder') with no way to
+ * defaulting every social sign-up to the `role` column's DB default ('elder') with no way to
  * choose guardian. `role='elder'` below is just a NOT-NULL placeholder — your-name.tsx's
  * first `PATCH /auth/profile` always overwrites it with the user's actual choice.
  */
-async function upsertGoogleProfile({ id, email }) {
+async function upsertSocialProfile({ id, email }) {
   await execute(
     `INSERT INTO profiles (
        id, email, role, plan_type, plan_status, plan_currency, streak
@@ -268,14 +268,16 @@ async function upsertGoogleProfile({ id, email }) {
   );
 }
 
-async function findOrCreateByGoogle({ email, firebaseUid }) {
+/** Shared by Google and Apple — both authenticate via a verified Firebase ID token and resolve
+ *  identity purely by email, with no provider-specific column. */
+async function findOrCreateBySocialProvider({ email, firebaseUid }) {
   const normalizedEmail = String(email).trim().toLowerCase();
   const existing = await findByEmail(normalizedEmail);
   if (existing) {
     return { user: existing, isNewUser: false };
   }
 
-  const phoneE164 = googlePlaceholderPhone(firebaseUid);
+  const phoneE164 = socialPlaceholderPhone(firebaseUid);
   const preservedId = await findExistingProfileId(phoneE164, normalizedEmail);
 
   try {
@@ -285,7 +287,7 @@ async function findOrCreateByGoogle({ email, firebaseUid }) {
       id: preservedId ?? undefined,
     });
 
-    await upsertGoogleProfile({
+    await upsertSocialProfile({
       id: user.id,
       email: normalizedEmail,
     });
@@ -298,6 +300,14 @@ async function findOrCreateByGoogle({ email, firebaseUid }) {
     }
     throw err;
   }
+}
+
+async function findOrCreateByGoogle({ email, firebaseUid }) {
+  return findOrCreateBySocialProvider({ email, firebaseUid });
+}
+
+async function findOrCreateByApple({ email, firebaseUid }) {
+  return findOrCreateBySocialProvider({ email, firebaseUid });
 }
 
 module.exports = {
@@ -313,5 +323,6 @@ module.exports = {
   findAppUserById,
   findByEmail,
   findOrCreateByGoogle,
+  findOrCreateByApple,
   isProfileDeleted,
 };

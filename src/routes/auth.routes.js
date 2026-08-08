@@ -7,6 +7,7 @@ const {
   register,
   monitorLogin,
   googleAuth,
+  appleAuth,
   phoneAuth,
   googleAuthStatus,
   refreshSession,
@@ -23,6 +24,7 @@ router.post('/otp/verify',   deprecatedOtpEndpoint);
 router.post('/otp/complete', deprecatedOtpEndpoint);
 router.get('/google/status', googleAuthStatus);
 router.post('/google',       googleAuth);
+router.post('/apple',        appleAuth);
 router.post('/phone',        phoneAuth);
 router.post('/login',        login);
 router.post('/register',     register);
