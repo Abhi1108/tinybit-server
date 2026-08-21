@@ -1,51 +1,84 @@
 const { Buffer } = require('buffer');
 const aiService = require('../services/ai.service');
-
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_MODEL_TEXT   = 'gemini-3.1-flash-lite';   // fast text + vision + audio
-const GEMINI_MODEL_VISION = 'gemini-3.1-flash-lite';   // supports image input
-
-// ── Key helpers ───────────────────────────────────────────────────────────────
-function getGeminiKey()  { return process.env.GEMINI_API_KEY; }
-
-// ── Gemini text helper ────────────────────────────────────────────────────────
-// systemPrompt is folded into the first user turn (Gemini supports systemInstruction
-// in v1beta but folding is simpler and equally effective for these tasks).
-async function geminiFetch(model, body, timeoutMs = 25_000) {
-  const apiKey = getGeminiKey();
-  if (!apiKey) {
-    const err = new Error('GEMINI_API_KEY is not configured. Add it to server/.env');
-    err.statusCode = 500;
-    throw err;
-  }
-  return fetch(`${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    signal: AbortSignal.timeout(timeoutMs),
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-// Extract text from a Gemini response JSON
-function geminiText(json) {
-  return json?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-}
+const { geminiFetch, geminiText, geminiUsage, GEMINI_MODEL_TEXT, GEMINI_MODEL_VISION } = require('../services/gemini.service');
+const healthInsightsService = require('../services/health-insights.service');
+const sathiContextService = require('../services/sathi-context.service');
+const helpService = require('../services/help.service');
 
 // ── Sathi AI system prompt ────────────────────────────────────────────────────
-const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, intelligent AI health assistant for elderly users built into the TinyBit app.
+const SATHI_ACTIONS = [
+  { route: '/breathing-exercise',    label: 'Try a Breathing Exercise' },
+  { route: '/meditation',            label: 'Try Meditation' },
+  { route: '/nature-sounds',         label: 'Listen to Nature Sounds' },
+  { route: '/bhajans',               label: 'Listen to Bhajans' },
+  { route: '/jokes-fun',             label: 'Jokes & Fun' },
+  { route: '/mind-games',            label: 'Play Brain Games' },
+  { route: '/exercise',              label: 'Start an Exercise' },
+  { route: '/mood-lift',             label: 'Open Mood Lift' },
+  { route: '/daily-health-checkin',  label: 'Complete Daily Check-in' },
+  { route: '/health-vault',          label: 'Open Health Vault' },
+  { route: '/care-calendar',         label: 'Open Care Calendar' },
+  { route: '/weather',               label: 'Check the Weather' },
+  { route: '/calorie-calculator',    label: 'Open Calorie Tracker' },
+  { route: '/self-medicine',         label: 'Open Self-Medicine' },
+  { route: '/memory-history',        label: 'View Memory History' },
+  { route: '/sos',                   label: 'Get Help (SOS)' },
+  { route: '/(tabs)/medicine',       label: 'View Your Medicines' },
+  { route: '/(tabs)/journal',        label: 'Open Journal' },
+];
+
+const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, caring companion for elderly users built into the TinyBit app — texting with them like a close family member would, not filing a clinical report.
 Your role is to help users manage their health, remember medicines, stay connected with family, and feel supported.
 
 CORE GUIDELINES:
-- Keep responses concise, warm, and reassuring — never clinical or overwhelming.
-- Use a calm, caring tone suitable for elderly users.
-- If asked about medicines or health data, reference the USER CONTEXT provided.
+- LENGTH (strict): 1-3 short sentences per reply. One main point per turn. Never stack multiple
+  paragraphs, never list out several suggestions at once — pick the single most relevant thing.
+- TONE: Talk like a warm companion texting, not a clinical bot reciting a protocol. Skip formal
+  transitions ("It is important to...", "Please try to..."). Contractions and simple, everyday words
+  are welcome.
+- DON'T REPEAT YOURSELF: Never end every reply with the same tacked-on question (e.g. always asking
+  "would you like me to message X, or is there anything else?"). Vary your wording turn to turn, and
+  only offer to contact a family member when it's genuinely warranted, not as a reflexive closer.
+- WHAT THE APP CAN DO: TinyBit has these in-app features. When the user directly asks to do one of
+  them, attach the matching ACTION tag (see ACTION SUGGESTIONS below):
+  - Breathing exercise, meditation, nature sounds, bhajans, jokes & fun, brain games (mind games,
+    puzzles, daily quiz), exercise routines
+  - Daily health check-in, mood lift, health vault (medical reports & history), care calendar
+    (appointments & reminders), medicines, self-medicine tracking, memory journal & memory history,
+    calorie tracker, weather & clothing tips, SOS / emergency help, help guide (app tutorials)
+  - Example mappings: "play a game" → brain games; "show my reports" → health vault; "what's the
+    weather" → weather; "plan a meal" → calorie tracker; "remember/record something" → journal;
+    "help me exercise" → exercise; "call for help" → SOS.
+- ROLE AWARENESS: The USER CONTEXT lists the user's Role ("elder" or "guardian"). Respect what that
+  role can access in the app:
+  - Elders use: medicines, journal/memories, Sathi chat, brain games, exercises, health vault, care
+    calendar, weather, calorie tracker, mood lift, SOS, self-medicine.
+  - Guardians primarily monitor elders: they see location, alerts, and guardian reports. They do NOT
+    have the elder-only tabs (medicines, journal, Sathi chat, daily check-in for themselves), so never
+    suggest those tabs to a guardian — suggest monitoring-oriented actions instead.
+  - If you are unsure whether a role can use a feature, do not suggest an ACTION tag for it.
+- The USER CONTEXT below is live data from the app (profile, today's medicines and whether each was
+  taken, today's check-in, next appointment, emergency contact). Reference it when asked about any
+  of these. If something isn't listed there, say you don't have that on file — never invent it.
+- The APP HELP FAQ below is the official, admin-maintained answer set for "how do I..." questions
+  about using the app. When a user asks something matching one of these, answer from it directly
+  rather than guessing at app behavior.
 - Never diagnose or replace professional medical advice — always suggest consulting a doctor for serious concerns.
-- LANGUAGE RULE (highest priority): Detect the script/language of the user's most recent message and respond in that exact language.
+- LANGUAGE RULE (highest priority, overrides everything else including USER CONTEXT): Detect the
+  script/language of the user's most recent message ONLY — ignore any language field elsewhere —
+  and respond in that exact language. Example: if the user writes "I'm tired" (English), you must
+  reply in English, even if their app is set to Hindi elsewhere — the message language always wins.
   Hindi → Devanagari | Tamil → Tamil script | Bengali → Bengali script | Gujarati → Gujarati script | Marathi → Devanagari | English → English
   Never respond in a different language than the one used, regardless of any other instruction.
 - FORMATTING RULE: Plain prose by default. Only use **bold** for a key word/phrase, and "- " bullet
   lines for an actual list of items (e.g. medicine names, steps). Never use headers, tables, code
-  blocks, or links — the app cannot render them.`;
+  blocks, or markdown links — the app cannot render them.
+- ACTION SUGGESTIONS: Only add a [[ACTION:<route>|<label>]] tag when the user EXPLICITLY asks to do
+  something the app can do (e.g. "play a game", "show my medicines", "start an exercise"). Do NOT add
+  a tag when the user greets you, asks what you can do, asks for general help/advice, or mentions a
+  feature only in passing. At most one tag per reply, copied exactly from the list below — never
+  invent a route or label. If nothing was explicitly requested, reply with plain text only.
+${SATHI_ACTIONS.map((a) => `  - [[ACTION:${a.route}|${a.label}]]`).join('\n')}`;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. CHAT — Gemini
@@ -96,7 +129,7 @@ const clearChatHistory = async (req, res) => {
 
 const chat = async (req, res) => {
   try {
-    const { messages, context } = req.body || {};
+    const { messages } = req.body || {};
     if (!Array.isArray(messages)) {
       return res.status(400).json({ success: false, message: '`messages` must be an array' });
     }
@@ -122,9 +155,31 @@ const chat = async (req, res) => {
       return res.json({ success: true, data: { content: lastMsg.content }, provider: lastMsg.provider || 'unknown' });
     }
 
-    const systemPrompt = `${SATHI_SYSTEM}\n\nUSER CONTEXT:\n${context ?? 'No context provided.'}`;
+    let contextText;
+    try {
+      contextText = await sathiContextService.buildSathiContext(userId);
+    } catch (contextErr) {
+      console.warn('[Sathi] context build failed:', contextErr.message);
+      contextText = 'No context available.';
+    }
+
+    let faqText = 'No FAQ content available.';
+    try {
+      const faqs = await helpService.listActiveFaqs();
+      if (faqs.length > 0) {
+        faqText = faqs.map((f) => `Q: ${f.question}\nA: ${f.answer}`).join('\n\n');
+      }
+    } catch (faqErr) {
+      console.warn('[Sathi] FAQ fetch failed:', faqErr.message);
+    }
+
+    // Stable prefix first (system + FAQ rarely change) so implicit context
+    // caching can hit on the largest contiguous block; the live per-user
+    // context trails at the end where it changes every turn.
+    const systemPrompt = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}\n\nUSER CONTEXT:\n${contextText}`;
 
     let replyContent = '';
+    let usage = { prompt_tokens: null, completion_tokens: null, total_tokens: null, cached_tokens: null };
     const provider = 'gemini';
 
     try {
@@ -136,12 +191,13 @@ const chat = async (req, res) => {
 
       const geminiResp = await geminiFetch(GEMINI_MODEL_TEXT, {
         contents,
-        generationConfig: { maxOutputTokens: 1024, temperature: 0.7 },
+        generationConfig: { maxOutputTokens: 220, temperature: 0.85 },
       });
 
       if (geminiResp.ok) {
         const json = await geminiResp.json();
         replyContent = geminiText(json);
+        usage = geminiUsage(json);
       } else {
         const errBody = await geminiResp.text();
         console.warn('[Sathi] Gemini error:', geminiResp.status, errBody);
@@ -156,14 +212,22 @@ const chat = async (req, res) => {
       return res.status(502).json({ success: false, message: 'AI service error: Gemini request failed' });
     }
 
-    // Save assistant response
+    // Save assistant response with exact Gemini usageMetadata for this turn
     await aiService.saveMessage(userId, {
       role: 'assistant',
       content: replyContent,
       provider,
+      prompt_tokens: usage.prompt_tokens,
+      completion_tokens: usage.completion_tokens,
+      total_tokens: usage.total_tokens,
+      cached_tokens: usage.cached_tokens,
     });
 
-    return res.json({ success: true, data: { content: replyContent }, provider });
+    return res.json({
+      success: true,
+      data: { content: replyContent, usage },
+      provider,
+    });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -172,7 +236,24 @@ const chat = async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 // 2. TRANSCRIBE — Gemini audio understanding
 // ═══════════════════════════════════════════════════════════════════════════════
-const TRANSCRIBE_PROMPT = 'Transcribe this audio recording exactly as spoken, word for word. Respond with ONLY the transcription text — no preamble, no quotation marks, no commentary, no timestamps, no duration markers (e.g. "00:00"), and no bracketed labels like "[silence]". If the audio is silent, contains no speech, or is unintelligible, respond with a completely empty string and nothing else.';
+// Audio-transcription models (Gemini included, same as Whisper) are known to
+// hallucinate a plausible sentence for silent/near-silent clips instead of
+// honoring a free-text "respond with nothing" instruction. Asking the model to
+// commit to an explicit hasSpeech boolean via a JSON schema — and having the
+// server discard the transcript whenever hasSpeech is false, regardless of what
+// text the model produced — is materially more reliable than trusting free-text
+// emptiness. This is a second, independent layer on top of the client-side
+// mic-silence gate in useSathiVoice.ts; neither alone is 100% reliable.
+const TRANSCRIBE_PROMPT = 'Listen to this audio clip. First decide whether it contains any actual intelligible human speech — silence, ambient/background noise, static, breathing, or unintelligible mumbling all count as NOT speech. Set "hasSpeech" to true only if there is real, intelligible speech. If "hasSpeech" is true, put the exact word-for-word transcription in "transcript" (no preamble, no quotation marks, no commentary, no timestamps). If "hasSpeech" is false, set "transcript" to an empty string.';
+
+const TRANSCRIBE_RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    hasSpeech:  { type: 'BOOLEAN' },
+    transcript: { type: 'STRING' },
+  },
+  required: ['hasSpeech', 'transcript'],
+};
 
 const transcribe = async (req, res) => {
   try {
@@ -190,7 +271,12 @@ const transcribe = async (req, res) => {
           { text: TRANSCRIBE_PROMPT },
         ],
       }],
-      generationConfig: { maxOutputTokens: 1024, temperature: 0 },
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0,
+        responseMimeType: 'application/json',
+        responseSchema: TRANSCRIBE_RESPONSE_SCHEMA,
+      },
     }, 30_000);
 
     if (!geminiResp.ok) {
@@ -199,7 +285,21 @@ const transcribe = async (req, res) => {
     }
 
     const json = await geminiResp.json();
-    const text = geminiText(json).trim();
+    const raw = geminiText(json).trim();
+
+    let text = '';
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.hasSpeech === true && typeof parsed.transcript === 'string') {
+        text = parsed.transcript.trim();
+      }
+    } catch {
+      // Malformed JSON from the model — treat as no usable speech rather than
+      // falling back to raw text, which is exactly the unverified path that
+      // let hallucinated sentences through before.
+      text = '';
+    }
+
     return res.json({ success: true, data: { text } });
   } catch (error) {
     return res.status(502).json({ success: false, message: 'Transcription error', detail: error?.message || 'Server error' });
@@ -226,9 +326,10 @@ const analyzeReport = async (req, res) => {
 
     const safeMime = mimeType?.trim() || 'image/jpeg';
     const isImage = safeMime.startsWith('image/');
+    const isPdf = safeMime === 'application/pdf';
 
-    // ── Try Gemini Vision for images ─────────────────────────────────────────
-    if (isImage) {
+    // ── Try Gemini Vision for images and PDFs ────────────────────────────────
+    if (isImage || isPdf) {
       try {
         const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
           contents: [{
@@ -260,7 +361,7 @@ const analyzeReport = async (req, res) => {
       }
     }
 
-    return res.status(502).json({ success: false, message: 'Document classification is only supported for images at this time.' });
+    return res.status(502).json({ success: false, message: 'Document classification is only supported for images and PDFs at this time.' });
   } catch (error) {
     return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
   }
@@ -458,171 +559,34 @@ overallStatus must be: "Good", "Fair", or "Needs Attention". alertLevel must be:
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 7. HEALTH FORECAST — Gemini Vision
-//    Extracts health metrics from a report image/PDF and returns structured
-//    insights + recommendations tailored for elderly users.
+// 7. HEALTH FORECAST — Gemini Vision (single document)
+//    Core prompt/parsing logic lives in health-insights.service.js so it can be
+//    reused by the Health Vault per-record "AI Insights" endpoint.
 // ═══════════════════════════════════════════════════════════════════════════════
-const FORECAST_PROMPT = `You are a medical AI assistant analyzing a health document for an elderly patient. Extract every health metric and provide a clear, simple forecast.
-
-Respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "reportType": "Blood Test|Prescription|X-Ray|Scan|General Report|Unknown",
-  "summary": "1-2 sentences summarizing the overall health status from this report",
-  "alertLevel": "normal|caution|alert",
-  "metrics": [
-    {
-      "name": "Metric name (e.g. Hemoglobin, Blood Sugar, Cholesterol)",
-      "value": "Measured value with unit (e.g. 11.2 g/dL)",
-      "status": "normal|low|high|borderline",
-      "normalRange": "Normal reference range (e.g. 12-17 g/dL)",
-      "insight": "1 simple sentence relevant to elderly health"
-    }
-  ],
-  "riskFactors": ["Risk 1 identified from this report"],
-  "recommendations": ["Clear, actionable recommendation for elderly patient"],
-  "followUp": "When and what type of follow-up is suggested"
-}
-
-Rules:
-- Extract ALL numeric values visible (blood counts, glucose, cholesterol, BP, etc.)
-- For X-ray/MRI/CT: describe findings as metrics (e.g. name:"Bone Density", value:"Mild reduction")
-- For prescriptions: list key medications (name: drug name, value: dosage + frequency)
-- alertLevel: "normal"=all values in range, "caution"=borderline/mild abnormal, "alert"=significantly abnormal
-- Recommendations must be simple and appropriate for elderly users (65+)
-- If unreadable or no metrics found, respond: {"reportType":"Unknown","summary":"Could not extract health data from this document.","alertLevel":"normal","metrics":[],"riskFactors":[],"recommendations":["Please share a clearer image of your report"],"followUp":"Consult your doctor for interpretation"}`;
-
 const healthForecast = async (req, res) => {
   try {
     const { base64, mimeType, category, title } = req.body || {};
-
-    if (typeof base64 !== 'string' || base64.length < 100) {
-      return res.status(400).json({ success: false, message: 'base64 document content is required' });
-    }
-
-    const safeMime = mimeType?.trim() || 'image/jpeg';
-    const isImage  = safeMime.startsWith('image/');
-    // Gemini supports both images and PDFs via inlineData
-    const geminiSupported = isImage || safeMime === 'application/pdf';
-
-    const contextNote = [
-      title    ? `Document title: ${title}` : '',
-      category ? `Document category: ${category}` : '',
-    ].filter(Boolean).join('. ');
-    const prompt = contextNote ? `${FORECAST_PROMPT}\n\nContext: ${contextNote}` : FORECAST_PROMPT;
-
-    if (!geminiSupported) {
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-    }
-
-    try {
-      const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
-        contents: [{
-          parts: [
-            { inlineData: { mimeType: safeMime, data: base64 } },
-            { text: prompt },
-          ],
-        }],
-        generationConfig: { maxOutputTokens: 1200, temperature: 0.2 },
-      }, 60_000);   // large PDFs need up to ~45 s
-
-      if (geminiResp.ok) {
-        const json    = await geminiResp.json();
-        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
-        try {
-          const result = JSON.parse(content);
-          return res.json({ success: true, data: result, provider: 'gemini' });
-        } catch {
-          return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-        }
-      }
-
-      const errBody = await geminiResp.text();
-      console.warn('[healthForecast] Gemini error:', geminiResp.status, errBody);
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.', detail: errBody });
-    } catch (geminiErr) {
-      console.warn('[healthForecast] Gemini failed:', geminiErr.message);
-      return res.status(502).json({ success: false, message: 'Health forecast AI is currently unavailable.' });
-    }
+    const result = await healthInsightsService.runHealthForecast({ base64, mimeType, category, title });
+    return res.json({ success: true, data: result, provider: 'gemini' });
   } catch (error) {
-    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+    console.warn('[healthForecast] failed:', error?.message);
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error', detail: error?.detail });
   }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 8. HEALTH FORECAST MULTI — analyse several reports together in one Gemini call
+//    Core logic lives in health-insights.service.js so it can be reused by the
+//    Health Vault "Compare Reports" endpoint.
 // ═══════════════════════════════════════════════════════════════════════════════
-const MULTI_FORECAST_PROMPT = `You are a medical AI performing a comprehensive cross-report health analysis for an elderly patient. Multiple health documents are provided. Identify trends, improvements, and deteriorations across them.
-
-Respond ONLY with valid JSON (no markdown, no extra text):
-{
-  "reportType": "Multi-Report Analysis",
-  "summary": "2-3 sentences summarising overall health trends across ALL provided documents",
-  "alertLevel": "normal|caution|alert",
-  "metrics": [
-    {
-      "name": "Metric name",
-      "value": "Latest or trended value with unit",
-      "status": "normal|low|high|borderline",
-      "normalRange": "Reference range",
-      "insight": "How this metric changed across the reports (improving / stable / worsening)"
-    }
-  ],
-  "riskFactors": ["Risk factor identified from cross-report comparison"],
-  "recommendations": ["Actionable recommendation based on multi-report trends for elderly patient"],
-  "followUp": "Specific follow-up suggested based on trends seen across the documents"
-}
-
-Rules:
-- Compare values across reports chronologically — always note if improving, stable, or declining.
-- alertLevel: "normal" = trends positive, "caution" = some borderline trends, "alert" = significant worsening.
-- If only one document is readable, still analyse it and note limited trend data.`;
-
 const healthForecastMulti = async (req, res) => {
   try {
     const { records } = req.body || {};
-    if (!Array.isArray(records) || records.length < 1) {
-      return res.status(400).json({ success: false, message: 'At least one record is required' });
-    }
-
-    // Build Gemini content parts — one inlineData block per document
-    const parts = [];
-    for (const rec of records) {
-      if (typeof rec.base64 !== 'string' || rec.base64.length < 100) continue;
-      parts.push({ inlineData: { mimeType: rec.mimeType || 'image/jpeg', data: rec.base64 } });
-      parts.push({ text: `[${rec.category || 'Document'}: "${rec.title || 'Record'}" — ${rec.date || 'Date unknown'}]` });
-    }
-
-    if (parts.length === 0) {
-      return res.status(400).json({ success: false, message: 'No readable documents found in the selection' });
-    }
-
-    parts.push({ text: MULTI_FORECAST_PROMPT });
-
-    // ── Try Gemini Vision ────────────────────────────────────────────────────
-    try {
-      const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
-        contents: [{ parts }],
-        generationConfig: { maxOutputTokens: 1500, temperature: 0.2 },
-      }, 90_000);   // larger timeout — processing N documents takes longer
-
-      if (geminiResp.ok) {
-        const json    = await geminiResp.json();
-        const content = geminiText(json).trim().replace(/```json|```/g, '').trim();
-        try {
-          const result = JSON.parse(content);
-          return res.json({ success: true, data: result, provider: 'gemini' });
-        } catch { /* fall through */ }
-      } else {
-        const errBody = await geminiResp.text();
-        console.warn('[healthForecastMulti] Gemini error:', geminiResp.status, errBody);
-      }
-    } catch (geminiErr) {
-      console.warn('[healthForecastMulti] Gemini failed:', geminiErr.message);
-    }
-
-    return res.status(502).json({ success: false, message: 'Multi-report trend analysis AI is currently unavailable.' });
+    const result = await healthInsightsService.runMultiHealthForecast(records);
+    return res.json({ success: true, data: result, provider: 'gemini' });
   } catch (error) {
-    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error' });
+    console.warn('[healthForecastMulti] failed:', error?.message);
+    return res.status(error?.statusCode || 500).json({ success: false, message: error?.message || 'Server error', detail: error?.detail });
   }
 };
 
@@ -630,22 +594,28 @@ const healthForecastMulti = async (req, res) => {
 // 9. SUGGEST MEAL — Gemini (Calorie Tracker "Eat Next" tab)
 // ═══════════════════════════════════════════════════════════════════════════════
 const MEAL_TYPES = new Set(['breakfast', 'lunch', 'dinner', 'snack']);
+const DIET_TYPES = new Set(['balanced', 'diabetic', 'heart-healthy', 'high-protein', 'vegetarian', 'low-sodium', 'weight-loss']);
 
 const suggestMeal = async (req, res) => {
   try {
-    const { meal_type: mealType, remaining_calories: remainingCalories, context } = req.body || {};
+    const { meal_type: mealType, remaining_calories: remainingCalories, context, diet_type: dietType } = req.body || {};
     const safeMealType = String(mealType || '').toLowerCase();
+    const safeDietType = DIET_TYPES.has(dietType) ? dietType : null;
 
     if (!MEAL_TYPES.has(safeMealType)) {
       return res.status(400).json({ success: false, message: `meal_type must be one of: ${[...MEAL_TYPES].join(', ')}` });
     }
+
+    const dietaryConstraint = safeDietType === 'vegetarian'
+      ? '\n\nSTRICT DIETARY CONSTRAINT (do not violate): This user is vegetarian. Every suggestion MUST exclude meat, poultry, fish, seafood, and eggs — no exceptions, even if it seems like a good fit otherwise.'
+      : '';
 
     const prompt = `You are a certified nutrition expert AI helping an elderly user plan their next meal.
 
 Meal to plan: ${safeMealType}
 Remaining calories for today: ${remainingCalories ?? 'unknown'} kcal
 USER CONTEXT:
-${context ?? 'No context provided.'}
+${context ?? 'No context provided.'}${dietaryConstraint}
 
 Suggest 2-3 realistic, healthy meal options for a ${safeMealType} that fit within the remaining calories, taking into account any health context above.
 

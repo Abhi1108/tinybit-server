@@ -18,6 +18,11 @@ async function findByPhone(phoneE164) {
   return rows[0] ?? null;
 }
 
+async function findById(id) {
+  const rows = await query('SELECT * FROM app_users WHERE id = ? LIMIT 1', [id]);
+  return rows[0] ?? null;
+}
+
 async function findExistingProfileId(phoneE164, email) {
   const byMobile = await query(
     'SELECT id FROM profiles WHERE mobile = ? LIMIT 1',
@@ -49,7 +54,31 @@ async function findOrCreateByPhone(phoneE164, email) {
     return { user: existing, isNewUser: false };
   }
 
+  // No app_users row matches this phone, but a profile for the same person may still exist —
+  // matched by mobile or by the derived phone auth email. This happens for guardian-created
+  // "shadow" elders, and for accounts whose app_users.phone_e164 has drifted from profiles.mobile
+  // (e.g. a normalization mismatch, or a mobile added to the profile after a Google/email signup).
   const preservedId = await findExistingProfileId(phoneE164, email);
+
+  if (preservedId) {
+    // profiles.id is an FK onto app_users.id, so a found profile id almost always ALREADY has an
+    // app_users row. Adopt it (and repair the phone drift that caused the lookup miss) instead of
+    // inserting — an INSERT with this id would collide on the PRIMARY key (the bug this fixes).
+    const existingById = await findById(preservedId);
+    if (existingById) {
+      if (existingById.phone_e164 !== phoneE164) {
+        try {
+          await execute('UPDATE app_users SET phone_e164 = ? WHERE id = ?', [phoneE164, preservedId]);
+        } catch (err) {
+          // Another account already owns this phone (unique key) — leave the row as-is rather than
+          // failing the sign-in; the caller still gets a valid, existing account back.
+          if (!isDuplicateKeyError(err)) throw err;
+        }
+      }
+      const refreshed = await findById(preservedId);
+      return { user: refreshed ?? existingById, isNewUser: false };
+    }
+  }
 
   try {
     const user = await insertAppUser({
@@ -60,7 +89,9 @@ async function findOrCreateByPhone(phoneE164, email) {
     return { user, isNewUser: true };
   } catch (err) {
     if (isDuplicateKeyError(err)) {
-      const retry = await findByPhone(phoneE164);
+      // Lost a race (or drift we didn't catch above): recover by phone, then by the preserved id.
+      const retry =
+        (await findByPhone(phoneE164)) || (preservedId ? await findById(preservedId) : null);
       if (retry) return { user: retry, isNewUser: false };
     }
     throw err;
@@ -167,11 +198,22 @@ async function revokeRefreshToken(refreshToken) {
   );
 }
 
+async function isProfileDeleted(userId) {
+  const rows = await query('SELECT deleted_at FROM profiles WHERE id = ? LIMIT 1', [userId]);
+  return !!rows[0]?.deleted_at;
+}
+
 async function refreshSessionFromToken(refreshToken) {
   const validated = await validateRefreshToken(refreshToken);
   if (!validated) {
     const err = new Error('Session refresh failed');
     err.status = 401;
+    throw err;
+  }
+
+  if (await isProfileDeleted(validated.user.id)) {
+    const err = new Error('This account has been deactivated.');
+    err.status = 403;
     throw err;
   }
 
@@ -200,31 +242,42 @@ async function findByEmail(email) {
   return rows[0] ?? null;
 }
 
-function googlePlaceholderPhone(firebaseUid) {
+function socialPlaceholderPhone(firebaseUid) {
   const digits = firebaseUid.replace(/\D/g, '').slice(0, 15);
   return `+99${digits.padEnd(15, '0').slice(0, 15)}`;
 }
 
-async function upsertGoogleProfile({ id, email, fullName }) {
+/**
+ * Deliberately does NOT persist `fullName` (or a real `role`) to `profiles` on creation —
+ * only `email`. The mobile onboarding flow (role.tsx -> your-name.tsx) is the single place
+ * `full_name`/`role` get confirmed, for Google, Apple, and phone-OTP sign-in alike. If this
+ * pre-filled `full_name` from the provider, the app's `needsNameSetup`/`needsRoleSetup` checks
+ * would treat onboarding as already complete and skip role selection entirely, permanently
+ * defaulting every social sign-up to the `role` column's DB default ('elder') with no way to
+ * choose guardian. `role='elder'` below is just a NOT-NULL placeholder — your-name.tsx's
+ * first `PATCH /auth/profile` always overwrites it with the user's actual choice.
+ */
+async function upsertSocialProfile({ id, email }) {
   await execute(
     `INSERT INTO profiles (
-       id, email, full_name, role, plan_type, plan_status, plan_currency, streak
-     ) VALUES (?, ?, ?, 'elder', 'free', 'active', 'INR', 0)
+       id, email, role, plan_type, plan_status, plan_currency, streak
+     ) VALUES (?, ?, 'elder', 'free', 'active', 'INR', 0)
      ON DUPLICATE KEY UPDATE
-       email = VALUES(email),
-       full_name = COALESCE(VALUES(full_name), full_name)`,
-    [id, email, fullName?.trim() || null],
+       email = VALUES(email)`,
+    [id, email],
   );
 }
 
-async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
+/** Shared by Google and Apple — both authenticate via a verified Firebase ID token and resolve
+ *  identity purely by email, with no provider-specific column. */
+async function findOrCreateBySocialProvider({ email, firebaseUid }) {
   const normalizedEmail = String(email).trim().toLowerCase();
   const existing = await findByEmail(normalizedEmail);
   if (existing) {
     return { user: existing, isNewUser: false };
   }
 
-  const phoneE164 = googlePlaceholderPhone(firebaseUid);
+  const phoneE164 = socialPlaceholderPhone(firebaseUid);
   const preservedId = await findExistingProfileId(phoneE164, normalizedEmail);
 
   try {
@@ -234,10 +287,9 @@ async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
       id: preservedId ?? undefined,
     });
 
-    await upsertGoogleProfile({
+    await upsertSocialProfile({
       id: user.id,
       email: normalizedEmail,
-      fullName,
     });
 
     return { user, isNewUser: true };
@@ -248,6 +300,14 @@ async function findOrCreateByGoogle({ email, fullName, firebaseUid }) {
     }
     throw err;
   }
+}
+
+async function findOrCreateByGoogle({ email, firebaseUid }) {
+  return findOrCreateBySocialProvider({ email, firebaseUid });
+}
+
+async function findOrCreateByApple({ email, firebaseUid }) {
+  return findOrCreateBySocialProvider({ email, firebaseUid });
 }
 
 module.exports = {
@@ -263,4 +323,6 @@ module.exports = {
   findAppUserById,
   findByEmail,
   findOrCreateByGoogle,
+  findOrCreateByApple,
+  isProfileDeleted,
 };

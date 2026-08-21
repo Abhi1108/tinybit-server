@@ -1,8 +1,17 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
 
 dotenv.config();
+
+// ─── Initialize Filesystem Storage ────────────────────────────────────────
+// If using local filesystem storage, create uploads directory
+if (process.env.STORAGE_TYPE !== 's3') {
+  const storageFs = require('./services/storage-filesystem.service');
+  storageFs.ensureUploadsDir();
+  console.log('[Storage] Initialized filesystem storage');
+}
 
 const app = express();
 app.set('trust proxy', true);
@@ -11,6 +20,12 @@ app.use(express.json({
   limit: '25mb',
   strict: true,
   type: ['application/json', 'application/*+json'],
+  // Capture the exact raw bytes alongside the parsed body — the Razorpay webhook
+  // signature (src/controllers/payment-webhooks.controller.js) must be computed over
+  // the untouched raw request, not a re-serialization of the parsed JSON.
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
 }));
 
 // ── Health check first — no deps, responds instantly ─────────────────────────
@@ -31,13 +46,21 @@ app.get('/api/health', async (req, res) => {
     message: 'TinyBit API is running',
     db,
     dbOk,
+    storage: process.env.STORAGE_TYPE || 'filesystem',
+    timestamp: new Date().toISOString()
   });
+});
+
+// ── Public pages (no auth) ───────────────────────────────────────────────────
+app.get('/delete-account', (req, res) => {
+  res.sendFile(path.join(__dirname, 'views', 'delete-account.html'));
 });
 
 // ── Routes — static requires so Vercel bundles all route files ─────────────
 app.use('/api/auth',        require('./routes/auth.routes'));
 app.use('/api/ai',          require('./routes/ai.routes'));
 app.use('/api/guardian',    require('./routes/guardian.routes'));
+app.use('/api/payments',    require('./routes/payments.routes'));
 app.use('/api/sos',         require('./routes/sos.routes'));
 app.use('/api/wellness',    require('./routes/wellness.routes'));
 app.use('/api/medicines',   require('./routes/medicine.routes'));
@@ -54,6 +77,10 @@ app.use('/api/content',     require('./routes/content.routes'));
 app.use('/api/mood-media',  require('./routes/mood-media.routes'));
 app.use('/api/storage',     require('./routes/storage.routes'));
 app.use('/api/calorie-tracker', require('./routes/calorie-tracker.routes'));
+app.use('/api/streak',      require('./routes/streak.routes'));
+app.use('/api/help',        require('./routes/help.routes'));
+app.use('/api/notifications', require('./routes/notifications.routes'));
+app.use('/api/contact-us',  require('./routes/contact-us.routes'));
 app.use('/admin',           require('./routes/admin.routes'));
 
 // ── OpenAPI / Swagger UI (mobile API only — excludes /admin) ────────────────
@@ -91,6 +118,11 @@ if (!process.env.VERCEL) {
     if (!process.env.GEMINI_API_KEY)              console.warn('⚠️  GEMINI_API_KEY not set');
     if (!process.env.OTP_TOKEN_SECRET)            console.warn('⚠️  OTP_TOKEN_SECRET not set — using fallback secret');
   });
+
+  // Same guard as app.listen() above — only the one long-running EC2+PM2 process should run
+  // the scheduler, never a Vercel serverless invocation (plan Section 6).
+  require('./cron').startCronJobs();
+  console.log('✅ Cron notification checks scheduled (every 15 min)');
 }
 
 module.exports = app;

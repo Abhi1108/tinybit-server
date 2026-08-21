@@ -2,18 +2,30 @@ const { query, execute } = require('../config/mysql');
 
 const SETTINGS_BOOL_COLUMNS = new Set([
   'voice_navigation',
-  'vibration_alerts',
   'fall_detection',
   'night_mode',
+  'notify_medicine',
+  'notify_wellness',
+  'notify_journal',
+  'notify_health_reports',
+  'notify_care_calendar',
+  'notify_family',
+  'notify_location',
 ]);
 
 const SETTINGS_COLUMNS = [
   'voice_navigation',
-  'vibration_alerts',
   'fall_detection',
   'night_mode',
   'font_scale',
   'language',
+  'notify_medicine',
+  'notify_wellness',
+  'notify_journal',
+  'notify_health_reports',
+  'notify_care_calendar',
+  'notify_family',
+  'notify_location',
 ];
 
 function serializeSettingValue(key, value) {
@@ -40,8 +52,10 @@ function parseSettingsRow(row) {
 
 async function getSettings(userId) {
   const rows = await query(
-    `SELECT user_id, voice_navigation, vibration_alerts, fall_detection,
-            night_mode, font_scale, language, updated_at
+    `SELECT user_id, voice_navigation, fall_detection,
+            night_mode, font_scale, language,
+            notify_medicine, notify_wellness, notify_journal, notify_health_reports,
+            notify_care_calendar, notify_family, notify_location, updated_at
      FROM user_settings WHERE user_id = ? LIMIT 1`,
     [userId],
   );

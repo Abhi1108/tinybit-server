@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   country_code         VARCHAR(8)    NULL,
   location             VARCHAR(255)  NULL,
   preferred_language   VARCHAR(16)   NULL,
+  timezone             VARCHAR(64)   NULL,
+  -- IANA name, e.g. 'Asia/Kolkata', 'America/New_York'. NULL = not yet set (pre-rollout account).
   profile_image        TEXT          NULL,
   blood_group          VARCHAR(16)   NULL,
   height               DECIMAL(10,2) NULL,
@@ -108,13 +110,17 @@ CREATE TABLE IF NOT EXISTS profiles (
   family_code          VARCHAR(64)   NULL,
   push_token           TEXT          NULL,
   plan_type            VARCHAR(32)   NOT NULL DEFAULT 'free',
-  plan_status          VARCHAR(32)   NOT NULL DEFAULT 'active',
+  -- 'inactive' until a guardian completes their first payment (see payment_orders/payments;
+  -- CONTEXT.md Q6) — elders' plan_status is never checked, this default is harmless for them.
+  plan_status          VARCHAR(32)   NOT NULL DEFAULT 'inactive',
   plan_started_at      DATETIME(3)   NULL,
   plan_expires_at      DATETIME(3)   NULL,
   plan_amount          DECIMAL(12,2) NULL,
   plan_currency        VARCHAR(8)    NOT NULL DEFAULT 'INR',
   plan_interval        VARCHAR(16)   NULL,
+  plan_elder_count     INT           NULL,
   streak               INT           NOT NULL DEFAULT 0,
+  best_streak          INT           NOT NULL DEFAULT 0,
   is_banned            TINYINT(1)    NOT NULL DEFAULT 0,
   last_active          DATETIME(3)   NULL,
   health_qr_token      VARCHAR(64)   NULL,
@@ -123,6 +129,8 @@ CREATE TABLE IF NOT EXISTS profiles (
   other_condition      TEXT          NULL,
   doctor_name          VARCHAR(255)  NULL,
   doctor_contact       VARCHAR(64)   NULL,
+  deleted_at           DATETIME(3)   NULL,
+  deleted_by           VARCHAR(255)  NULL,
   created_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uq_profiles_email (email),
@@ -132,10 +140,29 @@ CREATE TABLE IF NOT EXISTS profiles (
   KEY idx_profiles_mobile (mobile),
   KEY idx_profiles_is_banned (is_banned),
   KEY idx_profiles_created_at (created_at),
+  KEY idx_profiles_deleted_at (deleted_at),
   CONSTRAINT chk_profiles_role
     CHECK (role IN ('elder', 'guardian', 'caregiver', 'admin')),
   CONSTRAINT fk_profiles_app_user
     FOREIGN KEY (id) REFERENCES app_users (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Streak activity log — one row per user per UTC calendar day the app was
+-- opened. Backs the "This Week" / "This Month" streak calendar views and the
+-- lifetime "Total Days" count.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS streak_activity_log (
+  id            CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id       CHAR(36)     NOT NULL,
+  activity_date DATE         NOT NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_streak_activity_user_date (user_id, activity_date),
+  KEY idx_streak_activity_user (user_id, activity_date DESC),
+  CONSTRAINT fk_streak_activity_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -174,14 +201,25 @@ CREATE TABLE IF NOT EXISTS guardian_elder_links (
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS user_settings (
-  user_id            CHAR(36)     NOT NULL,
-  voice_navigation   TINYINT(1)   NOT NULL DEFAULT 0,
-  vibration_alerts   TINYINT(1)   NOT NULL DEFAULT 1,
-  fall_detection     TINYINT(1)   NOT NULL DEFAULT 1,
-  night_mode         TINYINT(1)   NOT NULL DEFAULT 0,
-  font_scale         DECIMAL(4,2) NOT NULL DEFAULT 1.00,
-  language           VARCHAR(16)  NOT NULL DEFAULT 'en',
-  updated_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  user_id                CHAR(36)     NOT NULL,
+  voice_navigation       TINYINT(1)   NOT NULL DEFAULT 0,
+  fall_detection         TINYINT(1)   NOT NULL DEFAULT 1,
+  night_mode             TINYINT(1)   NOT NULL DEFAULT 0,
+  font_scale             DECIMAL(4,2) NOT NULL DEFAULT 1.00,
+  language               VARCHAR(16)  NOT NULL DEFAULT 'en',
+  -- Push-notification category opt-outs (Reminders & Alerts settings screen). Each gates only
+  -- the *push* for its category — the in-app notification inbox always stays complete
+  -- regardless, per this project's "every notification gets an inbox row" convention. Safety-
+  -- critical types (sos_alert, guardian_reminder) are intentionally NOT covered by any of
+  -- these — they're always sent, see ALWAYS_ON_NOTIFICATION_TYPES in notifications.service.js.
+  notify_medicine        TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_wellness        TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_journal         TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_health_reports  TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_care_calendar   TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_family          TINYINT(1)   NOT NULL DEFAULT 1,
+  notify_location        TINYINT(1)   NOT NULL DEFAULT 1,
+  updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (user_id),
   CONSTRAINT chk_user_settings_font_scale
     CHECK (font_scale >= 0.5 AND font_scale <= 2.0),
@@ -426,6 +464,8 @@ CREATE TABLE IF NOT EXISTS health_records (
   uri         TEXT         NULL,
   mime_type   VARCHAR(128) NULL,
   ai_read     TINYINT(1)   NOT NULL DEFAULT 0,
+  ai_insights JSON         NULL,
+  ai_insights_at DATETIME(3) NULL,
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_health_records_user_ts (user_id, timestamp DESC),
@@ -433,6 +473,20 @@ CREATE TABLE IF NOT EXISTS health_records (
   CONSTRAINT chk_health_records_category
     CHECK (category IN ('Reports', 'Prescriptions', 'Prescription', 'X-Rays', 'Blood Tests', 'Blood Test')),
   CONSTRAINT fk_health_records_profile
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- "My Doctors" — a user's own saved contacts (Health Records screen), distinct
+-- from the admin-managed public `doctors` catalog used for appointment booking.
+CREATE TABLE IF NOT EXISTS saved_doctors (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id     CHAR(36)     NOT NULL,
+  name        VARCHAR(255) NOT NULL,
+  phone       VARCHAR(32)  NOT NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_saved_doctors_user (user_id, created_at),
+  CONSTRAINT fk_saved_doctors_profile
     FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -505,6 +559,7 @@ CREATE TABLE IF NOT EXISTS family_messages (
   sender_id   CHAR(36)     NOT NULL,
   receiver_id CHAR(36)     NOT NULL,
   message     TEXT         NOT NULL,
+  audio_url   TEXT         NULL,
   created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_family_messages_receiver (receiver_id, created_at DESC),
@@ -520,12 +575,15 @@ CREATE TABLE IF NOT EXISTS family_messages (
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS ai_conversations (
-  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
-  user_id    CHAR(36)     NULL,
-  role       VARCHAR(32)  NOT NULL,
-  content    TEXT         NOT NULL,
-  provider   VARCHAR(64)  NULL,
-  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  id                CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id           CHAR(36)     NULL,
+  role              VARCHAR(32)  NOT NULL,
+  content           TEXT         NOT NULL,
+  provider          VARCHAR(64)  NULL,
+  prompt_tokens     INT          NULL,
+  completion_tokens INT          NULL,
+  total_tokens      INT          NULL,
+  created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_ai_conversations_user (user_id, created_at DESC),
   KEY idx_ai_conversations_created (created_at),
@@ -651,6 +709,203 @@ CREATE TABLE IF NOT EXISTS notifications (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- Push tokens — one row per device/install. Replaces profiles.push_token
+-- (single column, one token per user — overwritten on every new device login,
+-- so a guardian with two devices silently loses push on one of them). token is
+-- globally unique, not (user_id, token): an Expo push token is scoped to the
+-- physical device + app install, not to whichever account is logged in, so a
+-- save is always an upsert — the token belongs to whoever registered it most
+-- recently, no orphaned dual-ownership possible. profiles.push_token is left
+-- in place for now (unused going forward) pending a confirmed follow-up to
+-- drop it — see docs/push-notifications-progress.md.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS push_tokens (
+  id           CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id      CHAR(36)     NOT NULL,
+  token        VARCHAR(255) NOT NULL,
+  platform     ENUM('ios','android','web') NOT NULL,
+  device_id    VARCHAR(255) NULL,
+  created_at   DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  last_seen_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_push_tokens_token (token),
+  KEY idx_push_tokens_user (user_id),
+  CONSTRAINT fk_push_tokens_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Cron notification claim log (plan Section 15.1) — atomic claim-then-send so a
+-- 15-minute cron tick can never double-send the same (user, type, entity, date)
+-- combination, even if a tick overlaps a slow previous run or the host scales beyond
+-- one process. Mirrors streak_activity_log's INSERT IGNORE + unique-key idiom exactly
+-- (same pattern already proven in production, not a new one). entity_id disambiguates
+-- checks that can fire more than once per day per user (medicine_missed keys on
+-- medicine_id, care_event_reminder on the event id); every other check uses ''.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS cron_notification_log (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id    CHAR(36)     NOT NULL,
+  type       VARCHAR(64)  NOT NULL,
+  entity_id  VARCHAR(64)  NOT NULL DEFAULT '',
+  sent_date  DATE         NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_cron_notif (user_id, type, entity_id, sent_date),
+  CONSTRAINT fk_cron_notif_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Action-triggered notification debounce log (plan Section 17.3) — a sibling to
+-- cron_notification_log, but a rolling time window instead of a permanent once-per-day
+-- claim: a genuine repeat action (editing the same medicine again next week) must still
+-- notify, only a near-instant duplicate (a double-tap, a network retry) should be
+-- suppressed. See shouldSendActionNotification in notifications.service.js for the
+-- atomic INSERT ... ON DUPLICATE KEY UPDATE idiom that makes the race-safety work without
+-- a permanent unique-claim row blocking future legitimate sends.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS action_notification_log (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  user_id    CHAR(36)     NOT NULL,
+  type       VARCHAR(64)  NOT NULL,
+  entity_id  VARCHAR(64)  NOT NULL DEFAULT '',
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_action_notif (user_id, type, entity_id),
+  CONSTRAINT fk_action_notif_user
+    FOREIGN KEY (user_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Push receipt tickets (plan Section 10 point 4 / 13.5) — every successful Expo push send
+-- returns a ticket with a receipt id; the actual delivery outcome (including
+-- `DeviceNotRegistered`, meaning the token is dead — app uninstalled, OS revoked it) is only
+-- available a while later via a separate receipts lookup. No FK to push_tokens: a token can be
+-- reassigned to a different user (Phase 2's design) or already deleted by the time its receipt
+-- is checked, and pruning matches on the raw token string regardless of current ownership.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS push_receipt_tickets (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  ticket_id  VARCHAR(64)  NOT NULL,
+  token      VARCHAR(255) NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_push_receipt_ticket (ticket_id),
+  KEY idx_push_receipt_tickets_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Admin panel roles (dynamic). Env Super Admin is not a row in admin_users.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS admin_roles (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  name        VARCHAR(64)  NOT NULL,
+  label       VARCHAR(128) NOT NULL,
+  description TEXT         NULL,
+  permissions JSON         NOT NULL,
+  status      ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  is_system   TINYINT(1)   NOT NULL DEFAULT 0,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_roles_name (name),
+  KEY idx_admin_roles_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO admin_roles (id, name, label, description, permissions, status, is_system) VALUES
+(
+  'a0000001-0000-4000-8000-000000000001',
+  'super_admin',
+  'Super Admin',
+  'Full access to all modules and settings',
+  JSON_ARRAY('*'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000002',
+  'operations_admin',
+  'Operations Admin',
+  'Manages daily operations, users, and SOS events',
+  JSON_ARRAY('User Management', 'SOS Management', 'Support Tickets', 'Notifications', 'Dashboard'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000003',
+  'content_manager',
+  'Content Manager',
+  'Manages videos, FAQs, and content library',
+  JSON_ARRAY('Content Management', 'FAQ Management', 'Notifications (Read)', 'Dashboard (Read)'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000004',
+  'support_manager',
+  'Support Manager',
+  'Handles all support tickets and user queries',
+  JSON_ARRAY('Support Tickets', 'User Queries', 'Chat Support', 'Escalation', 'Dashboard (Read)'),
+  'active',
+  1
+),
+(
+  'a0000001-0000-4000-8000-000000000005',
+  'moderator',
+  'Moderator',
+  'Read-only access with basic moderation actions',
+  JSON_ARRAY('Dashboard (Read)', 'Users (Read)', 'SOS (Read)'),
+  'active',
+  1
+);
+
+-- Managed admin accounts. Super Admin uses env credentials only.
+CREATE TABLE IF NOT EXISTS admin_users (
+  id            CHAR(36)     NOT NULL DEFAULT (UUID()),
+  username      VARCHAR(64)  NOT NULL,
+  email         VARCHAR(255) NOT NULL,
+  name          VARCHAR(255) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role_id       CHAR(36)     NOT NULL,
+  status        ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+  last_login_at DATETIME(3)  NULL,
+  created_by    VARCHAR(255) NULL,
+  created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_admin_users_username (username),
+  UNIQUE KEY uq_admin_users_email (email),
+  KEY idx_admin_users_status (status),
+  KEY idx_admin_users_role (role_id),
+  CONSTRAINT fk_admin_users_role
+    FOREIGN KEY (role_id) REFERENCES admin_roles (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Admin audit log
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS admin_audit_log (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  actor       VARCHAR(255) NOT NULL,
+  action      VARCHAR(64)  NOT NULL,
+  target_type VARCHAR(32)  NOT NULL,
+  target_id   CHAR(36)     NULL,
+  details     JSON         NULL,
+  ip          VARCHAR(45)  NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_admin_audit_log_target (target_type, target_id),
+  KEY idx_admin_audit_log_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- Doctor booking catalog
 -- -----------------------------------------------------------------------------
 
@@ -678,13 +933,160 @@ CREATE TABLE IF NOT EXISTS doctors (
     CHECK (rating >= 0 AND rating <= 5)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- -----------------------------------------------------------------------------
+-- Help & Guide catalog (admin-managed, no seed data)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS help_tutorials (
+  id               CHAR(36)     NOT NULL DEFAULT (UUID()),
+  category         VARCHAR(64)  NOT NULL,
+  title            VARCHAR(255) NOT NULL,
+  description      TEXT         NULL,
+  video_url        TEXT         NULL,
+  thumbnail_url    TEXT         NULL,
+  difficulty       VARCHAR(16)  NOT NULL DEFAULT 'beginner',
+  duration_seconds INT          NULL,
+  sort_order       INT          NOT NULL DEFAULT 0,
+  is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_help_tutorials_category (category, is_active, sort_order),
+  CONSTRAINT chk_help_tutorials_difficulty
+    CHECK (difficulty IN ('beginner', 'intermediate', 'advanced'))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS help_faqs (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  question    VARCHAR(500) NOT NULL,
+  answer      TEXT         NOT NULL,
+  sort_order  INT          NOT NULL DEFAULT 0,
+  is_active   TINYINT(1)   NOT NULL DEFAULT 1,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_help_faqs_active_sort (is_active, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- Guardian payments (Razorpay) — see tinybit-server/CONTEXT.md and docs/adr/000{1,2,3}
+-- for the design rationale (manual renewal, country x elder_count pricing tiers,
+-- flat-delta mid-cycle upgrades).
+-- -----------------------------------------------------------------------------
+
+-- Admin-editable (country_code, elder_count) -> price rules. country_code = '*' is
+-- the fallback for any country without an explicit row. elder_count beyond the
+-- highest configured row for a country reuses that row's price (tier caps out).
+CREATE TABLE IF NOT EXISTS payment_pricing_tiers (
+  id              CHAR(36)      NOT NULL DEFAULT (UUID()),
+  country_code    VARCHAR(4)    NOT NULL DEFAULT '*',
+  elder_count     INT           NOT NULL,
+  amount          DECIMAL(12,2) NOT NULL,
+  currency        VARCHAR(8)    NOT NULL,
+  interval_days   INT           NOT NULL DEFAULT 365,
+  is_active       TINYINT(1)    NOT NULL DEFAULT 1,
+  created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_pricing_country_eldercount (country_code, elder_count),
+  CONSTRAINT chk_pricing_elder_count CHECK (elder_count >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per Razorpay Order we create. Snapshots the tier at purchase time so
+-- history/refunds never depend on payment_pricing_tiers still having the same values.
+CREATE TABLE IF NOT EXISTS payment_orders (
+  id                       CHAR(36)      NOT NULL DEFAULT (UUID()),
+  guardian_id              CHAR(36)      NOT NULL,
+  razorpay_order_id        VARCHAR(64)   NOT NULL,
+  kind                     VARCHAR(16)   NOT NULL DEFAULT 'renewal',
+  pricing_tier_id          CHAR(36)      NULL,
+  elder_count_at_purchase  INT           NOT NULL,
+  amount                   DECIMAL(12,2) NOT NULL,          -- amount actually charged via Razorpay (full tier price for 'renewal'; delta for 'upgrade', ADR 0003)
+  tier_amount              DECIMAL(12,2) NOT NULL,          -- full price of the destination tier — applied to profiles.plan_amount regardless of kind
+  interval_days            INT           NOT NULL,          -- snapshotted from the tier — applied to profiles.plan_expires_at on 'renewal' (unchanged on 'upgrade', ADR 0003)
+  currency                 VARCHAR(8)    NOT NULL,
+  previous_tier_amount     DECIMAL(12,2) NULL,
+  previous_elder_count     INT           NULL,
+  receipt                  VARCHAR(64)   NOT NULL,
+  status                   VARCHAR(16)   NOT NULL DEFAULT 'created',
+  notes                    JSON          NULL,
+  created_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_orders_razorpay_id (razorpay_order_id),
+  KEY idx_payment_orders_guardian (guardian_id),
+  CONSTRAINT chk_payment_orders_kind CHECK (kind IN ('renewal', 'upgrade')),
+  CONSTRAINT chk_payment_orders_status CHECK (status IN ('created', 'paid', 'expired', 'cancelled')),
+  CONSTRAINT fk_payment_orders_guardian
+    FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per Razorpay Payment entity. An Order can have multiple payment
+-- attempts (retries after a failure); only one is ever captured.
+CREATE TABLE IF NOT EXISTS payments (
+  id                   CHAR(36)      NOT NULL DEFAULT (UUID()),
+  order_id             CHAR(36)      NOT NULL,
+  razorpay_payment_id  VARCHAR(64)   NOT NULL,
+  razorpay_signature   VARCHAR(255)  NULL,
+  method               VARCHAR(32)   NULL,
+  status               VARCHAR(16)   NOT NULL DEFAULT 'created',
+  amount               DECIMAL(12,2) NOT NULL,
+  currency             VARCHAR(8)    NOT NULL,
+  failure_code         VARCHAR(64)   NULL,
+  failure_reason       TEXT          NULL,
+  captured_at          DATETIME(3)   NULL,
+  raw_response         JSON          NULL,
+  created_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at           DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payments_razorpay_id (razorpay_payment_id),
+  KEY idx_payments_order (order_id),
+  CONSTRAINT chk_payments_status CHECK (status IN ('created', 'authorized', 'captured', 'failed', 'refunded')),
+  CONSTRAINT fk_payments_order
+    FOREIGN KEY (order_id) REFERENCES payment_orders (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Admin-initiated refunds only (no guardian-facing self-serve refund in this pass).
+CREATE TABLE IF NOT EXISTS payment_refunds (
+  id                  CHAR(36)      NOT NULL DEFAULT (UUID()),
+  payment_id          CHAR(36)      NOT NULL,
+  razorpay_refund_id  VARCHAR(64)   NOT NULL,
+  amount              DECIMAL(12,2) NOT NULL,
+  currency            VARCHAR(8)    NOT NULL,
+  speed               VARCHAR(16)   NOT NULL DEFAULT 'normal',
+  status              VARCHAR(16)   NOT NULL DEFAULT 'pending',
+  reason              TEXT          NULL,
+  initiated_by_admin  VARCHAR(255)  NULL,
+  raw_response        JSON          NULL,
+  created_at          DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at          DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_refunds_razorpay_id (razorpay_refund_id),
+  KEY idx_refunds_payment (payment_id),
+  CONSTRAINT chk_refunds_status CHECK (status IN ('pending', 'processed', 'failed')),
+  CONSTRAINT fk_refunds_payment
+    FOREIGN KEY (payment_id) REFERENCES payments (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Idempotency ledger — Razorpay may redeliver the same webhook event.
+CREATE TABLE IF NOT EXISTS payment_webhook_events (
+  id                 CHAR(36)     NOT NULL DEFAULT (UUID()),
+  razorpay_event_id  VARCHAR(64)  NOT NULL,
+  event_type         VARCHAR(64)  NOT NULL,
+  payload            JSON         NOT NULL,
+  processed_at       DATETIME(3)  NULL,
+  created_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_webhook_events_event_id (razorpay_event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- =============================================================================
--- End of schema — 29 tables
+-- End of schema — 39 tables
 -- =============================================================================
 -- app_users, refresh_tokens, otp_verifications
--- profiles, guardian_elder_links, user_settings, elder_locations
+-- profiles, streak_activity_log, guardian_elder_links, user_settings, elder_locations
 -- emergency_contacts, sos_alerts
 -- medicines, medicine_logs
 -- daily_checkins, mood_entries, health_readings, health_records
@@ -694,5 +1096,6 @@ SET FOREIGN_KEY_CHECKS = 1;
 -- mood_media_tracks, mood_media_favorites
 -- mind_games_scores, daily_quiz_questions, daily_inspirations
 -- notifications
--- doctors
+-- doctors, help_tutorials, help_faqs
+-- payment_pricing_tiers, payment_orders, payments, payment_refunds, payment_webhook_events
 -- =============================================================================

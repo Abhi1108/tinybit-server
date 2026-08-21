@@ -5,7 +5,7 @@ function readBody(req) {
 }
 
 function resolveUserId(req) {
-  return req.auth?.userId ?? req.supabase?.userId ?? null;
+  return req.auth?.userId ?? null;
 }
 
 function mapStorageError(err, res) {
@@ -92,4 +92,5 @@ async function presignDownload(req, res) {
 module.exports = {
   presignUpload,
   presignDownload,
+  mapStorageError,
 };

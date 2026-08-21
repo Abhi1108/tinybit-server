@@ -1,28 +1,28 @@
 const path = require('path');
-const jwt = require('jsonwebtoken');
 const { toE164, phoneToAuthEmail } = require('../utils/phone');
 const {
   createUserWithPassword,
-  deleteAppUser,
   findAppUserById,
   findByPhone,
   findOrCreateByPhone,
 } = require('../services/auth-users.service');
 const adminService = require('../services/admin.service');
+const auditService = require('../services/admin-audit.mysql');
+const adminUsersService = require('../services/admin-users.mysql');
+const adminRolesService = require('../services/admin-roles.mysql');
+const { signAdminToken, checkSession } = require('../services/admin-jwt');
+const { purgeUserById } = require('../services/user-purge.service');
 
-const ADMIN_JWT_AUD = 'tinybit-admin';
-const ADMIN_SESSION_TTL = '24h';
-
-function getAdminJwtSecret() {
-  return process.env.ADMIN_JWT_SECRET || process.env.JWT_SECRET || 'tinybit-admin-dev-secret';
-}
-
-function signAdminToken(username) {
-  return jwt.sign(
-    { sub: 'admin', username, role: 'admin' },
-    getAdminJwtSecret(),
-    { expiresIn: ADMIN_SESSION_TTL, audience: ADMIN_JWT_AUD },
-  );
+function publicAdminUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    role_id: user.role_id ?? null,
+    permissions: Array.isArray(user.permissions) ? user.permissions : [],
+  };
 }
 
 const PROFILE_PATCH_FIELDS = [
@@ -35,28 +35,325 @@ const PROFILE_PATCH_FIELDS = [
 
 // ── Auth ────────────────────────────────────────────────────────────────────
 
-const checkSession = (token) => {
-  try {
-    jwt.verify(token, getAdminJwtSecret(), { audience: ADMIN_JWT_AUD });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const login = (req, res) => {
+const login = async (req, res) => {
   const { username, password } = req.body ?? {};
-  const validUser = process.env.ADMIN_USERNAME ?? 'admin';
-  const validPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
-  if (username === validUser && password === validPass) {
-    const token = signAdminToken(username);
-    return res.json({ success: true, token, user: { username, role: 'admin' } });
+  const loginId = String(username ?? '').trim();
+  const pass = String(password ?? '');
+
+  if (!loginId || !pass) {
+    return res.status(400).json({ success: false, error: 'Username and password are required' });
   }
-  return res.status(401).json({ success: false, error: 'Invalid credentials' });
+
+  const envUser = process.env.ADMIN_USERNAME ?? 'admin';
+  const envPass = process.env.ADMIN_PASSWORD ?? 'tinybit2025';
+
+  // Super Admin — shared env credentials (never stored in admin_users).
+  if (loginId === envUser && pass === envPass) {
+    const permissions = ['*'];
+    const token = signAdminToken({
+      id: 'env-super-admin',
+      username: envUser,
+      role: 'super_admin',
+      roleId: adminRolesService.SYSTEM_SUPER_ADMIN_ID,
+      name: 'Super Admin',
+      permissions,
+    });
+    void auditService.recordSafe({
+      actor: envUser,
+      action: 'auth.login',
+      targetType: 'auth',
+      details: { username: envUser, role: 'super_admin' },
+      ip: req.ip,
+    });
+    return res.json({
+      success: true,
+      token,
+      user: publicAdminUser({
+        id: 'env-super-admin',
+        username: envUser,
+        name: 'Super Admin',
+        email: envUser,
+        role: 'super_admin',
+        role_id: adminRolesService.SYSTEM_SUPER_ADMIN_ID,
+        permissions,
+      }),
+    });
+  }
+
+  try {
+    const row = await adminUsersService.findByLogin(loginId);
+    if (!row || !(await adminUsersService.verifyPassword(row, pass))) {
+      void auditService.recordSafe({
+        actor: loginId || 'unknown',
+        action: 'auth.login_failed',
+        targetType: 'auth',
+        details: { username: loginId },
+        ip: req.ip,
+      });
+      return res.status(401).json({ success: false, error: 'Invalid credentials' });
+    }
+    if (row.status !== 'active') {
+      void auditService.recordSafe({
+        actor: row.username,
+        action: 'auth.login_failed',
+        targetType: 'auth',
+        details: { username: row.username, reason: 'inactive' },
+        ip: req.ip,
+      });
+      return res.status(403).json({ success: false, error: 'Account is inactive' });
+    }
+
+    const permissions = adminRolesService.parsePermissions(row.role_permissions);
+    if (!row.role_name || row.role_status !== 'active') {
+      return res.status(403).json({ success: false, error: 'Assigned role is inactive or missing' });
+    }
+
+    await adminUsersService.touchLastLogin(row.id);
+    const token = signAdminToken({
+      id: row.id,
+      username: row.username,
+      role: row.role_name,
+      roleId: row.role_id,
+      name: row.name,
+      permissions,
+    });
+    void auditService.recordSafe({
+      actor: row.username,
+      action: 'auth.login',
+      targetType: 'auth',
+      details: { username: row.username, role: row.role_name },
+      ip: req.ip,
+    });
+    return res.json({
+      success: true,
+      token,
+      user: publicAdminUser({
+        id: row.id,
+        username: row.username,
+        name: row.name,
+        email: row.email,
+        role: row.role_name,
+        role_id: row.role_id,
+        permissions,
+      }),
+    });
+  } catch (err) {
+    console.error('[admin.login]', err);
+    return res.status(500).json({ success: false, error: 'Login failed' });
+  }
 };
 
 const logout = (_req, res) => {
   return res.json({ success: true });
+};
+
+// ── Managed admin accounts (super_admin only) ───────────────────────────────
+
+const listAdminAccounts = async (req, res) => {
+  try {
+    const admins = await adminUsersService.listAdmins({
+      search: req.query.search,
+      status: req.query.status,
+    });
+    return res.json({ success: true, admins });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const createAdminAccount = async (req, res) => {
+  try {
+    const { username, email, name, password, role_id: roleId } = req.body ?? {};
+    if (!username?.trim() || !email?.trim() || !name?.trim() || !password || !roleId) {
+      return res.status(400).json({
+        success: false,
+        error: 'username, email, name, password, and role_id are required',
+      });
+    }
+    if (String(password).length < 8) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+    }
+
+    const envUser = process.env.ADMIN_USERNAME ?? 'admin';
+    if (String(username).trim() === envUser) {
+      return res.status(409).json({
+        success: false,
+        error: 'Username is reserved for the Super Admin shared credential',
+      });
+    }
+
+    const admin = await adminUsersService.createAdmin({
+      username,
+      email,
+      name,
+      password,
+      roleId,
+      createdBy: req.admin?.username ?? 'unknown',
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.create',
+      targetType: 'admin_user',
+      targetId: admin.id,
+      details: { username: admin.username, email: admin.email, role_id: roleId },
+      ip: req.ip,
+    });
+    return res.status(201).json({ success: true, admin });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Username or email already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const updateAdminAccount = async (req, res) => {
+  try {
+    const admin = await adminUsersService.updateAdmin(req.params.id, {
+      name: req.body?.name,
+      email: req.body?.email,
+      status: req.body?.status,
+      roleId: req.body?.role_id,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.update',
+      targetType: 'admin_user',
+      targetId: admin.id,
+      details: { username: admin.username, status: admin.status, role_id: admin.role_id },
+      ip: req.ip,
+    });
+    return res.json({ success: true, admin });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Email already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const resetAdminPassword = async (req, res) => {
+  try {
+    const { password } = req.body ?? {};
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ success: false, error: 'Password must be at least 8 characters' });
+    }
+    await adminUsersService.resetPassword(req.params.id, password);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.password_reset',
+      targetType: 'admin_user',
+      targetId: req.params.id,
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteAdminAccount = async (req, res) => {
+  try {
+    const existing = await adminUsersService.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Admin not found' });
+    }
+    await adminUsersService.deleteAdmin(req.params.id);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'admin.delete',
+      targetType: 'admin_user',
+      targetId: req.params.id,
+      details: { username: existing.username },
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+// ── Roles ───────────────────────────────────────────────────────────────────
+
+const listRoles = async (_req, res) => {
+  try {
+    const roles = await adminRolesService.listRoles();
+    return res.json({
+      success: true,
+      roles,
+      permission_catalog: adminRolesService.PERMISSION_CATALOG,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const createRole = async (req, res) => {
+  try {
+    const role = await adminRolesService.createRole({
+      label: req.body?.label,
+      description: req.body?.description,
+      permissions: req.body?.permissions,
+      status: req.body?.status,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.create',
+      targetType: 'admin_role',
+      targetId: role.id,
+      details: { name: role.name, label: role.label },
+      ip: req.ip,
+    });
+    return res.status(201).json({ success: true, role });
+  } catch (err) {
+    if (err?.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ success: false, error: 'Role name already exists' });
+    }
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const updateRole = async (req, res) => {
+  try {
+    const role = await adminRolesService.updateRole(req.params.id, {
+      label: req.body?.label,
+      description: req.body?.description,
+      permissions: req.body?.permissions,
+      status: req.body?.status,
+    });
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.update',
+      targetType: 'admin_role',
+      targetId: role.id,
+      details: { name: role.name, label: role.label },
+      ip: req.ip,
+    });
+    return res.json({ success: true, role });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const deleteRole = async (req, res) => {
+  try {
+    const existing = await adminRolesService.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Role not found' });
+    }
+    await adminRolesService.deleteRole(req.params.id);
+    void auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'role.delete',
+      targetType: 'admin_role',
+      targetId: req.params.id,
+      details: { name: existing.name },
+      ip: req.ip,
+    });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
 };
 
 // ── Dashboard ───────────────────────────────────────────────────────────────
@@ -82,10 +379,10 @@ const getAnalytics = async (req, res) => {
 // ── Users ───────────────────────────────────────────────────────────────────
 
 const getUsers = async (req, res) => {
-  const { role, search, status, page = '1', limit = '20' } = req.query;
+  const { role, search, status, page = '1', limit = '20', deleted } = req.query;
 
   try {
-    const result = await adminService.getUsers({ role, search, status, page, limit });
+    const result = await adminService.getUsers({ role, search, status, page, limit, deleted });
     return res.json({ success: true, ...result });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -219,6 +516,14 @@ const createUser = async (req, res) => {
     });
 
     const profile = await adminService.upsertProfile(profilePayload);
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'user.create',
+      targetType: 'user',
+      targetId: appUser.id,
+      details: { role, phone: phoneE164 },
+      ip: req.ip,
+    });
     return res.status(201).json({ success: true, profile, app_user: appUser });
   } catch (err) {
     if (err.code === 'USER_EXISTS') {
@@ -243,6 +548,14 @@ const updateUser = async (req, res) => {
 
   try {
     const profile = await adminService.updateProfile(id, patch);
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'user.update',
+      targetType: 'user',
+      targetId: id,
+      details: { fields: Object.keys(patch) },
+      ip: req.ip,
+    });
     return res.json({ success: true, profile });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -254,6 +567,13 @@ const banUser = async (req, res) => {
   const { banned } = req.body;
   try {
     await adminService.updateProfile(id, { is_banned: !!banned });
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: banned ? 'user.ban' : 'user.unban',
+      targetType: 'user',
+      targetId: id,
+      ip: req.ip,
+    });
     return res.json({ success: true });
   } catch (err) {
     return res.status(err.status || 500).json({
@@ -265,15 +585,42 @@ const banUser = async (req, res) => {
 
 const deleteUser = async (req, res) => {
   const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
   try {
-    const appUser = await findAppUserById(id);
-    if (appUser) {
-      await deleteAppUser(id);
-      return res.json({ success: true });
+    await adminService.softDeleteProfile(id, actor);
+    await auditService.recordSafe({ actor, action: 'user.trash', targetType: 'user', targetId: id, ip: req.ip });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const restoreUser = async (req, res) => {
+  const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
+  try {
+    await adminService.restoreProfile(id);
+    await auditService.recordSafe({ actor, action: 'user.restore', targetType: 'user', targetId: id, ip: req.ip });
+    return res.json({ success: true });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const purgeUser = async (req, res) => {
+  const { id } = req.params;
+  const actor = req.admin?.username ?? 'unknown';
+  try {
+    const trashed = await adminService.getDeletedProfile(id);
+    if (!trashed) {
+      return res.status(404).json({ success: false, error: 'User not found' });
+    }
+    if (!trashed.deleted_at) {
+      return res.status(409).json({ success: false, error: 'User must be moved to trash before it can be purged' });
     }
 
-    await adminService.deleteProfile(id);
-    return res.json({ success: true });
+    const result = await purgeUserById(id, actor, req.ip);
+    return res.json({ success: true, deletedObjectCount: result.deletedObjectCount, s3Failures: result.s3Failures });
   } catch (err) {
     return res.status(err.status || 500).json({ success: false, error: err.message });
   }
@@ -325,6 +672,17 @@ const getMedicines = async (req, res) => {
   try {
     const medicines = await adminService.getMedicines({ page, limit, category, priority, active });
     return res.json({ success: true, medicines });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getHealthReadings = async (req, res) => {
+  const { page = 1, limit = 100, type } = req.query;
+
+  try {
+    const readings = await adminService.getHealthReadings({ page, limit, type });
+    return res.json({ success: true, readings });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -496,17 +854,66 @@ const getMindGames = async (req, res) => {
   }
 };
 
+const getSosAlerts = async (req, res) => {
+  const { page = 1, limit = 20, status } = req.query;
+  try {
+    const alerts = await adminService.getSosAlerts({ page, limit, status });
+    return res.json({ success: true, alerts });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const updateSosAlert = async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body ?? {};
+  try {
+    const alert = await adminService.updateSosAlert(id, { status });
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: `sos.${status}`,
+      targetType: 'sos_alert',
+      targetId: id,
+      details: { status },
+      ip: req.ip,
+    });
+    return res.json({ success: true, alert });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const getNotifications = async (req, res) => {
+  const { page = 1, limit = 50, type, search } = req.query;
+  try {
+    const notifications = await adminService.getNotifications({ page, limit, type, search });
+    return res.json({ success: true, notifications });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Broadcast Notification ────────────────────────────────────────────────────
 
 const broadcast = async (req, res) => {
-  const { title, body } = req.body ?? {};
+  const { title, body, audience } = req.body ?? {};
   if (!title || !body) {
     return res.status(400).json({ success: false, error: 'title and body are required' });
   }
 
+  const allowedAudience = new Set(['all', 'elders', 'guardians']);
+  const target = audience && allowedAudience.has(audience) ? audience : 'all';
+
   try {
-    const sent = await adminService.broadcastNotification(title, body);
-    return res.json({ success: true, sent });
+    const sent = await adminService.broadcastNotification(title, body, { audience: target === 'all' ? undefined : target });
+    await auditService.recordSafe({
+      actor: req.admin?.username ?? 'unknown',
+      action: 'notification.broadcast',
+      targetType: 'notification',
+      details: { title, sent, audience: target },
+      ip: req.ip,
+    });
+    return res.json({ success: true, sent, audience: target });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -517,6 +924,85 @@ const getHealthRecords = async (req, res) => {
   try {
     const result = await adminService.getHealthRecords({ page, limit, category, user_id, search });
     return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getEmergencyContacts = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const contacts = await adminService.getEmergencyContacts({ page, limit, search });
+    return res.json({ success: true, contacts });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getJournalEntries = async (req, res) => {
+  const { page = 1, limit = 50, type, search } = req.query;
+  try {
+    const entries = await adminService.getJournalEntries({ page, limit, type, search });
+    return res.json({ success: true, entries });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getFamilyMessages = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const messages = await adminService.getFamilyMessages({ page, limit, search });
+    return res.json({ success: true, messages });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getElderLocations = async (req, res) => {
+  const { page = 1, limit = 100, sharing } = req.query;
+  try {
+    const locations = await adminService.getElderLocations({ page, limit, sharing });
+    return res.json({ success: true, locations });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getAppointments = async (req, res) => {
+  const { page = 1, limit = 50, status, search } = req.query;
+  try {
+    const appointments = await adminService.getAppointments({ page, limit, status, search });
+    return res.json({ success: true, appointments });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getStreaks = async (req, res) => {
+  const { page = 1, limit = 50, search } = req.query;
+  try {
+    const streaks = await adminService.getStreaks({ page, limit, search });
+    return res.json({ success: true, streaks });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getUserSubscriptions = async (req, res) => {
+  const { page = 1, limit = 50, status, search } = req.query;
+  try {
+    const subscriptions = await adminService.getUserSubscriptions({ page, limit, status, search });
+    return res.json({ success: true, subscriptions });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+const getRevenueSummary = async (req, res) => {
+  try {
+    const summary = await adminService.getRevenueSummary();
+    return res.json({ success: true, summary });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }
@@ -541,6 +1027,39 @@ const deleteHealthRecord = async (req, res) => {
   }
 };
 
+// ── Audit log ────────────────────────────────────────────────────────────────
+
+const getAuditLogs = async (req, res) => {
+  const { page = '1', limit = '50', action, search, target_type: targetType, status } = req.query;
+  try {
+    const result = await auditService.list({ page, limit, action, search, targetType, status });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+const exportAuditLogs = async (req, res) => {
+  try {
+    const rows = await auditService.listAll();
+    const header = ['created_at', 'actor', 'action', 'target_type', 'target_id', 'ip', 'details'];
+    const escape = (v) => {
+      const s = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v);
+      return s.includes(',') || s.includes('"') ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [
+      header.join(','),
+      ...rows.map((r) => header.map((k) => escape(r[k])).join(',')),
+    ];
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="tinybit-audit-log.csv"');
+    return res.send(lines.join('\n'));
+  } catch (err) {
+    return res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
 // ── Serve dashboard ───────────────────────────────────────────────────────────
 
 const serveDashboard = (req, res) => {
@@ -548,22 +1067,45 @@ const serveDashboard = (req, res) => {
 };
 
 module.exports = {
-  checkSession,
+  checkSession, // re-export from admin-jwt for any legacy imports
   login, logout,
+  listAdminAccounts,
+  createAdminAccount,
+  updateAdminAccount,
+  resetAdminPassword,
+  deleteAdminAccount,
+  listRoles,
+  createRole,
+  updateRole,
+  deleteRole,
   serveDashboard,
   getStats, getAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
-  banUser, deleteUser,
+  banUser, deleteUser, restoreUser, purgeUser,
   getConnections, updateConnection, deleteConnection,
   getMedicines,
   getCheckIns,
   getMoods,
+  getHealthReadings,
   getAIConversations,
   getCareEvents,
   createCareEvent,
   deleteCareEvent,
   getMindGames,
+  getSosAlerts,
+  updateSosAlert,
+  getNotifications,
   broadcast,
   getHealthRecords,
   deleteHealthRecord,
+  getEmergencyContacts,
+  getJournalEntries,
+  getFamilyMessages,
+  getElderLocations,
+  getAppointments,
+  getStreaks,
+  getUserSubscriptions,
+  getRevenueSummary,
+  getAuditLogs,
+  exportAuditLogs,
 };

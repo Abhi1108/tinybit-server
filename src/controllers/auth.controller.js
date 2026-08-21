@@ -1,5 +1,8 @@
-const { toE164, phoneToAuthEmail, formatMobile } = require('../utils/phone');
+const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164 } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
+const crypto = require('crypto');
+const { execute } = require('../config/mysql');
+const { softDeleteProfile } = require('../services/admin.service');
 const {
   findOrCreateByPhone,
   findByPhone,
@@ -9,7 +12,12 @@ const {
   revokeRefreshToken,
   refreshSessionFromToken,
   findOrCreateByGoogle,
+  findOrCreateByApple,
+  isProfileDeleted,
 } = require('../services/auth-users.service');
+const { getOrCreateMonitorUser } = require('../services/monitor-user.service');
+
+const DEACTIVATED_MESSAGE = 'This account has been deactivated.';
 const {
   upsertProfile,
   getProfileById,
@@ -59,6 +67,10 @@ async function login(req, res) {
       });
     }
 
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+    }
+
     const session = await issueSession(user);
 
     return res.json({
@@ -69,6 +81,49 @@ async function login(req, res) {
     console.error('[auth/login]', err);
     const status = err.message?.includes('expired') ? 400 : 500;
     return res.status(status).json({ success: false, message: err.message || 'Login failed' });
+  }
+}
+
+/**
+ * POST /api/auth/monitor-login — programmatic login for the n8n morning health-report bot.
+ * Env-gated by MONITOR_LOGIN_USERNAME / MONITOR_LOGIN_PASSWORD (404 if unset, same pattern as
+ * /api/payments/dev-complete). Credentials are compared in constant time and NEVER stored in the
+ * DB; the underlying user is a passwordless, lazily-created "monitor" account (see
+ * src/services/monitor-user.service.js) that the normal /api/auth/login can never authenticate.
+ * Returns the standard session shape so the rest of the flow is unchanged.
+ */
+async function monitorLogin(req, res) {
+  const envUsername = process.env.MONITOR_LOGIN_USERNAME;
+  const envPassword = process.env.MONITOR_LOGIN_PASSWORD;
+  if (!envUsername || !envPassword) {
+    // Hide the route when the feature is off — don't reveal it exists.
+    return res.status(404).json({ success: false, message: 'Not found' });
+  }
+
+  const { username, password } = req.body ?? {};
+  const loginId = String(username ?? '').trim();
+  const pass = String(password ?? '');
+
+  if (!loginId || !pass) {
+    return res.status(400).json({ success: false, message: 'Username and password are required' });
+  }
+
+  const validUsername = Buffer.from(loginId).length === Buffer.from(envUsername).length
+    && crypto.timingSafeEqual(Buffer.from(loginId), Buffer.from(envUsername));
+  const validPassword = Buffer.from(pass).length === Buffer.from(envPassword).length
+    && crypto.timingSafeEqual(Buffer.from(pass), Buffer.from(envPassword));
+
+  if (!validUsername || !validPassword) {
+    return res.status(401).json({ success: false, message: 'Invalid credentials', code: 'AUTH_FAILED' });
+  }
+
+  try {
+    const user = await getOrCreateMonitorUser();
+    const session = await issueSession(user);
+    return res.json({ success: true, session });
+  } catch (err) {
+    console.error('[auth/monitor-login]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Monitor login failed' });
   }
 }
 
@@ -149,6 +204,9 @@ async function refreshSession(req, res) {
     });
   } catch (err) {
     console.error('[auth/refresh] FAIL - error:', err.message || err);
+    if (err.status === 403) {
+      return res.status(403).json({ success: false, message: err.message });
+    }
     const status = err.status === 401 ? 401 : 500;
     return res.status(status).json({ success: false, message: 'Session refresh failed' });
   }
@@ -168,6 +226,32 @@ async function logout(req, res) {
   } catch (err) {
     console.error('[auth/logout]', err);
     return res.status(500).json({ success: false, message: 'Logout failed' });
+  }
+}
+
+/**
+ * POST /api/auth/delete-account — self-service account deletion.
+ * Soft-delete only (sets profiles.deleted_at via the same softDeleteProfile the admin "trash
+ * user" path already uses — no data is actually erased here; a separate, already-existing
+ * grace-period/purge flow handles hard deletion later). Explicitly clears every push_tokens row
+ * for this user across all devices — unlike logout (which only clears the current device),
+ * account deletion must stop push to every device immediately, and can't rely on the
+ * push_tokens table's ON DELETE CASCADE since the profile row itself isn't being deleted here.
+ */
+async function deleteAccount(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    await softDeleteProfile(userId, 'self');
+    await execute('DELETE FROM push_tokens WHERE user_id = ?', [userId]);
+
+    return res.json({ success: true, message: 'Account deleted' });
+  } catch (err) {
+    console.error('[auth/delete-account]', err);
+    return res.status(err.status || 500).json({ success: false, message: err.message || 'Could not delete account' });
   }
 }
 
@@ -244,19 +328,19 @@ async function googleAuth(req, res) {
       });
     }
 
-    const fullName = decoded.name ?? decoded.display_name ?? null;
+    // Deliberately NOT persisting decoded.name to profiles.full_name here — the mobile
+    // onboarding flow (role.tsx -> your-name.tsx) must be the sole place full_name/role get
+    // confirmed for a new user, same as phone-OTP sign-in. Pre-filling it from Google would
+    // make the app's needsNameSetup/needsRoleSetup checks treat onboarding as already done,
+    // skipping role selection entirely and permanently defaulting to the 'elder' DB default.
+    // See src/services/auth-users.mysql.js#upsertGoogleProfile for the matching fix.
     const { user, isNewUser } = await findOrCreateByGoogle({
       email,
-      fullName,
       firebaseUid: decoded.uid,
     });
 
-    if (fullName && isNewUser) {
-      await upsertProfile({
-        id: user.id,
-        full_name: fullName,
-        email: user.email,
-      });
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
     }
 
     const session = await issueSession(user);
@@ -269,6 +353,87 @@ async function googleAuth(req, res) {
   } catch (err) {
     console.error('[auth/google]', err);
     return res.status(500).json({ success: false, message: err.message || 'Google sign-in failed' });
+  }
+}
+
+/** POST /api/auth/apple — Firebase Apple ID token → TinyBit session */
+async function appleAuth(req, res) {
+  try {
+    const { idToken } = req.body ?? {};
+    if (!idToken) {
+      return res.status(400).json({ success: false, message: 'idToken is required' });
+    }
+
+    let token;
+    try {
+      token = normalizeIdToken(idToken);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'idToken is invalid',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = await verifyFirebaseIdToken(token);
+    } catch (err) {
+      const status = getFirebaseAdminStatus();
+      const claims = peekJwtClaims(token);
+      console.error('[auth/apple] token verify failed:', err.code || err.message, {
+        adminProjectId: status.projectId,
+        expectedProjectId: status.expectedProjectId,
+        tokenLength: token.length,
+        tokenClaims: claims,
+      });
+
+      let hint;
+      if (token.length < MIN_FIREBASE_ID_TOKEN_LENGTH) {
+        hint = 'App sent a value that is too short to be a Firebase ID token. Rebuild the app — OTP digits must not be sent as idToken.';
+      } else if (claims?.iss && !String(claims.iss).includes('securetoken.google.com')) {
+        hint = 'App sent an Apple OAuth token, not a Firebase ID token. Rebuild the app and sign in again.';
+      } else if (claims?.aud && claims.aud !== status.expectedProjectId) {
+        hint = `Token audience is "${claims.aud}" but server expects "${status.expectedProjectId}".`;
+      } else if (status.projectMatchesApp === false) {
+        hint = `Server Firebase project (${status.projectId}) does not match app (${status.expectedProjectId}).`;
+      }
+
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid Apple sign-in token',
+        hint,
+      });
+    }
+
+    const email = decoded.email;
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Apple account must include an email address',
+      });
+    }
+
+    // See findOrCreateByGoogle above / auth-users.mysql.js#upsertSocialProfile — same
+    // deliberate omission of full_name/role from the provider applies here.
+    const { user, isNewUser } = await findOrCreateByApple({
+      email,
+      firebaseUid: decoded.uid,
+    });
+
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+    }
+
+    const session = await issueSession(user);
+
+    return res.json({
+      success: true,
+      isNewUser,
+      session,
+    });
+  } catch (err) {
+    console.error('[auth/apple]', err);
+    return res.status(500).json({ success: false, message: err.message || 'Apple sign-in failed' });
   }
 }
 
@@ -331,9 +496,10 @@ async function phoneAuth(req, res) {
       });
     }
 
-    const phoneE164 = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber.replace(/\D/g, '')}`;
-    const digitsOnly = phoneE164.replace(/\D/g, '');
-    const email = `${digitsOnly}@phone.tinybit.app`;
+    // Same canonicalizer the guardian "create elder" path uses, so a phone that was stored at
+    // create time resolves to the identical E.164 here (Firebase already returns E.164 form).
+    const phoneE164 = canonicalizeE164(phoneNumber);
+    const email = authEmailFromE164(phoneE164);
 
     const { user, isNewUser } = await findOrCreateByPhone(phoneE164, email);
 
@@ -343,6 +509,10 @@ async function phoneAuth(req, res) {
         email: user.email,
         mobile: phoneE164,
       });
+    }
+
+    if (await isProfileDeleted(user.id)) {
+      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
     }
 
     const session = await issueSession(user);
@@ -358,11 +528,11 @@ async function phoneAuth(req, res) {
   }
 }
 
-/** PATCH /api/auth/profile — upsert onboarding / profile fields (service role, no Supabase JWT on client). */
+/** PATCH /api/auth/profile — upsert onboarding / profile fields (custom JWT auth, no client-side DB access). */
 async function updateProfile(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
-    const email = req.auth?.email ?? req.supabase?.email;
+    const userId = req.auth?.userId;
+    const email = req.auth?.email;
     const body = req.body ?? {};
 
     const allowed = [
@@ -372,7 +542,10 @@ async function updateProfile(req, res) {
       'full_name',
       'mobile',
       'location',
+      'country',
+      'country_code',
       'preferred_language',
+      'timezone',
       'biological_sex',
       'height',
       'height_unit',
@@ -381,6 +554,10 @@ async function updateProfile(req, res) {
       'date_of_birth',
       'blood_group',
       'medical_conditions',
+      'other_condition',
+      'allergies',
+      'doctor_name',
+      'doctor_contact',
       'emergency_name',
       'emergency_phone',
       'emergency_relation',
@@ -390,6 +567,13 @@ async function updateProfile(req, res) {
     const patch = {};
     for (const key of allowed) {
       if (body[key] !== undefined) patch[key] = body[key];
+    }
+
+    // `location` is the name from the same country-picker selection as `country_code`
+    // (see your-name.tsx) — fall back to mirroring it into `country` only if the client
+    // didn't already send an explicit value for it.
+    if (patch.location !== undefined && patch.country === undefined) {
+      patch.country = patch.location;
     }
 
     if (Object.keys(patch).length === 0) {
@@ -413,13 +597,6 @@ async function updateProfile(req, res) {
       data = await saveProfile(userId, email, patch);
     } catch (error) {
       console.error('[auth/profile] upsert error:', error.message);
-      if (error.code === '23503' && /profiles_id_fkey/i.test(error.message ?? '')) {
-        return res.status(500).json({
-          success: false,
-          message:
-            'Database setup incomplete: profiles must reference app_users. Run migration 010_app_users_jwt.sql in Supabase.',
-        });
-      }
       if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.errno === 1452) {
         return res.status(500).json({
           success: false,
@@ -440,8 +617,8 @@ async function updateProfile(req, res) {
 /** GET /api/auth/me */
 async function getMe(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
-    const email = req.auth?.email ?? req.supabase?.email;
+    const userId = req.auth?.userId;
+    const email = req.auth?.email;
 
     let profile;
     try {
@@ -491,11 +668,17 @@ async function updateSettings(req, res) {
     const body = req.body ?? {};
     const allowed = [
       'voice_navigation',
-      'vibration_alerts',
       'fall_detection',
       'night_mode',
       'font_scale',
       'language',
+      'notify_medicine',
+      'notify_wellness',
+      'notify_journal',
+      'notify_health_reports',
+      'notify_care_calendar',
+      'notify_family',
+      'notify_location',
     ];
 
     const patch = {};
@@ -526,11 +709,14 @@ module.exports = {
   deprecatedOtpEndpoint,
   login,
   register,
+  monitorLogin,
   googleAuth,
+  appleAuth,
   phoneAuth,
   googleAuthStatus,
   refreshSession,
   logout,
+  deleteAccount,
   getMe,
   updateProfile,
   getSettings,

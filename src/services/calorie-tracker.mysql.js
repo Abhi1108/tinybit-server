@@ -1,5 +1,7 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const storageService = require('./storage.service');
+const { resolveDate } = require('../utils/date');
 
 const DEFAULT_GOAL = { daily_calories: 2000, protein_g: 60, carbs_g: 250, fat_g: 65 };
 const MEAL_TYPES = new Set(['breakfast', 'lunch', 'dinner', 'snack']);
@@ -170,12 +172,16 @@ async function createMeal(userId, payload) {
 }
 
 async function deleteMeal(userId, mealId) {
+  const rows = await query('SELECT image_url FROM meal_logs WHERE id = ? AND user_id = ? LIMIT 1', [mealId, userId]);
   const result = await execute('DELETE FROM meal_logs WHERE id = ? AND user_id = ?', [mealId, userId]);
+  if (result.affectedRows > 0 && rows[0]?.image_url) {
+    await storageService.deleteObjectByUrl(rows[0].image_url, userId);
+  }
   return result.affectedRows > 0;
 }
 
-async function getTodaySummary(userId) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+async function getTodaySummary(userId, date = null) {
+  const todayStr = resolveDate(date);
   const [goal, meals] = await Promise.all([
     getGoal(userId),
     listMeals(userId, { date: todayStr }),

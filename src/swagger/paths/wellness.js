@@ -127,39 +127,6 @@
  *                   type: boolean
  *                 inserted:
  *                   type: integer
- *
- * /api/wellness/yesterday-summary:
- *   get:
- *     tags: [Wellness]
- *     summary: Yesterday's wellness summary
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Summary bundle
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 summary:
- *                   type: object
- *                   properties:
- *                     checkIn:
- *                       type: object
- *                       nullable: true
- *                     medicineLogs:
- *                       type: array
- *                       items:
- *                         type: object
- *                         additionalProperties: true
- *                     familyMessageCount:
- *                       type: integer
- *                     date:
- *                       type: string
- *                       format: date
  */
 
 module.exports = {};

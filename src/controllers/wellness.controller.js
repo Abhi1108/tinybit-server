@@ -1,10 +1,12 @@
 const {
   findCheckInByUserAndDate,
   upsertDailyCheckIn,
+  insertMoodEntry,
 } = require('../services/daily-checkins.service');
 const { insertHealthReadings, listByUser } = require('../services/health-readings.service');
-const medicineLogsService = require('../services/medicine-logs.service');
-const familyMessagesService = require('../services/family-messages.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
+const { resolveTodayForUser } = require('../services/timezone.service');
 
 function isTableMissing(error) {
   return (
@@ -15,8 +17,8 @@ function isTableMissing(error) {
   );
 }
 
-function todayDateStr() {
-  return new Date().toISOString().split('T')[0];
+function todayDateStr(userId) {
+  return resolveTodayForUser(userId);
 }
 
 function normalizeSleepQuality(value) {
@@ -33,7 +35,7 @@ function readBody(req) {
 }
 
 function resolveUserId(req) {
-  return req.auth?.userId ?? req.supabase?.userId ?? null;
+  return req.auth?.userId ?? null;
 }
 
 /** GET /api/wellness/daily-checkin/today */
@@ -44,7 +46,7 @@ async function getTodayCheckIn(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    const date = String(req.query.date ?? todayDateStr()).trim() || todayDateStr();
+    const date = String(req.query.date ?? await todayDateStr(userId)).trim() || await todayDateStr(userId);
     const checkIn = await findCheckInByUserAndDate(userId, date);
 
     return res.json({ success: true, checkIn });
@@ -77,6 +79,8 @@ async function upsertDailyCheckInHandler(req, res) {
       id: _ignoredId,
       created_at: _ignoredCreatedAt,
       updated_at: _ignoredUpdatedAt,
+      source,
+      mood_note: moodNote,
       ...fields
     } = body;
 
@@ -86,7 +90,7 @@ async function upsertDailyCheckInHandler(req, res) {
 
     const upsertFields = {
       ...fields,
-      check_in_date: String(fields.check_in_date ?? todayDateStr()).trim() || todayDateStr(),
+      check_in_date: String(fields.check_in_date ?? await todayDateStr(userId)).trim() || await todayDateStr(userId),
     };
 
     if ('sleep_quality' in upsertFields) {
@@ -94,6 +98,42 @@ async function upsertDailyCheckInHandler(req, res) {
     }
 
     const checkIn = await upsertDailyCheckIn(userId, upsertFields);
+
+    const isMoodLift = source === 'mood_lift';
+    if (isMoodLift) {
+      try {
+        await insertMoodEntry(userId, {
+          mood: upsertFields.mood,
+          moodScore: upsertFields.mood_score,
+          note: moodNote ?? null,
+        });
+      } catch (moodEntryErr) {
+        console.warn('[wellness/daily-checkin] mood_entries insert failed:', moodEntryErr.message);
+      }
+    }
+
+    try {
+      // Debounced (plan Section 17.3) — upsertDailyCheckIn succeeds on every call (it's an
+      // upsert, not a plain insert), so unlike a unique-constrained insert, a retried/
+      // double-tapped submit would otherwise notify guardians twice for one real check-in.
+      const notifType = isMoodLift ? NOTIFICATION_TYPES.MOOD_LIFT_COMPLETED : NOTIFICATION_TYPES.DAILY_CHECKIN;
+      if (await shouldSendActionNotification(userId, notifType)) {
+        await notifyGuardiansOfElder(userId, {
+          type: notifType,
+          title: isMoodLift ? 'Mood Lift' : 'Check-In Completed',
+          body: isMoodLift
+            ? "The user has completed today's Mood Lift activity."
+            : "The user has completed today's wellness check-in.",
+          data: {
+            type: notifType,
+            elderId: userId,
+            mood: upsertFields.mood,
+          },
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('[wellness/daily-checkin] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({ success: true, checkIn });
   } catch (err) {
@@ -161,44 +201,9 @@ async function getHealthMetrics(req, res) {
   }
 }
 
-/** GET /api/wellness/yesterday-summary */
-async function getYesterdaySummary(req, res) {
-  try {
-    const userId = resolveUserId(req);
-    if (!userId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized' });
-    }
-
-    const yesterday = new Date();
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const dateStr = yesterday.toISOString().split('T')[0];
-
-    const checkIn = await findCheckInByUserAndDate(userId, dateStr);
-    const logs = await medicineLogsService.listForDay(userId, yesterday);
-    const messageCount = await familyMessagesService.countForReceiverOnDate(userId, dateStr);
-
-    return res.json({
-      success: true,
-      summary: {
-        checkIn,
-        medicineLogs: logs,
-        familyMessageCount: messageCount,
-        date: dateStr,
-      },
-    });
-  } catch (err) {
-    console.error('[wellness/yesterday-summary]', err);
-    return res.status(500).json({
-      success: false,
-      message: err.message || 'Could not load yesterday summary.',
-    });
-  }
-}
-
 module.exports = {
   getTodayCheckIn,
   upsertDailyCheckIn: upsertDailyCheckInHandler,
   insertHealthMetrics,
   getHealthMetrics,
-  getYesterdaySummary,
 };

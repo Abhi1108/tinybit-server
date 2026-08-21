@@ -1,4 +1,44 @@
 const elderLocationsService = require('../services/elder-locations.service');
+const { query } = require('../config/mysql');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
+const { getUserTimezone } = require('../services/timezone.service');
+const { todayForTimezone, dateOnlyForTimezone } = require('../utils/date');
+
+const LOCATION_UPDATE_MAX_PER_DAY = 3;
+const LOCATION_UPDATE_MIN_GAP_MS = 5 * 60 * 60 * 1000;
+const LOOKBACK_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Throttles the "Location Update" guardian push to at most 3/day, at least 5h apart —
+ * scoped to this elder's own calendar day (their stored timezone), not a fixed server
+ * offset. Pulls a generously wide raw window (48h — wider than any possible UTC offset
+ * span) and buckets precisely by the elder's own day in JS, same pattern as
+ * `calculateMedicineStreak`. notifyGuardiansOfElder writes one notifications row per
+ * connected guardian, so a single send can produce several rows with (near-)identical
+ * timestamps — bucketing by minute collapses those into one logical "send" for counting.
+ */
+async function shouldSendLocationUpdate(elderId) {
+  const timezone = await getUserTimezone(elderId);
+  const today = todayForTimezone(timezone);
+
+  const rows = await query(
+    `SELECT created_at FROM notifications
+     WHERE sender_id = ? AND type = 'location_update' AND created_at >= ?
+     ORDER BY created_at DESC`,
+    [elderId, new Date(Date.now() - LOOKBACK_MS)],
+  );
+  const todaysRows = rows.filter((r) => dateOnlyForTimezone(new Date(r.created_at), timezone) === today);
+
+  const sendBuckets = new Set(todaysRows.map((r) => new Date(r.created_at).toISOString().slice(0, 16)));
+  if (sendBuckets.size >= LOCATION_UPDATE_MAX_PER_DAY) return false;
+
+  if (todaysRows.length > 0 && Date.now() - new Date(todaysRows[0].created_at).getTime() < LOCATION_UPDATE_MIN_GAP_MS) {
+    return false;
+  }
+
+  return true;
+}
 
 function isTableMissing(error) {
   return (
@@ -16,7 +56,7 @@ function readBody(req) {
 /** GET /api/location — own elder_locations row */
 async function getLocation(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -38,7 +78,7 @@ async function getLocation(req, res) {
 /** PUT /api/location — upsert elder location (onConflict elder_id) */
 async function upsertLocation(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -66,7 +106,48 @@ async function upsertLocation(req, res) {
       payload.is_sharing = Boolean(body.is_sharing);
     }
 
+    // Captured before the write so the sharing on/off transition can be told apart from a
+    // routine coordinate ping while sharing was already on — the 3/day throttle below exists
+    // to stop those routine pings from spamming the guardian, but a genuine flip of the sharing
+    // flag itself is a distinct, meaningful event a guardian should always hear about, not
+    // something that should get silently swallowed by that same counter.
+    const previous = await elderLocationsService.getByElderId(userId);
+    const wasSharing = previous?.is_sharing ?? false;
+
     const location = await elderLocationsService.upsert(userId, payload);
+    const nowSharing = location.is_sharing;
+
+    try {
+      if (nowSharing && !wasSharing) {
+        if (await shouldSendActionNotification(userId, 'location_sharing_enabled')) {
+          await notifyGuardiansOfElder(userId, {
+            type: NOTIFICATION_TYPES.LOCATION_SHARING_ENABLED,
+            title: 'Location Sharing On',
+            body: 'The user turned on live location sharing.',
+            data: { type: NOTIFICATION_TYPES.LOCATION_SHARING_ENABLED, elderId: userId },
+          });
+        }
+      } else if (!nowSharing && wasSharing) {
+        if (await shouldSendActionNotification(userId, 'location_sharing_disabled')) {
+          await notifyGuardiansOfElder(userId, {
+            type: 'location_sharing_disabled',
+            title: 'Location Sharing Off',
+            body: 'The user turned off live location sharing.',
+            data: { type: 'location_sharing_disabled', elderId: userId },
+          });
+        }
+      } else if (nowSharing && wasSharing && await shouldSendLocationUpdate(userId)) {
+        await notifyGuardiansOfElder(userId, {
+          type: 'location_update',
+          title: 'Location Update',
+          body: "The user's live location has been updated.",
+          data: { type: 'location_update', elderId: userId },
+        });
+      }
+    } catch (notifyErr) {
+      console.warn('[location/upsert] guardian notify failed:', notifyErr.message);
+    }
+
     return res.json({ success: true, location });
   } catch (err) {
     console.error('[location] upsert:', err.message || err);

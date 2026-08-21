@@ -16,7 +16,7 @@ function readBody(req) {
 }
 
 function resolveUserId(req) {
-  return req.auth?.userId ?? req.supabase?.userId ?? null;
+  return req.auth?.userId ?? null;
 }
 
 function formatLeaderboardEntry(entry, currentUserId, index) {

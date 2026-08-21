@@ -31,6 +31,7 @@ function normalizeProfile(row) {
     health_qr_expires_at: toIso(row.health_qr_expires_at),
     plan_started_at: toIso(row.plan_started_at),
     plan_expires_at: toIso(row.plan_expires_at),
+    deleted_at: toIso(row.deleted_at),
   };
 }
 
@@ -104,23 +105,39 @@ async function countRows(table, whereSql = '', params = []) {
 async function getDashboardStats() {
   const yesterday = new Date(Date.now() - 86_400_000);
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
 
   const [
     elders, guardians, active_connections, pending_invitations, new_this_week,
     active_medicines, check_ins_today, moods_this_week, ai_messages_today,
-    sos_today,
+    sos_today, active_subscriptions, active_ai_users,
   ] = await Promise.all([
-    countRows('profiles', 'role = ?', ['elder']),
-    countRows('profiles', 'role = ?', ['guardian']),
+    countRows('profiles', 'role = ? AND deleted_at IS NULL', ['elder']),
+    countRows('profiles', 'role = ? AND deleted_at IS NULL', ['guardian']),
     countRows('guardian_elder_links', 'status = ?', ['connected']),
     countRows('guardian_elder_links', 'status = ?', ['pending']),
-    countRows('profiles', 'created_at >= ?', [weekAgo]),
+    countRows('profiles', 'created_at >= ? AND deleted_at IS NULL', [weekAgo]),
     countRows('medicines', 'is_active = 1'),
     countRows('daily_checkins', 'created_at >= ?', [yesterday]),
     countRows('mood_entries', 'created_at >= ?', [weekAgo]),
     countRows('ai_conversations', 'created_at >= ?', [yesterday]),
     countRows('sos_alerts', 'triggered_at >= ?', [yesterday]),
+    countRows('profiles', "deleted_at IS NULL AND role = 'guardian' AND plan_status = 'active'"),
+    query(
+      `SELECT COUNT(DISTINCT user_id) AS cnt FROM ai_conversations WHERE created_at >= ?`,
+      [yesterday],
+    ).then((rows) => Number(rows[0]?.cnt ?? 0)),
   ]);
+
+  const [monthRevenueRow] = await query(
+    `SELECT COALESCE(SUM(amount), 0) AS total
+     FROM payments
+     WHERE status = 'captured'
+       AND COALESCE(captured_at, created_at) >= ?`,
+    [monthStart],
+  );
 
   return {
     elders,
@@ -133,20 +150,30 @@ async function getDashboardStats() {
     moods_this_week,
     ai_messages_today,
     sos_today,
+    active_subscriptions,
+    active_ai_users,
+    month_revenue: Number(monthRevenueRow?.total) || 0,
   };
 }
 
 async function getAnalytics() {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000);
 
-  const [users, moods, checkIns, meds, ai, care, games] = await Promise.all([
+  const [users, moods, checkIns, meds, ai, care, games, sos] = await Promise.all([
     query('SELECT created_at FROM profiles WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT mood_score, created_at FROM mood_entries WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT created_at FROM daily_checkins WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT category FROM medicines'),
-    query('SELECT created_at, role FROM ai_conversations WHERE created_at >= ?', [thirtyDaysAgo]),
+    query(
+      'SELECT created_at, role, prompt_tokens, completion_tokens, total_tokens FROM ai_conversations WHERE created_at >= ?',
+      [thirtyDaysAgo],
+    ),
     query('SELECT type FROM care_events'),
     query('SELECT game_type, score FROM mind_games_scores'),
+    query(
+      'SELECT triggered_at, status FROM sos_alerts WHERE triggered_at >= ?',
+      [new Date(Date.now() - 7 * 86_400_000)],
+    ),
   ]);
 
   const growth = {};
@@ -172,12 +199,26 @@ async function getAnalytics() {
   meds.forEach((m) => { if (m.category in medCat) medCat[m.category]++; });
 
   const aiByDay = {};
+  const aiTokensByDay = {};
+  const aiPromptByDay = {};
+  const aiCompletionByDay = {};
   for (let i = 6; i >= 0; i--) {
-    aiByDay[new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10)] = 0;
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    aiByDay[day] = 0;
+    aiTokensByDay[day] = 0;
+    aiPromptByDay[day] = 0;
+    aiCompletionByDay[day] = 0;
   }
   ai.filter((a) => a.role === 'user').forEach((a) => {
     const k = toIso(a.created_at).slice(0, 10);
     if (k in aiByDay) aiByDay[k]++;
+  });
+  ai.forEach((a) => {
+    const k = toIso(a.created_at).slice(0, 10);
+    if (!(k in aiTokensByDay)) return;
+    if (a.total_tokens != null) aiTokensByDay[k] += Number(a.total_tokens) || 0;
+    if (a.prompt_tokens != null) aiPromptByDay[k] += Number(a.prompt_tokens) || 0;
+    if (a.completion_tokens != null) aiCompletionByDay[k] += Number(a.completion_tokens) || 0;
   });
 
   const careDist = { Doctor: 0, Family: 0, Medicine: 0, Wellness: 0 };
@@ -194,20 +235,52 @@ async function getAnalytics() {
     gameAvg[k] = v.n ? Math.round(v.sum / v.n) : 0;
   });
 
+  const sosByDay = {};
+  for (let i = 6; i >= 0; i--) {
+    const day = new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10);
+    sosByDay[day] = { alerts: 0, resolved: 0, cancelled: 0 };
+  }
+  sos.forEach((row) => {
+    const k = toIso(row.triggered_at).slice(0, 10);
+    if (!(k in sosByDay)) return;
+    sosByDay[k].alerts += 1;
+    if (row.status === 'resolved') sosByDay[k].resolved += 1;
+    if (row.status === 'cancelled') sosByDay[k].cancelled += 1;
+  });
+
   return {
     user_growth: { labels: Object.keys(growth), data: Object.values(growth) },
     mood_dist: { labels: Object.keys(moodDist), data: Object.values(moodDist) },
     check_in_dow: { labels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], data: dowCounts },
     med_category: { labels: Object.keys(medCat), data: Object.values(medCat) },
-    ai_by_day: { labels: Object.keys(aiByDay), data: Object.values(aiByDay) },
+    ai_by_day: {
+      labels: Object.keys(aiByDay),
+      data: Object.values(aiByDay),
+      tokens: Object.values(aiTokensByDay),
+      prompt_tokens: Object.values(aiPromptByDay),
+      completion_tokens: Object.values(aiCompletionByDay),
+    },
+    sos_by_day: {
+      labels: Object.keys(sosByDay),
+      alerts: Object.values(sosByDay).map((d) => d.alerts),
+      resolved: Object.values(sosByDay).map((d) => d.resolved),
+      cancelled: Object.values(sosByDay).map((d) => d.cancelled),
+    },
     care_by_type: { labels: Object.keys(careDist), data: Object.values(careDist) },
     game_avg_scores: { labels: Object.keys(gameAvg), data: Object.values(gameAvg) },
   };
 }
 
-function buildUserFilters({ role, search, status }) {
+function buildUserFilters({ role, search, status, deleted }) {
   const clauses = [];
   const params = [];
+
+  if (deleted === 'only') {
+    clauses.push('deleted_at IS NOT NULL');
+  } else if (deleted !== 'include') {
+    // Default: hide trashed users from every existing listing/export caller.
+    clauses.push('deleted_at IS NULL');
+  }
 
   if (role) {
     clauses.push('role = ?');
@@ -229,18 +302,18 @@ function buildUserFilters({ role, search, status }) {
   return { where: clauses.length ? clauses.join(' AND ') : '1=1', params };
 }
 
-async function getUsers({ role, search, status, page, limit }) {
+async function getUsers({ role, search, status, page, limit, deleted }) {
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
 
-  const { where, params } = buildUserFilters({ role, search, status });
+  const { where, params } = buildUserFilters({ role, search, status, deleted });
 
   const [totalRows, rows] = await Promise.all([
     query(`SELECT COUNT(*) AS cnt FROM profiles WHERE ${where}`, params),
     query(
       `SELECT id, full_name, email, mobile, role, country, age, biological_sex,
-              is_banned, last_active, created_at
+              is_banned, last_active, created_at, deleted_at, deleted_by
        FROM profiles
        WHERE ${where}
        ORDER BY created_at DESC
@@ -414,6 +487,42 @@ async function deleteProfile(id) {
   }
 }
 
+// Deletion state is a dedicated action (its own audited endpoint), not a generic
+// admin-editable field — deliberately NOT routed through PROFILE_COLUMNS/updateProfile
+// so a stray PATCH body can never silently trash/restore a user outside the audit trail.
+async function softDeleteProfile(id, actor) {
+  const result = await execute(
+    `UPDATE profiles SET deleted_at = CURRENT_TIMESTAMP(3), deleted_by = ?
+     WHERE id = ? AND deleted_at IS NULL`,
+    [actor, id],
+  );
+  if (result.affectedRows === 0) {
+    const err = new Error('User not found or already deleted');
+    err.status = 404;
+    throw err;
+  }
+  return getProfileById(id);
+}
+
+async function restoreProfile(id) {
+  const result = await execute(
+    `UPDATE profiles SET deleted_at = NULL, deleted_by = NULL
+     WHERE id = ? AND deleted_at IS NOT NULL`,
+    [id],
+  );
+  if (result.affectedRows === 0) {
+    const err = new Error('User not found or not in trash');
+    err.status = 404;
+    throw err;
+  }
+  return getProfileById(id);
+}
+
+async function getDeletedProfile(id) {
+  const rows = await query('SELECT id, deleted_at FROM profiles WHERE id = ? LIMIT 1', [id]);
+  return rows[0] ?? null;
+}
+
 async function getConnections({ status, page, limit, search }) {
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
@@ -514,8 +623,8 @@ async function getMedicines({ page, limit, category, priority, active }) {
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT id, user_id, name, category, priority, schedule_time, frequency,
-            is_active, stock, start_date, end_date, created_at
+    `SELECT id, user_id, name, generic_name, dosage, dosage_unit, category, priority,
+            schedule_time, frequency, prescribed_by, is_active, stock, start_date, end_date, created_at
      FROM medicines
      ${where}
      ORDER BY created_at DESC
@@ -524,10 +633,75 @@ async function getMedicines({ page, limit, category, priority, active }) {
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((m) => m.user_id))]);
-  return rows.map((m) => ({
-    ...normalizeRow(m),
-    user_name: userMap[m.user_id]?.full_name ?? '—',
-    user_email: userMap[m.user_id]?.email ?? '—',
+  const medIds = rows.map((m) => m.id);
+  const logByMed = {};
+  if (medIds.length) {
+    const placeholders = medIds.map(() => '?').join(',');
+    const logRows = await query(
+      `SELECT medicine_id,
+              MAX(taken_at) AS last_taken,
+              COUNT(DISTINCT CASE
+                WHEN taken_at >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 7 DAY)
+                THEN taken_date
+              END) AS days_taken_7d
+       FROM medicine_logs
+       WHERE medicine_id IN (${placeholders})
+       GROUP BY medicine_id`,
+      medIds,
+    );
+    logRows.forEach((r) => {
+      logByMed[r.medicine_id] = {
+        last_taken: r.last_taken,
+        days_taken_7d: Number(r.days_taken_7d) || 0,
+        has_logs: true,
+      };
+    });
+  }
+
+  return rows.map((m) => {
+    const log = logByMed[m.id];
+    const adherence = log?.has_logs
+      ? Math.round((log.days_taken_7d / 7) * 100)
+      : null;
+    return {
+      ...normalizeRow(m),
+      user_name: userMap[m.user_id]?.full_name ?? '—',
+      user_email: userMap[m.user_id]?.email ?? '—',
+      last_taken: log?.last_taken
+        ? (log.last_taken instanceof Date ? log.last_taken.toISOString() : String(log.last_taken))
+        : null,
+      adherence_7d: adherence,
+    };
+  });
+}
+
+async function getHealthReadings({ page, limit, type }) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('`type` = ?');
+    params.push(type);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT id, user_id, \`type\`, value, unit, notes, created_at
+     FROM health_readings
+     ${where}
+     ORDER BY created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: userMap[r.user_id]?.full_name ?? '—',
+    user_email: userMap[r.user_id]?.email ?? '—',
   }));
 }
 
@@ -544,8 +718,9 @@ async function getCheckIns({ page, limit, mood }) {
   }
 
   const rows = await query(
-    `SELECT id, user_id, created_at, mood_score, sleep_quality, sleep_hours,
-            energy_level, pain_level, medicines_taken, physical_activity
+    `SELECT id, user_id, check_in_date, mood, mood_score, sleep_rested, breakfast_done,
+            hydration_done, pain_reported, water_glasses, medicines_taken, sleep_quality,
+            sleep_hours, energy_level, pain_level, physical_activity, created_at
      FROM daily_checkins
      ${where}
      ORDER BY created_at DESC
@@ -554,10 +729,58 @@ async function getCheckIns({ page, limit, mood }) {
   );
 
   const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
-  return rows.map((r) => ({
-    ...normalizeRow(r),
-    user_name: userMap[r.user_id]?.full_name ?? '—',
-  }));
+
+  // Match optional BP readings logged the same calendar day (app stores sys/dia separately).
+  const vitalsByKey = {};
+  if (rows.length) {
+    const userIds = [...new Set(rows.map((r) => r.user_id))];
+    const dates = [...new Set(rows.map((r) => {
+      const d = r.check_in_date;
+      if (d instanceof Date) return d.toISOString().slice(0, 10);
+      return String(d).slice(0, 10);
+    }).filter(Boolean))];
+
+    if (userIds.length && dates.length) {
+      const uPlaceholders = userIds.map(() => '?').join(',');
+      const dPlaceholders = dates.map(() => '?').join(',');
+      const readingRows = await query(
+        `SELECT user_id, DATE(created_at) AS reading_date, \`type\`, value, unit
+         FROM health_readings
+         WHERE user_id IN (${uPlaceholders})
+           AND DATE(created_at) IN (${dPlaceholders})
+           AND \`type\` IN ('blood_pressure_systolic', 'blood_pressure_diastolic')
+         ORDER BY created_at DESC`,
+        [...userIds, ...dates],
+      );
+      readingRows.forEach((rr) => {
+        const dateStr = rr.reading_date instanceof Date
+          ? rr.reading_date.toISOString().slice(0, 10)
+          : String(rr.reading_date).slice(0, 10);
+        const key = `${rr.user_id}|${dateStr}`;
+        if (!vitalsByKey[key]) vitalsByKey[key] = {};
+        // First row wins (newest) since ORDER BY created_at DESC
+        if (rr.type === 'blood_pressure_systolic' && vitalsByKey[key].bp_systolic == null) {
+          vitalsByKey[key].bp_systolic = rr.value == null ? null : Number(rr.value);
+        }
+        if (rr.type === 'blood_pressure_diastolic' && vitalsByKey[key].bp_diastolic == null) {
+          vitalsByKey[key].bp_diastolic = rr.value == null ? null : Number(rr.value);
+        }
+      });
+    }
+  }
+
+  return rows.map((r) => {
+    const dateStr = r.check_in_date instanceof Date
+      ? r.check_in_date.toISOString().slice(0, 10)
+      : String(r.check_in_date || '').slice(0, 10);
+    const vitals = vitalsByKey[`${r.user_id}|${dateStr}`] || {};
+    return {
+      ...normalizeRow(r),
+      user_name: userMap[r.user_id]?.full_name ?? '—',
+      bp_systolic: vitals.bp_systolic ?? null,
+      bp_diastolic: vitals.bp_diastolic ?? null,
+    };
+  });
 }
 
 async function getMoods({ page, limit, mood }) {
@@ -601,7 +824,8 @@ async function getAIConversations({ page, limit, role }) {
   }
 
   const rows = await query(
-    `SELECT id, user_id, role, content, created_at
+    `SELECT id, user_id, role, content, provider,
+            prompt_tokens, completion_tokens, total_tokens, created_at
      FROM ai_conversations
      ${where}
      ORDER BY created_at DESC
@@ -614,6 +838,9 @@ async function getAIConversations({ page, limit, role }) {
     ...normalizeRow(r),
     user_name: userMap[r.user_id]?.full_name ?? '—',
     content_preview: (r.content ?? '').slice(0, 120),
+    prompt_tokens: r.prompt_tokens == null ? null : Number(r.prompt_tokens),
+    completion_tokens: r.completion_tokens == null ? null : Number(r.completion_tokens),
+    total_tokens: r.total_tokens == null ? null : Number(r.total_tokens),
   }));
 }
 
@@ -679,25 +906,214 @@ async function getMindGames({ page, limit, game_type }) {
   }));
 }
 
-async function broadcastNotification(title, body) {
-  const rows = await query('SELECT id FROM profiles WHERE is_banned = 0');
+async function getSosAlerts({ page, limit, status } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const params = [];
+  let where = '';
+  if (status) {
+    where = 'WHERE s.status = ?';
+    params.push(status);
+  }
+
+  const rows = await query(
+    `SELECT s.id, s.user_id, s.triggered_at, s.resolved_at, s.status,
+            p.full_name AS user_name,
+            loc.latitude, loc.longitude, loc.address
+     FROM sos_alerts s
+     LEFT JOIN profiles p ON p.id = s.user_id
+     LEFT JOIN elder_locations loc ON loc.elder_id = s.user_id
+     ${where}
+     ORDER BY s.triggered_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  const guardianNamesByElder = {};
+  const elderIds = [...new Set(rows.map((r) => r.user_id).filter(Boolean))];
+  if (elderIds.length) {
+    const placeholders = elderIds.map(() => '?').join(',');
+    const guardianRows = await query(
+      `SELECT gel.elder_id, p.full_name
+       FROM guardian_elder_links gel
+       JOIN profiles p ON p.id = gel.guardian_id
+       WHERE gel.elder_id IN (${placeholders})
+         AND gel.status = 'connected'
+       ORDER BY gel.created_at ASC`,
+      elderIds,
+    );
+    guardianRows.forEach((g) => {
+      if (!guardianNamesByElder[g.elder_id]) guardianNamesByElder[g.elder_id] = [];
+      if (g.full_name) guardianNamesByElder[g.elder_id].push(g.full_name);
+    });
+  }
+
+  return rows.map((r) => {
+    const guardians = guardianNamesByElder[r.user_id] || [];
+    return {
+      id: r.id,
+      user_id: r.user_id,
+      user_name: r.user_name || '—',
+      guardian_name: guardians.length ? guardians.join(', ') : '—',
+      triggered_at: toIso(r.triggered_at),
+      resolved_at: r.resolved_at ? toIso(r.resolved_at) : null,
+      status: r.status,
+      location: r.latitude != null ? {
+        latitude: Number(r.latitude),
+        longitude: Number(r.longitude),
+        address: r.address || null,
+      } : null,
+    };
+  });
+}
+
+async function updateSosAlert(id, { status }) {
+  const allowed = new Set(['active', 'resolved', 'cancelled']);
+  if (!allowed.has(status)) {
+    const err = new Error('status must be active, resolved, or cancelled');
+    err.status = 400;
+    throw err;
+  }
+
+  const existing = await query('SELECT id, status FROM sos_alerts WHERE id = ? LIMIT 1', [id]);
+  if (!existing[0]) {
+    const err = new Error('SOS alert not found');
+    err.status = 404;
+    throw err;
+  }
+
+  if (status === 'resolved' || status === 'cancelled') {
+    await execute(
+      `UPDATE sos_alerts
+       SET status = ?, resolved_at = COALESCE(resolved_at, UTC_TIMESTAMP(3))
+       WHERE id = ?`,
+      [status, id],
+    );
+  } else {
+    await execute(
+      `UPDATE sos_alerts SET status = ?, resolved_at = NULL WHERE id = ?`,
+      [status, id],
+    );
+  }
+
+  const rows = await query(
+    `SELECT s.id, s.user_id, s.triggered_at, s.resolved_at, s.status,
+            p.full_name AS user_name,
+            loc.latitude, loc.longitude, loc.address
+     FROM sos_alerts s
+     LEFT JOIN profiles p ON p.id = s.user_id
+     LEFT JOIN elder_locations loc ON loc.elder_id = s.user_id
+     WHERE s.id = ?
+     LIMIT 1`,
+    [id],
+  );
+  const r = rows[0];
+  if (!r) return null;
+
+  const guardianRows = await query(
+    `SELECT p.full_name
+     FROM guardian_elder_links gel
+     JOIN profiles p ON p.id = gel.guardian_id
+     WHERE gel.elder_id = ? AND gel.status = 'connected'
+     ORDER BY gel.created_at ASC`,
+    [r.user_id],
+  );
+  const guardians = guardianRows.map((g) => g.full_name).filter(Boolean);
+
+  return {
+    id: r.id,
+    user_id: r.user_id,
+    user_name: r.user_name || '—',
+    guardian_name: guardians.length ? guardians.join(', ') : '—',
+    triggered_at: toIso(r.triggered_at),
+    resolved_at: r.resolved_at ? toIso(r.resolved_at) : null,
+    status: r.status,
+    location: r.latitude != null ? {
+      latitude: Number(r.latitude),
+      longitude: Number(r.longitude),
+      address: r.address || null,
+    } : null,
+  };
+}
+
+async function getNotifications({ page, limit, type, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('n.type = ?');
+    params.push(type);
+  }
+  if (search) {
+    clauses.push('(n.title LIKE ? OR n.body LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT n.id, n.user_id, n.sender_id, n.type, n.title, n.body, n.data, n.\`read\`, n.created_at,
+            p.full_name AS user_name
+     FROM notifications n
+     LEFT JOIN profiles p ON p.id = n.user_id
+     ${where}
+     ORDER BY n.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    user_id: r.user_id,
+    user_name: r.user_name || '—',
+    sender_id: r.sender_id,
+    type: r.type,
+    title: r.title,
+    body: r.body,
+    data: typeof r.data === 'string' ? (() => { try { return JSON.parse(r.data); } catch { return r.data; } })() : r.data,
+    read: !!r.read,
+    created_at: toIso(r.created_at),
+  }));
+}
+
+async function broadcastNotification(title, body, { audience } = {}) {
+  const clauses = ['is_banned = 0', 'deleted_at IS NULL'];
+  const params = [];
+  if (audience === 'elders') {
+    clauses.push("role = 'elder'");
+  } else if (audience === 'guardians') {
+    clauses.push("role = 'guardian'");
+  }
+
+  const rows = await query(
+    `SELECT id FROM profiles WHERE ${clauses.join(' AND ')}`,
+    params,
+  );
   const userIds = rows.map((r) => r.id);
   if (!userIds.length) return 0;
 
-  const dataJson = JSON.stringify({ source: 'admin_broadcast' });
+  const dataJson = JSON.stringify({
+    source: 'admin_broadcast',
+    audience: audience || 'all',
+  });
 
   for (let i = 0; i < userIds.length; i += 100) {
     const batch = userIds.slice(i, i + 100);
     const valuePlaceholders = batch.map(() => '(?, ?, NULL, ?, ?, ?, ?, 0)').join(', ');
-    const params = [];
+    const insertParams = [];
     batch.forEach((uid) => {
-      params.push(randomUUID(), uid, 'announcement', title, body, dataJson);
+      insertParams.push(randomUUID(), uid, 'announcement', title, body, dataJson);
     });
 
     await execute(
       `INSERT INTO notifications (id, user_id, sender_id, type, title, body, data, \`read\`)
        VALUES ${valuePlaceholders}`,
-      params,
+      insertParams,
     );
   }
 
@@ -726,33 +1142,372 @@ async function getHealthRecords(params = {}) {
     queryParams.push(q, q, q);
   }
 
-  const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const where = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+  const rows = await query(
+    `SELECT * FROM health_records ${where} ORDER BY created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+    queryParams,
+  );
+  const [{ total }] = await query(
+    `SELECT COUNT(*) AS total FROM health_records ${where}`,
+    queryParams,
+  );
 
-  const [countRow] = await query(`SELECT COUNT(*) as count FROM health_records ${whereStr}`, queryParams);
-  const total = countRow?.count || 0;
+  const userMap = await fetchUserMap([...new Set(rows.map((r) => r.user_id))]);
+  return {
+    records: rows.map((r) => ({
+      ...normalizeRow(r),
+      user_name: userMap[r.user_id]?.full_name ?? '—',
+    })),
+    total: Number(total) || 0,
+    page,
+    limit,
+    pages: Math.ceil((Number(total) || 0) / limit),
+  };
+}
+
+async function getEmergencyContacts({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  // App SOS/home merges profile.emergency_* (primary) with emergency_contacts rows.
+  // Admin previously only listed the table — so primary contacts looked "blank".
+  const clauses = [];
+  const params = [];
+  if (search) {
+    clauses.push('(c.name LIKE ? OR c.phone LIKE ? OR c.user_name LIKE ? OR c.role LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 
   const rows = await query(
-    `SELECT hr.id, hr.user_id, hr.title, hr.date, hr.timestamp, hr.size, hr.\`type\`, hr.category,
-            hr.icon_name, hr.badge_bg, hr.badge_color, hr.uri, hr.mime_type, hr.ai_read, hr.created_at,
-            p.full_name as user_name, p.email as user_email
-     FROM health_records hr
-     LEFT JOIN profiles p ON hr.user_id = p.id
-     ${whereStr}
-     ORDER BY hr.timestamp DESC
-     LIMIT ? OFFSET ?`,
-    [...queryParams, limit, offset]
+    `SELECT c.id, c.user_id, c.name, c.role, c.phone, c.color, c.created_at, c.user_name, c.source
+     FROM (
+       SELECT c.id,
+              c.user_id,
+              c.name,
+              c.role,
+              c.phone,
+              c.color,
+              c.created_at,
+              p.full_name AS user_name,
+              'saved' AS source
+       FROM emergency_contacts c
+       LEFT JOIN profiles p ON p.id = c.user_id AND p.deleted_at IS NULL
+
+       UNION ALL
+
+       SELECT CONCAT('profile:', p.id) AS id,
+              p.id AS user_id,
+              COALESCE(NULLIF(TRIM(p.emergency_name), ''), 'Primary contact') AS name,
+              COALESCE(NULLIF(TRIM(p.emergency_relation), ''), 'Primary') AS role,
+              COALESCE(NULLIF(TRIM(p.emergency_phone), ''), '') AS phone,
+              '#F0F4FF' AS color,
+              p.created_at AS created_at,
+              p.full_name AS user_name,
+              'profile' AS source
+       FROM profiles p
+       WHERE p.deleted_at IS NULL
+         AND p.role = 'elder'
+         AND (
+           NULLIF(TRIM(p.emergency_phone), '') IS NOT NULL
+           OR NULLIF(TRIM(p.emergency_name), '') IS NOT NULL
+         )
+     ) c
+     ${where}
+     ORDER BY c.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+    source: r.source === 'profile' ? 'profile' : 'saved',
+  }));
+}
+
+async function getJournalEntries({ page, limit, type, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (type) {
+    clauses.push('j.type = ?');
+    params.push(type);
+  }
+  if (search) {
+    clauses.push('(j.content LIKE ? OR j.prompt LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT j.id, j.user_id, j.type, j.content, j.audio_uri, j.prompt, j.created_at,
+            p.full_name AS user_name
+     FROM journal j
+     LEFT JOIN profiles p ON p.id = j.user_id
+     ${where}
+     ORDER BY j.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+    content_preview: (r.content || '').slice(0, 160),
+  }));
+}
+
+async function getFamilyMessages({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (search) {
+    clauses.push('(m.message LIKE ? OR s.full_name LIKE ? OR r.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT m.id, m.sender_id, m.receiver_id, m.message, m.audio_url, m.created_at,
+            s.full_name AS sender_name,
+            r.full_name AS receiver_name
+     FROM family_messages m
+     LEFT JOIN profiles s ON s.id = m.sender_id
+     LEFT JOIN profiles r ON r.id = m.receiver_id
+     ${where}
+     ORDER BY m.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    sender_name: r.sender_name || '—',
+    receiver_name: r.receiver_name || '—',
+    message_preview: (r.message || '').slice(0, 160),
+  }));
+}
+
+async function getElderLocations({ page, limit, sharing } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (sharing === 'true' || sharing === '1') {
+    clauses.push('l.is_sharing = 1');
+  } else if (sharing === 'false' || sharing === '0') {
+    clauses.push('l.is_sharing = 0');
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT l.elder_id, l.latitude, l.longitude, l.accuracy, l.address, l.is_sharing, l.updated_at,
+            p.full_name AS user_name, p.location AS profile_location
+     FROM elder_locations l
+     LEFT JOIN profiles p ON p.id = l.elder_id
+     ${where}
+     ORDER BY l.updated_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    elder_id: r.elder_id,
+    user_name: r.user_name || '—',
+    latitude: Number(r.latitude),
+    longitude: Number(r.longitude),
+    accuracy: r.accuracy == null ? null : Number(r.accuracy),
+    address: r.address || r.profile_location || null,
+    is_sharing: !!r.is_sharing,
+    updated_at: toIso(r.updated_at),
+  }));
+}
+
+async function getAppointments({ page, limit, status, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = [];
+  const params = [];
+  if (status) {
+    clauses.push('a.status = ?');
+    params.push(status);
+  }
+  if (search) {
+    clauses.push('(a.doctor_name LIKE ? OR a.specialty LIKE ? OR p.full_name LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT a.id, a.user_id, a.doctor_name, a.specialty, a.date, a.time, a.fee, a.reason, a.status, a.created_at,
+            p.full_name AS user_name
+     FROM appointments a
+     LEFT JOIN profiles p ON p.id = a.user_id
+     ${where}
+     ORDER BY a.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    ...normalizeRow(r),
+    user_name: r.user_name || '—',
+  }));
+}
+
+async function getStreaks({ page, limit, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = ['p.deleted_at IS NULL', "p.role = 'elder'"];
+  const params = [];
+  if (search) {
+    clauses.push('(p.full_name LIKE ? OR p.location LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q);
+  }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+
+  const rows = await query(
+    `SELECT p.id, p.full_name, p.location, p.streak, p.best_streak, p.last_active, p.created_at
+     FROM profiles p
+     ${where}
+     ORDER BY p.streak DESC, p.best_streak DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.full_name || '—',
+    location: r.location || '—',
+    current_streak: Number(r.streak) || 0,
+    longest_streak: Number(r.best_streak) || 0,
+    last_activity: toIso(r.last_active),
+    status: (Number(r.streak) || 0) > 0 ? 'active' : 'broken',
+  }));
+}
+
+async function getUserSubscriptions({ page, limit, status, search } = {}) {
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
+  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+  const offset = (pageNum - 1) * limitNum;
+
+  const clauses = ['p.deleted_at IS NULL', "p.role = 'guardian'"];
+  const params = [];
+  if (status) {
+    clauses.push('p.plan_status = ?');
+    params.push(status);
+  }
+  if (search) {
+    clauses.push('(p.full_name LIKE ? OR p.plan_type LIKE ? OR p.email LIKE ?)');
+    const q = `%${search}%`;
+    params.push(q, q, q);
+  }
+  const where = `WHERE ${clauses.join(' AND ')}`;
+
+  const rows = await query(
+    `SELECT p.id, p.full_name, p.role, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
+            p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at
+     FROM profiles p
+     ${where}
+     ORDER BY p.plan_expires_at DESC, p.created_at DESC
+     LIMIT ${limitNum} OFFSET ${offset}`,
+    params,
+  );
+
+  return rows.map((r) => {
+    const amount = r.plan_amount == null ? 0 : Number(r.plan_amount);
+    const rawType = (r.plan_type || '').trim();
+    // Paid guardians created before applyPlanUpdate set plan_type still have 'free'.
+    const plan = (rawType && rawType !== 'free')
+      ? rawType
+      : ((r.plan_status === 'active' && amount > 0) ? 'guardian' : (rawType || 'free'));
+
+    return {
+      id: r.id,
+      user_name: r.full_name || '—',
+      user_type: r.role === 'elder' ? 'Elder' : 'Guardian',
+      plan,
+      status: r.plan_status || 'inactive',
+      start_date: toIso(r.plan_started_at),
+      renewal_date: toIso(r.plan_expires_at),
+      amount,
+      currency: r.plan_currency || 'INR',
+      elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
+      interval: r.plan_interval,
+    };
+  });
+}
+
+async function getRevenueSummary() {
+  const [captured] = await query(
+    `SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+     FROM payments WHERE status = 'captured'`,
+  );
+
+  const monthly = await query(
+    `SELECT DATE_FORMAT(COALESCE(captured_at, created_at), '%Y-%m') AS month,
+            COALESCE(SUM(amount), 0) AS revenue,
+            COUNT(*) AS payments
+     FROM payments
+     WHERE status = 'captured'
+       AND COALESCE(captured_at, created_at) >= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 6 MONTH)
+     GROUP BY DATE_FORMAT(COALESCE(captured_at, created_at), '%Y-%m')
+     ORDER BY month ASC`,
+  );
+
+  const byTier = await query(
+    `SELECT o.elder_count_at_purchase AS elder_count,
+            COALESCE(SUM(p.amount), 0) AS revenue,
+            COUNT(DISTINCT o.guardian_id) AS subscribers
+     FROM payment_orders o
+     INNER JOIN payments p ON p.order_id = o.id AND p.status = 'captured'
+     GROUP BY o.elder_count_at_purchase
+     ORDER BY o.elder_count_at_purchase ASC`,
+  );
+
+  const [activeSubs] = await query(
+    `SELECT COUNT(*) AS cnt FROM profiles
+     WHERE deleted_at IS NULL
+       AND role = 'guardian'
+       AND plan_status = 'active'
+       AND plan_expires_at IS NOT NULL
+       AND plan_expires_at > UTC_TIMESTAMP(3)`,
   );
 
   return {
-    records: rows.map(r => ({
-      ...r,
-      timestamp: r.timestamp == null ? null : Number(r.timestamp),
-      ai_read: Boolean(r.ai_read)
+    total_revenue: Number(captured?.total) || 0,
+    captured_payments: Number(captured?.count) || 0,
+    active_subscriptions: Number(activeSubs?.cnt) || 0,
+    monthly: monthly.map((m) => ({
+      month: m.month,
+      revenue: Number(m.revenue) || 0,
+      payments: Number(m.payments) || 0,
     })),
-    total,
-    page,
-    limit,
-    pages: Math.ceil(total / limit)
+    by_tier: byTier.map((t) => ({
+      plan: `${t.elder_count} elder${Number(t.elder_count) === 1 ? '' : 's'}`,
+      elder_count: Number(t.elder_count),
+      revenue: Number(t.revenue) || 0,
+      subscribers: Number(t.subscribers) || 0,
+    })),
   };
 }
 
@@ -770,15 +1525,30 @@ module.exports = {
   upsertProfile,
   updateProfile,
   deleteProfile,
+  softDeleteProfile,
+  restoreProfile,
+  getDeletedProfile,
   getConnections,
   updateConnection,
   deleteConnection,
   getMedicines,
   getCheckIns,
   getMoods,
+  getHealthReadings,
   getAIConversations,
   getCareEvents,
   getMindGames,
+  getSosAlerts,
+  updateSosAlert,
+  getNotifications,
   broadcastNotification,
   getHealthRecords,
+  getEmergencyContacts,
+  getJournalEntries,
+  getFamilyMessages,
+  getElderLocations,
+  getAppointments,
+  getStreaks,
+  getUserSubscriptions,
+  getRevenueSummary,
 };

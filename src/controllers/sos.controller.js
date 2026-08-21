@@ -1,5 +1,24 @@
 const emergencyContactsService = require('../services/emergency-contacts.service');
 const sosService = require('../services/sos.service');
+const elderLocationsService = require('../services/elder-locations.service');
+const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
+const { NOTIFICATION_TYPES } = require('../constants/notification-types');
+
+async function notifyGuardiansOfEmergencyContactChange(userId) {
+  try {
+    // Debounced (plan Section 17.3) — a retried/double-tapped PATCH would otherwise re-fire
+    // this for the same underlying edit.
+    if (!(await shouldSendActionNotification(userId, 'emergency_contact_updated'))) return;
+    await notifyGuardiansOfElder(userId, {
+      type: NOTIFICATION_TYPES.EMERGENCY_CONTACT_UPDATED,
+      title: 'Emergency Contact Updated',
+      body: "The user's emergency contact information has been updated.",
+      data: { type: NOTIFICATION_TYPES.EMERGENCY_CONTACT_UPDATED, elderId: userId },
+    });
+  } catch (err) {
+    console.warn('[sos/emergency-contacts] guardian notify failed:', err.message);
+  }
+}
 
 const DEFAULT_COLOR = '#F0F4FF';
 
@@ -19,7 +38,7 @@ function readBody(req) {
 /** GET /api/sos/emergency-contacts */
 async function listEmergencyContacts(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -41,7 +60,7 @@ async function listEmergencyContacts(req, res) {
 /** POST /api/sos/emergency-contacts */
 async function createEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -60,6 +79,7 @@ async function createEmergencyContact(req, res) {
     }
 
     const contact = await emergencyContactsService.create(userId, { name, role, phone, color });
+    await notifyGuardiansOfEmergencyContactChange(userId);
     return res.json({ success: true, contact });
   } catch (err) {
     console.error('[sos/emergency-contacts] insert:', err.message || err);
@@ -76,7 +96,7 @@ async function createEmergencyContact(req, res) {
 /** PATCH /api/sos/emergency-contacts/:id */
 async function updateEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -102,6 +122,7 @@ async function updateEmergencyContact(req, res) {
       return res.status(404).json({ success: false, message: 'Emergency contact not found.' });
     }
 
+    await notifyGuardiansOfEmergencyContactChange(userId);
     return res.json({ success: true, contact });
   } catch (err) {
     console.error('[sos/emergency-contacts] update:', err.message || err);
@@ -118,7 +139,7 @@ async function updateEmergencyContact(req, res) {
 /** DELETE /api/sos/emergency-contacts/:id */
 async function deleteEmergencyContact(req, res) {
   try {
-    const userId = req.auth?.userId ?? req.supabase?.userId;
+    const userId = req.auth?.userId;
     if (!userId) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
@@ -143,7 +164,7 @@ async function deleteEmergencyContact(req, res) {
   }
 }
 
-/** POST /api/sos/trigger — log SOS event (call-only on device; no SMS). */
+/** POST /api/sos/trigger — logs the alert, calls guardians on-device (dialer), and pushes every connected guardian. */
 async function triggerSos(req, res) {
   try {
     const userId = req.auth.userId;
@@ -156,6 +177,7 @@ async function triggerSos(req, res) {
     const alert = await sosService.createAlert(userId);
 
     const elderName = profile.full_name || profile.emergency_name || 'A TinyBit user';
+    const triggeredAt = new Date().toISOString();
 
     console.log('[sos/trigger]', {
       userId,
@@ -164,6 +186,36 @@ async function triggerSos(req, res) {
       emergency_phone: profile.emergency_phone ?? null,
       channel: 'call-only',
     });
+
+    try {
+      // Debounced (plan Section 17.3) — a panic double-tap on the SOS button or a network
+      // retry must not send the same alert broadcast twice; a genuinely new SOS moments later
+      // still goes through once the debounce window passes. The `sos_alerts` row itself is
+      // still logged every call (out of scope here — a second logged row is harmless, unlike
+      // a second push), only the guardian broadcast is debounced.
+      if (await shouldSendActionNotification(userId, NOTIFICATION_TYPES.SOS_ALERT)) {
+        // Location is included regardless of the normal is_sharing gate: triggering
+        // an SOS is the elder's own explicit signal that their guardians should see it.
+        const location = await elderLocationsService.getByElderId(userId);
+        await notifyGuardiansOfElder(userId, {
+          type: NOTIFICATION_TYPES.SOS_ALERT,
+          title: `🚨 ${elderName} IMMEDIATE HELP!!`,
+          body: 'Needs immediate help right now. Tap for live location and blood group.',
+          data: {
+            type:       NOTIFICATION_TYPES.SOS_ALERT,
+            elderId:    userId,
+            time:       triggeredAt,
+            bloodGroup: profile.blood_group ?? null,
+            latitude:   location?.latitude ?? null,
+            longitude:  location?.longitude ?? null,
+            address:    location?.address ?? null,
+          },
+        });
+      }
+
+    } catch (notifyErr) {
+      console.warn('[sos/trigger] guardian notify failed:', notifyErr.message);
+    }
 
     return res.json({
       success: true,

@@ -1,7 +1,5 @@
 /**
  * JWT access tokens — signed with JWT_SECRET.
- *
- * JWT access tokens — signed with JWT_SECRET (no Supabase dependency).
  *   JWT_ACCESS_TTL_SECONDS     — default 3600 (1 hour)
  *   JWT_REFRESH_TTL_DAYS       — default 30
  */

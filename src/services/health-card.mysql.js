@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
+const { FREQUENCY_LABELS, resolveMedicineTime } = require('../utils/health-labels');
 
 function toIso(val) {
   if (!val) return val;
@@ -104,6 +105,23 @@ async function listActiveMedicinesForHealthCard(userId) {
   );
 }
 
+/** Builds the deterministic health-card ID shown on both the webpage and the PDF. */
+function buildHealthCardId(profileId) {
+  const raw = String(profileId || '').replace(/-/g, '').toUpperCase();
+  return `TBIT-${raw.slice(0, 4)}-${raw.slice(4, 5)}`;
+}
+
+/**
+ * "Generated" date shown on both the webpage and the PDF — single canonical format.
+ * `getHealthCard` is a public, unauthenticated route (anyone with the QR link can view
+ * it — an ER doctor, a family member, from anywhere), so there is no single user whose
+ * timezone would be the "correct" one to apply here; the server's own default is a
+ * legitimate choice for this display-only text, same reasoning as daily-content.mysql.js.
+ */
+function formatGeneratedDate(date) {
+  return (date ?? new Date()).toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' });
+}
+
 async function getPrimaryEmergencyContact(userId) {
   const rows = await query(
     `SELECT name, phone, role
@@ -125,10 +143,8 @@ async function enrichProfileForHealthCard(profile) {
     profile.medications = meds.map((m) => ({
       name: m.name,
       dosage: [m.dosage, m.dosage_unit].filter(Boolean).join(' '),
-      time: m.time,
-      schedule_time: m.schedule_time,
-      frequency: m.frequency,
-      timing: m.time || m.schedule_time || m.frequency || '',
+      frequency_label: FREQUENCY_LABELS[m.frequency] ?? m.frequency ?? 'Daily',
+      time: resolveMedicineTime(m),
     }));
   }
 
@@ -149,4 +165,6 @@ module.exports = {
   getOrCreateHealthQrToken,
   findProfileByHealthQrToken,
   enrichProfileForHealthCard,
+  buildHealthCardId,
+  formatGeneratedDate,
 };

@@ -1,4 +1,9 @@
 const familyMessagesService = require('../services/family-messages.service');
+const guardianService = require('../services/guardian.service');
+const storageService = require('../services/storage.service');
+const { mapStorageError } = require('./storage.controller');
+const { resolveTodayForUser } = require('../services/timezone.service');
+const { notifyElder, shouldSendActionNotification } = require('../services/notifications.service');
 
 function isTableMissing(error) {
   return (
@@ -15,8 +20,62 @@ function isValidDateParam(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''));
 }
 
-function todayDateParam() {
-  return new Date().toISOString().slice(0, 10);
+function todayDateParam(userId) {
+  return resolveTodayForUser(userId);
+}
+
+/** Pushes the elder when the message came from one of their connected guardians — the reverse
+ * direction (elder messaging a guardian) isn't notified today; only the guardian-side
+ * voice-message screen exists as a caller of createMessage. Failure here never fails the
+ * request — the message is already durably saved by the time this runs. */
+async function notifyElderOfFamilyMessage(senderId, receiverId, created, isVoiceMessage) {
+  try {
+    if (!(await guardianService.isConnectedToElder(senderId, receiverId))) return;
+    if (!(await shouldSendActionNotification(receiverId, 'family_message', created.id))) return;
+
+    const senderName = created.sender?.full_name;
+    await notifyElder(receiverId, {
+      senderId,
+      type: 'family_message',
+      title: isVoiceMessage ? 'New Voice Message' : 'New Message',
+      body: senderName
+        ? `${senderName} sent you a${isVoiceMessage ? ' voice' : ''} message.`
+        : `You have a new${isVoiceMessage ? ' voice' : ''} message from a family member.`,
+      data: { type: 'family_message', messageId: created.id, senderId, senderName: senderName ?? null },
+    });
+  } catch (err) {
+    console.error('notifyElderOfFamilyMessage error:', err);
+  }
+}
+
+/** GET /api/family/messages/history?with=<userId>&limit=50 — full two-way thread, newest first. */
+async function getMessageHistory(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const otherUserId = String(req.query.with ?? '').trim();
+    if (!otherUserId) {
+      return res.status(400).json({ success: false, message: '"with" query param is required.' });
+    }
+
+    const limitRaw = parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(limitRaw) ? Math.min(Math.max(limitRaw, 1), 200) : 50;
+
+    const messages = await familyMessagesService.listBetween(userId, otherUserId, limit);
+    return res.json({ success: true, messages });
+  } catch (err) {
+    console.error('[family/messages] history', err);
+    if (isTableMissing(err)) {
+      return res.status(501).json({ success: false, message: 'family_messages table is not deployed.' });
+    }
+    return res.status(500).json({
+      success: false,
+      message: err.message || 'Could not load message history.',
+    });
+  }
 }
 
 /** GET /api/family/messages/latest */
@@ -53,7 +112,7 @@ async function getMessageCount(req, res) {
     }
 
     const dateRaw = String(req.query.date ?? '').trim();
-    const date = isValidDateParam(dateRaw) ? dateRaw : todayDateParam();
+    const date = isValidDateParam(dateRaw) ? dateRaw : await todayDateParam(userId);
 
     const count = await familyMessagesService.countForReceiverOnDate(userId, date);
     return res.json({ success: true, count });
@@ -80,15 +139,21 @@ async function createMessage(req, res) {
     const body = readBody(req);
     const receiverId = String(body.receiver_id ?? body.receiverId ?? '').trim();
     const message = String(body.message ?? body.content ?? '').trim();
+    const audioUrlRaw = body.audio_url ?? body.audioUrl;
+    const audioUrl = audioUrlRaw != null ? String(audioUrlRaw).trim() : null;
 
     if (!receiverId) {
       return res.status(400).json({ success: false, message: 'receiver_id is required.' });
     }
-    if (!message) {
-      return res.status(400).json({ success: false, message: 'message or content is required.' });
+    if (!message && !audioUrl) {
+      return res.status(400).json({ success: false, message: 'message, content, or audio_url is required.' });
+    }
+    if (audioUrl && !/^https?:\/\//i.test(audioUrl)) {
+      return res.status(400).json({ success: false, message: 'audio_url must be an HTTPS URL.' });
     }
 
-    const created = await familyMessagesService.create(senderId, receiverId, message);
+    const created = await familyMessagesService.create(senderId, receiverId, message, audioUrl || null);
+    await notifyElderOfFamilyMessage(senderId, receiverId, created, Boolean(audioUrl));
     return res.json({ success: true, message: created });
   } catch (err) {
     console.error('[family/messages] create', err);
@@ -102,8 +167,44 @@ async function createMessage(req, res) {
   }
 }
 
+/** POST /api/family/messages/presign-download — { audio_url } of a voice message you sent or received */
+async function presignAudioDownload(req, res) {
+  try {
+    const userId = req.auth?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
+
+    const audioUrl = String(req.body?.audio_url ?? '').trim();
+    if (!audioUrl) {
+      return res.status(400).json({ success: false, message: 'audio_url is required.' });
+    }
+
+    const isParticipant = await familyMessagesService.isParticipantInAudioMessage(userId, audioUrl);
+    if (!isParticipant) {
+      return res.status(403).json({ success: false, message: 'You do not have access to this voice message.' });
+    }
+
+    const key = storageService.extractObjectKey(audioUrl);
+    if (!key) {
+      return res.status(400).json({ success: false, message: 'Invalid audio_url.' });
+    }
+    const ownerId = key.split('/')[1];
+
+    const result = await storageService.createPresignedDownload({ key, userId: ownerId });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('[family/messages] presign-download', err);
+    const mapped = mapStorageError(err, res);
+    if (mapped) return mapped;
+    return res.status(500).json({ success: false, message: err.message || 'Could not create download URL.' });
+  }
+}
+
 module.exports = {
+  getMessageHistory,
   getLatestMessage,
   getMessageCount,
   createMessage,
+  presignAudioDownload,
 };

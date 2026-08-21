@@ -145,7 +145,7 @@
  * /api/guardian/save-push-token:
  *   post:
  *     tags: [Guardian]
- *     summary: Save Expo push token for notifications
+ *     summary: Upsert this device's Expo push token (one row per device — multi-device safe)
  *     security:
  *       - bearerAuth: []
  *     requestBody:
@@ -154,10 +154,16 @@
  *         application/json:
  *           schema:
  *             type: object
- *             required: [push_token]
+ *             required: [push_token, platform]
  *             properties:
  *               push_token:
  *                 type: string
+ *               platform:
+ *                 type: string
+ *                 enum: [ios, android, web]
+ *               device_id:
+ *                 type: string
+ *                 description: Stable per-install identifier, optional
  *     responses:
  *       200:
  *         description: Token saved
@@ -166,7 +172,200 @@
  *             schema:
  *               $ref: '#/components/schemas/SuccessResponse'
  *
+ * /api/guardian/clear-push-token:
+ *   post:
+ *     tags: [Guardian]
+ *     summary: Remove this device's push token only (never every device for the user)
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: At least one of push_token/device_id is required
+ *             properties:
+ *               push_token:
+ *                 type: string
+ *               device_id:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Token cleared
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/SuccessResponse'
+ *
  * /api/guardian/elders:
+ *   post:
+ *     tags: [Guardian]
+ *     summary: Create shadow elder profile (ADR 0004) — guardian creates a real, immediately-claimable elder account directly, no invite/accept step
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [first_name, email, mobile, mobile_country, relation]
+ *             properties:
+ *               first_name:
+ *                 type: string
+ *               last_name:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               mobile:
+ *                 type: string
+ *               mobile_country:
+ *                 type: string
+ *                 description: Phone dial code, e.g. "+91"
+ *               relation:
+ *                 type: string
+ *                 description: Guardian's relation to the elder (e.g. "Son"), not the elder's relation to the guardian
+ *               location:
+ *                 type: string
+ *                 description: Country name from the guardian's country-picker selection for the elder
+ *               country:
+ *                 type: string
+ *                 description: Same country name as location. If omitted, the server mirrors location's value automatically.
+ *               country_code:
+ *                 type: string
+ *                 description: ISO country code (e.g. "IN") from the same picker selection. No fallback derivation — stays null if omitted.
+ *               date_of_birth:
+ *                 type: string
+ *                 format: date
+ *               blood_group:
+ *                 type: string
+ *               biological_sex:
+ *                 type: string
+ *                 enum: [male, female, other]
+ *               preferred_language:
+ *                 type: string
+ *               height:
+ *                 type: number
+ *               height_unit:
+ *                 type: string
+ *                 enum: [ft, cm]
+ *               weight:
+ *                 type: number
+ *               weight_unit:
+ *                 type: string
+ *                 enum: [kg, lbs]
+ *               medical_conditions:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               other_condition:
+ *                 type: string
+ *               allergies:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               doctor_name:
+ *                 type: string
+ *               doctor_contact:
+ *                 type: string
+ *     description: >
+ *       emergency_name / emergency_phone / emergency_relation are NOT accepted from the
+ *       client — the server derives them from the guardian's own profile and relation.
+ *     responses:
+ *       200:
+ *         description: Elder profile created and linked
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 elder:
+ *                   type: object
+ *                   description: Full stored elder profile, including server-derived emergency_* fields
+ *                   properties:
+ *                     id:
+ *                       type: string
+ *                     first_name:
+ *                       type: string
+ *                     last_name:
+ *                       type: string
+ *                     email:
+ *                       type: string
+ *                     mobile:
+ *                       type: string
+ *                     relation:
+ *                       type: string
+ *                     location:
+ *                       type: string
+ *                       nullable: true
+ *                     country:
+ *                       type: string
+ *                       nullable: true
+ *                     country_code:
+ *                       type: string
+ *                       nullable: true
+ *                     date_of_birth:
+ *                       type: string
+ *                       nullable: true
+ *                     blood_group:
+ *                       type: string
+ *                       nullable: true
+ *                     biological_sex:
+ *                       type: string
+ *                       nullable: true
+ *                     preferred_language:
+ *                       type: string
+ *                       nullable: true
+ *                     height:
+ *                       type: number
+ *                       nullable: true
+ *                     height_unit:
+ *                       type: string
+ *                       nullable: true
+ *                     weight:
+ *                       type: number
+ *                       nullable: true
+ *                     weight_unit:
+ *                       type: string
+ *                       nullable: true
+ *                     medical_conditions:
+ *                       type: array
+ *                       nullable: true
+ *                       items:
+ *                         type: string
+ *                     other_condition:
+ *                       type: string
+ *                       nullable: true
+ *                     allergies:
+ *                       type: array
+ *                       nullable: true
+ *                       items:
+ *                         type: string
+ *                     doctor_name:
+ *                       type: string
+ *                       nullable: true
+ *                     doctor_contact:
+ *                       type: string
+ *                       nullable: true
+ *                     emergency_name:
+ *                       type: string
+ *                       nullable: true
+ *                     emergency_phone:
+ *                       type: string
+ *                       nullable: true
+ *                     emergency_relation:
+ *                       type: string
+ *                       nullable: true
+ *       400:
+ *         description: Missing required fields or invalid mobile number
+ *       402:
+ *         description: Adding this elder crosses into a higher pricing tier — payment required (code UPGRADE_REQUIRED)
+ *       409:
+ *         description: Phone or email already registered to another account (code PHONE_TAKEN / EMAIL_TAKEN)
  *   get:
  *     tags: [Guardian]
  *     summary: Guardian dashboard — linked elders
@@ -240,6 +439,10 @@
  *   get:
  *     tags: [Guardian]
  *     summary: Guardian health reports
+ *     description: >
+ *       Returns bar-chart data + summary metrics for a connected elder over a period.
+ *       If elderId is omitted, falls back to the guardian's first connected elder.
+ *       If startDate/endDate are both given (YYYY-MM-DD), they override period's window.
  *     security:
  *       - bearerAuth: []
  *     parameters:
@@ -248,6 +451,23 @@
  *         schema:
  *           type: string
  *           enum: [weekly, monthly, yearly]
+ *       - in: query
+ *         name: elderId
+ *         schema:
+ *           type: string
+ *         description: Optional. Must be a connected elder of the caller; 403 otherwise.
+ *       - in: query
+ *         name: startDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Optional custom range start (YYYY-MM-DD). Requires endDate too.
+ *       - in: query
+ *         name: endDate
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Optional custom range end (YYYY-MM-DD). Requires startDate too.
  *     responses:
  *       200:
  *         description: Report data
@@ -260,7 +480,45 @@
  *                   type: boolean
  *                 data:
  *                   type: object
- *                   additionalProperties: true
+ *                   properties:
+ *                     elderName:
+ *                       type: string
+ *                     bars:
+ *                       type: array
+ *                       items:
+ *                         type: number
+ *                     metrics:
+ *                       type: object
+ *                       properties:
+ *                         medAdherence:
+ *                           type: string
+ *                         medTrend:
+ *                           type: string
+ *                         avgMood:
+ *                           type: string
+ *                         moodTrend:
+ *                           type: string
+ *                         checkinStreak:
+ *                           type: string
+ *                         avgSleep:
+ *                           type: string
+ *                         totalCheckins:
+ *                           type: number
+ *                         medAdherenceToday:
+ *                           type: string
+ *                           example: "1/2"
+ *                         wellness:
+ *                           type: object
+ *                           properties:
+ *                             avgSleep:
+ *                               type: string
+ *                             avgEnergyLevel:
+ *                               type: string
+ *                               nullable: true
+ *                             painReportedCount:
+ *                               type: number
+ *       403:
+ *         description: elderId provided but not connected to this guardian
  */
 
 module.exports = {};
