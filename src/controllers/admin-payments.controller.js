@@ -2,6 +2,7 @@ const pricingService = require('../services/payment-pricing.mysql');
 const paymentsService = require('../services/payments.mysql');
 const refundsService = require('../services/payment-refunds.mysql');
 const auditService = require('../services/admin-audit.mysql');
+const promotionsService = require('../services/payment-promotions-admin.mysql');
 
 function handleError(res, err) {
   return res.status(err.status || 500).json({ success: false, error: err.message });
@@ -77,6 +78,14 @@ const deletePricingTier = async (req, res) => {
   }
 };
 
+const getTrialOffers = async (req, res) => { try { return res.json({ success: true, offers: await promotionsService.listTrialOffers() }); } catch (err) { return handleError(res, err); } };
+const createTrialOffer = async (req, res) => { try { const offer = await promotionsService.saveTrialOffer(req.body ?? {}); await audit(req, 'trial_offer.create', 'payment_trial_offer', offer.id); return res.status(201).json({ success: true, offer }); } catch (err) { return handleError(res, err); } };
+const updateTrialOffer = async (req, res) => { try { const offer = await promotionsService.saveTrialOffer(req.body ?? {}, req.params.id); await audit(req, 'trial_offer.update', 'payment_trial_offer', offer.id); return res.json({ success: true, offer }); } catch (err) { return handleError(res, err); } };
+const getCoupons = async (req, res) => { try { return res.json({ success: true, coupons: await promotionsService.listCoupons() }); } catch (err) { return handleError(res, err); } };
+const createCoupon = async (req, res) => { try { const coupon = await promotionsService.saveCoupon(req.body ?? {}); await audit(req, 'coupon.create', 'payment_coupon', coupon.id); return res.status(201).json({ success: true, coupon }); } catch (err) { return handleError(res, err); } };
+const updateCoupon = async (req, res) => { try { const coupon = await promotionsService.saveCoupon(req.body ?? {}, req.params.id); await audit(req, 'coupon.update', 'payment_coupon', coupon.id); return res.json({ success: true, coupon }); } catch (err) { return handleError(res, err); } };
+const archiveCoupon = async (req, res) => { try { await promotionsService.archiveCoupon(req.params.id); await audit(req, 'coupon.archive', 'payment_coupon', req.params.id); return res.json({ success: true }); } catch (err) { return handleError(res, err); } };
+
 // ── Orders / payments (history + refund) ───────────────────────────────────
 
 const getOrders = async (req, res) => {
@@ -131,6 +140,8 @@ module.exports = {
   createPricingTier,
   updatePricingTier,
   deletePricingTier,
+  getTrialOffers, createTrialOffer, updateTrialOffer,
+  getCoupons, createCoupon, updateCoupon, archiveCoupon,
   getOrders,
   getOrder,
   refundPayment,

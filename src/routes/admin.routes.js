@@ -84,6 +84,8 @@ const {
   createPricingTier,
   updatePricingTier,
   deletePricingTier,
+  getTrialOffers, createTrialOffer, updateTrialOffer,
+  getCoupons, createCoupon, updateCoupon, archiveCoupon,
   getOrders,
   getOrder,
   refundPayment,
@@ -209,6 +211,14 @@ router.post('/api/pricing-tiers', sessionAuth, requirePermission('Billing'), cre
 router.get('/api/pricing-tiers/:id', sessionAuth, requirePermission('Billing'), getPricingTier);
 router.patch('/api/pricing-tiers/:id', sessionAuth, requirePermission('Billing'), updatePricingTier);
 router.delete('/api/pricing-tiers/:id', sessionAuth, requirePermission('Billing'), deletePricingTier);
+
+router.get('/api/payment-trial-offers', sessionAuth, requirePermission('Billing'), getTrialOffers);
+router.post('/api/payment-trial-offers', sessionAuth, requirePermission('Billing'), createTrialOffer);
+router.patch('/api/payment-trial-offers/:id', sessionAuth, requirePermission('Billing'), updateTrialOffer);
+router.get('/api/payment-coupons', sessionAuth, requirePermission('Billing'), getCoupons);
+router.post('/api/payment-coupons', sessionAuth, requirePermission('Billing'), createCoupon);
+router.patch('/api/payment-coupons/:id', sessionAuth, requirePermission('Billing'), updateCoupon);
+router.delete('/api/payment-coupons/:id', sessionAuth, requirePermission('Billing'), archiveCoupon);
 
 router.get('/api/payments/orders', sessionAuth, requirePermission('Billing'), getOrders);
 router.get('/api/payments/orders/:id', sessionAuth, requirePermission('Billing'), getOrder);

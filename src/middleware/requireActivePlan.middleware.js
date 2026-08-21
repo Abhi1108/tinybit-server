@@ -32,7 +32,7 @@ async function requireActivePlan(req, res, next) {
     }
 
     const expiresAt = profile.plan_expires_at ? new Date(profile.plan_expires_at) : null;
-    const isActive = profile.plan_status === 'active' && expiresAt && expiresAt.getTime() > Date.now();
+    const isActive = ['active', 'trial'].includes(profile.plan_status) && expiresAt && expiresAt.getTime() > Date.now();
 
     if (!isActive) {
       return res.status(402).json({

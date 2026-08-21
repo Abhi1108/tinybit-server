@@ -274,6 +274,22 @@ CREATE TABLE IF NOT EXISTS sos_alerts (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
+-- Contact form submissions (public POST /api/contact-us — also used as the
+-- n8n health-report "report delivered" ping log)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS contact_us_messages (
+  id         CHAR(36)     NOT NULL DEFAULT (UUID()),
+  name       VARCHAR(255) NULL,
+  email      VARCHAR(255) NULL,
+  subject    VARCHAR(255) NULL,
+  message    TEXT         NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_contact_us_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
 -- Medicines
 -- -----------------------------------------------------------------------------
 
@@ -583,6 +599,7 @@ CREATE TABLE IF NOT EXISTS ai_conversations (
   prompt_tokens     INT          NULL,
   completion_tokens INT          NULL,
   total_tokens      INT          NULL,
+  cached_tokens     INT          NULL,
   created_at        DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   KEY idx_ai_conversations_user (user_id, created_at DESC),
@@ -992,6 +1009,96 @@ CREATE TABLE IF NOT EXISTS payment_pricing_tiers (
   CONSTRAINT chk_pricing_elder_count CHECK (elder_count >= 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Admin-configurable guardian trials. A claim snapshots the offer so later edits never
+-- rewrite a customer's entitlement history.
+CREATE TABLE IF NOT EXISTS payment_trial_offers (
+  id              CHAR(36)      NOT NULL DEFAULT (UUID()),
+  name            VARCHAR(128)  NOT NULL,
+  duration_days   INT           NOT NULL DEFAULT 7,
+  country_code    VARCHAR(4)    NULL,
+  is_active       TINYINT(1)    NOT NULL DEFAULT 1,
+  starts_at       DATETIME(3)   NULL,
+  ends_at         DATETIME(3)   NULL,
+  display_message VARCHAR(255)  NULL,
+  created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_trial_offer_active (is_active, starts_at, ends_at),
+  CONSTRAINT chk_trial_offer_duration CHECK (duration_days >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payment_trial_claims (
+  id                 CHAR(36)      NOT NULL DEFAULT (UUID()),
+  guardian_id        CHAR(36)      NOT NULL,
+  trial_offer_id     CHAR(36)      NULL,
+  elder_count        INT           NOT NULL,
+  pricing_tier_id    CHAR(36)      NULL,
+  started_at         DATETIME(3)   NOT NULL,
+  expires_at         DATETIME(3)   NOT NULL,
+  status             VARCHAR(16)   NOT NULL DEFAULT 'active',
+  offer_snapshot     JSON          NOT NULL,
+  created_at         DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_trial_claim_guardian (guardian_id),
+  KEY idx_trial_claim_expiry (status, expires_at),
+  CONSTRAINT chk_trial_claim_status CHECK (status IN ('active', 'expired', 'converted', 'revoked')),
+  CONSTRAINT fk_trial_claim_guardian FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE,
+  CONSTRAINT fk_trial_claim_offer FOREIGN KEY (trial_offer_id) REFERENCES payment_trial_offers (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payment_coupons (
+  id                       CHAR(36)      NOT NULL DEFAULT (UUID()),
+  code                     VARCHAR(64)   NOT NULL,
+  name                     VARCHAR(128)  NOT NULL,
+  discount_type            VARCHAR(16)   NOT NULL,
+  discount_value           DECIMAL(12,2) NOT NULL,
+  maximum_discount_amount  DECIMAL(12,2) NULL,
+  currency                 VARCHAR(8)    NULL,
+  minimum_order_amount     DECIMAL(12,2) NULL,
+  country_code             VARCHAR(4)    NULL,
+  first_paid_purchase_only TINYINT(1)    NOT NULL DEFAULT 0,
+  total_redemption_limit   INT           NULL,
+  per_guardian_limit       INT           NOT NULL DEFAULT 1,
+  starts_at                DATETIME(3)   NULL,
+  ends_at                  DATETIME(3)   NULL,
+  is_active                TINYINT(1)    NOT NULL DEFAULT 1,
+  notes                    TEXT          NULL,
+  created_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_payment_coupon_code (code),
+  KEY idx_coupon_active_dates (is_active, starts_at, ends_at),
+  CONSTRAINT chk_coupon_type CHECK (discount_type IN ('percent', 'fixed')),
+  CONSTRAINT chk_coupon_value CHECK (discount_value > 0),
+  CONSTRAINT chk_coupon_limits CHECK (per_guardian_limit >= 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payment_coupon_tiers (
+  coupon_id       CHAR(36) NOT NULL,
+  pricing_tier_id CHAR(36) NOT NULL,
+  PRIMARY KEY (coupon_id, pricing_tier_id),
+  CONSTRAINT fk_coupon_tiers_coupon FOREIGN KEY (coupon_id) REFERENCES payment_coupons (id) ON DELETE CASCADE,
+  CONSTRAINT fk_coupon_tiers_tier FOREIGN KEY (pricing_tier_id) REFERENCES payment_pricing_tiers (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payment_coupon_redemptions (
+  id                     CHAR(36)     NOT NULL DEFAULT (UUID()),
+  coupon_id              CHAR(36)     NOT NULL,
+  guardian_id            CHAR(36)     NOT NULL,
+  payment_order_id       CHAR(36)     NULL,
+  discount_amount        DECIMAL(12,2) NOT NULL,
+  status                 VARCHAR(16)  NOT NULL DEFAULT 'reserved',
+  reservation_expires_at DATETIME(3)  NULL,
+  redeemed_at            DATETIME(3)  NULL,
+  created_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_coupon_redemption_coupon (coupon_id, status),
+  KEY idx_coupon_redemption_guardian (guardian_id, coupon_id),
+  CONSTRAINT chk_coupon_redemption_status CHECK (status IN ('reserved', 'redeemed', 'released', 'expired')),
+  CONSTRAINT fk_coupon_redemption_coupon FOREIGN KEY (coupon_id) REFERENCES payment_coupons (id) ON DELETE RESTRICT,
+  CONSTRAINT fk_coupon_redemption_guardian FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- One row per Razorpay Order we create. Snapshots the tier at purchase time so
 -- history/refunds never depend on payment_pricing_tiers still having the same values.
 CREATE TABLE IF NOT EXISTS payment_orders (
@@ -1001,6 +1108,11 @@ CREATE TABLE IF NOT EXISTS payment_orders (
   kind                     VARCHAR(16)   NOT NULL DEFAULT 'renewal',
   pricing_tier_id          CHAR(36)      NULL,
   elder_count_at_purchase  INT           NOT NULL,
+  gross_amount             DECIMAL(12,2) NOT NULL,          -- amount before any coupon discount
+  discount_amount          DECIMAL(12,2) NOT NULL DEFAULT 0,
+  coupon_id                CHAR(36)      NULL,
+  coupon_code              VARCHAR(64)   NULL,
+  coupon_snapshot          JSON          NULL,
   amount                   DECIMAL(12,2) NOT NULL,          -- amount actually charged via Razorpay (full tier price for 'renewal'; delta for 'upgrade', ADR 0003)
   tier_amount              DECIMAL(12,2) NOT NULL,          -- full price of the destination tier — applied to profiles.plan_amount regardless of kind
   interval_days            INT           NOT NULL,          -- snapshotted from the tier — applied to profiles.plan_expires_at on 'renewal' (unchanged on 'upgrade', ADR 0003)
@@ -1018,7 +1130,9 @@ CREATE TABLE IF NOT EXISTS payment_orders (
   CONSTRAINT chk_payment_orders_kind CHECK (kind IN ('renewal', 'upgrade')),
   CONSTRAINT chk_payment_orders_status CHECK (status IN ('created', 'paid', 'expired', 'cancelled')),
   CONSTRAINT fk_payment_orders_guardian
-    FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE
+    FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE,
+  CONSTRAINT fk_payment_orders_coupon
+    FOREIGN KEY (coupon_id) REFERENCES payment_coupons (id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- One row per Razorpay Payment entity. An Order can have multiple payment

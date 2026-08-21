@@ -3,6 +3,8 @@ const router = express.Router();
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
 const {
   getPricing,
+  startTrial,
+  validateCoupon,
   listPricingTiers,
   createOrder,
   verifyOrder,
@@ -20,6 +22,8 @@ router.post('/webhook', handleWebhook);
 // and pay while unpaid/expired (CONTEXT.md Q6).
 router.get('/pricing',              requireJwtAuth, getPricing);
 router.get('/pricing/tiers',        requireJwtAuth, listPricingTiers);
+router.post('/trial/start',         requireJwtAuth, startTrial);
+router.post('/coupons/validate',    requireJwtAuth, validateCoupon);
 router.post('/orders',              requireJwtAuth, createOrder);
 router.post('/orders/:id/verify',   requireJwtAuth, verifyOrder);
 router.get('/history',              requireJwtAuth, getHistory);

@@ -29,7 +29,7 @@ async function listPricingTiers(req, res) {
 /** POST /api/payments/orders — always a renewal order (first payment or post-expiry renewal). */
 async function createOrder(req, res) {
   try {
-    const order = await paymentsService.createRenewalOrder(req.auth.userId);
+    const order = await paymentsService.createRenewalOrder(req.auth.userId, req.body?.coupon_code);
     return res.status(201).json({
       success: true,
       order,
@@ -38,6 +38,20 @@ async function createOrder(req, res) {
   } catch (err) {
     return handleError(res, err, 'Could not create order.');
   }
+}
+
+async function startTrial(req, res) {
+  try {
+    const trial = await paymentsService.startTrialForGuardian(req.auth.userId);
+    return res.status(201).json({ success: true, trial });
+  } catch (err) { return handleError(res, err, 'Could not start trial.'); }
+}
+
+async function validateCoupon(req, res) {
+  try {
+    const result = await paymentsService.previewCouponForGuardian(req.auth.userId, req.body?.coupon_code);
+    return res.json({ success: true, ...result });
+  } catch (err) { return handleError(res, err, 'Could not validate coupon.'); }
 }
 
 /** POST /api/payments/orders/:id/verify — body: razorpay_payment_id, razorpay_order_id, razorpay_signature */
@@ -103,6 +117,8 @@ async function getHistory(req, res) {
 
 module.exports = {
   getPricing,
+  startTrial,
+  validateCoupon,
   listPricingTiers,
   createOrder,
   verifyOrder,

@@ -3,6 +3,8 @@ const { query, execute } = require('../config/mysql');
 const profilesService = require('./profiles.service');
 const pricingService = require('./payment-pricing.mysql');
 const razorpayService = require('./razorpay.service');
+const trialsService = require('./payment-trials.mysql');
+const couponsService = require('./payment-coupons.mysql');
 
 function toIso(val) {
   if (!val) return val;
@@ -29,6 +31,8 @@ function mapOrder(row) {
   return {
     ...row,
     amount:                  Number(row.amount),
+    gross_amount:            row.gross_amount == null ? Number(row.amount) : Number(row.gross_amount),
+    discount_amount:          Number(row.discount_amount || 0),
     tier_amount:             Number(row.tier_amount),
     interval_days:           Number(row.interval_days),
     elder_count_at_purchase: Number(row.elder_count_at_purchase),
@@ -86,6 +90,8 @@ async function getPricingSummaryForGuardian(guardianId) {
   const currentTier = await pricingService.getTierForCountryAndElderCount(profile.country_code, effectiveCount);
   const nextTier = await pricingService.getNextTier(profile.country_code, effectiveCount);
 
+  const trialClaim = await trialsService.getClaim(guardianId);
+  const trialOffer = trialClaim ? null : await trialsService.getEligibleOffer(pricingService.normalizeCountryCode(profile.country_code));
   return {
     country_code:     pricingService.normalizeCountryCode(profile.country_code),
     elder_count:      elderCount,
@@ -96,7 +102,27 @@ async function getPricingSummaryForGuardian(guardianId) {
     plan_elder_count: profile.plan_elder_count,
     plan_amount:      profile.plan_amount == null ? null : Number(profile.plan_amount),
     plan_currency:    profile.plan_currency,
+    trial: {
+      eligible: !trialClaim && !!trialOffer,
+      claim: trialClaim,
+      offer: trialOffer ? { id: trialOffer.id, name: trialOffer.name, duration_days: Number(trialOffer.duration_days), display_message: trialOffer.display_message } : null,
+    },
   };
+}
+
+async function startTrialForGuardian(guardianId) {
+  const profile = await requireGuardianProfile(guardianId);
+  const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
+  const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
+  return trialsService.startTrial({ guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), elderCount, tier });
+}
+
+async function previewCouponForGuardian(guardianId, code) {
+  const profile = await requireGuardianProfile(guardianId);
+  const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
+  const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
+  const result = await couponsService.validateCoupon({ code, guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), tier, grossAmount: tier.amount });
+  return { tier, coupon: result && { code: result.code, name: result.coupon.name, discount_amount: result.discount_amount, gross_amount: result.gross_amount, final_amount: result.final_amount } };
 }
 
 /** All selectable pricing tiers for the guardian's country — mobile Plan Selection screen. */
@@ -118,7 +144,7 @@ async function getOrderById(id) {
 }
 
 async function insertOrder({
-  guardianId, kind, tier, chargeAmount, elderCount, previousTierAmount, previousElderCount, notes,
+  guardianId, kind, tier, chargeAmount, elderCount, previousTierAmount, previousElderCount, notes, coupon,
 }) {
   const id = randomUUID();
   // Razorpay caps `receipt` at 40 chars; `${kind}_${uuid}` is up to 44, so trim to fit or the
@@ -135,11 +161,13 @@ async function insertOrder({
   await execute(
     `INSERT INTO payment_orders
        (id, guardian_id, razorpay_order_id, kind, pricing_tier_id, elder_count_at_purchase,
-        amount, tier_amount, interval_days, currency, previous_tier_amount, previous_elder_count,
+        gross_amount, discount_amount, coupon_id, coupon_code, coupon_snapshot, amount, tier_amount, interval_days, currency, previous_tier_amount, previous_elder_count,
         receipt, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created')`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created')`,
     [
       id, guardianId, rzpOrder.id, kind, tier.id, elderCount,
+      coupon ? coupon.gross_amount : chargeAmount, coupon ? coupon.discount_amount : 0,
+      coupon ? coupon.coupon.id : null, coupon ? coupon.code : null, coupon ? JSON.stringify({ discount_type: coupon.coupon.discount_type, discount_value: Number(coupon.coupon.discount_value) }) : null,
       chargeAmount, tier.amount, tier.interval_days, tier.currency,
       previousTierAmount, previousElderCount, receipt,
     ],
@@ -153,20 +181,30 @@ async function insertOrder({
  * guardian with zero linked elders can still make their first payment). Used for both a
  * brand-new guardian's first-ever payment and a normal post-expiry renewal.
  */
-async function createRenewalOrder(guardianId) {
+async function createRenewalOrder(guardianId, couponCode) {
   const profile = await requireGuardianProfile(guardianId);
   const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
-
-  return insertOrder({
-    guardianId,
-    kind: 'renewal',
-    tier,
-    chargeAmount: tier.amount,
-    elderCount,
-    previousTierAmount: null,
-    previousElderCount: null,
-  });
+  const coupon = couponCode ? await couponsService.validateCoupon({
+    code: couponCode, guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), tier, grossAmount: tier.amount,
+  }) : null;
+  const reservationId = coupon ? await couponsService.reserveCoupon({ coupon: coupon.coupon, guardianId, discountAmount: coupon.discount_amount }) : null;
+  if (coupon?.final_amount <= 0) {
+    await applyPlanUpdate(guardianId, { planAmount: tier.amount, planCurrency: tier.currency, planElderCount: elderCount, extendExpiry: true, intervalDays: tier.interval_days });
+    await query(`UPDATE payment_coupon_redemptions SET status = 'redeemed', redeemed_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'reserved'`, [reservationId]);
+    return { id: null, status: 'paid', payment_provider: 'internal_coupon', gross_amount: coupon.gross_amount, discount_amount: coupon.discount_amount, amount: 0, coupon_code: coupon.code };
+  }
+  try {
+    const order = await insertOrder({
+      guardianId, kind: 'renewal', tier, chargeAmount: coupon ? coupon.final_amount : tier.amount, elderCount,
+      previousTierAmount: null, previousElderCount: null, coupon,
+    });
+    await couponsService.attachReservation(reservationId, order.id);
+    return order;
+  } catch (err) {
+    await couponsService.releaseReservation(reservationId);
+    throw err;
+  }
 }
 
 /**
@@ -307,6 +345,7 @@ async function recordCapturedPayment({ order, razorpayPaymentId, razorpaySignatu
       extendExpiry: order.kind === 'renewal',
       intervalDays: order.interval_days,
     });
+    await couponsService.redeemReservationForOrder(order.id);
   }
 
   const rows = await query('SELECT * FROM payments WHERE id = ? LIMIT 1', [paymentId]);
@@ -501,6 +540,8 @@ async function listAllOrders({ guardianId, page, limit } = {}) {
 module.exports = {
   getElderCountForGuardian,
   getPricingSummaryForGuardian,
+  startTrialForGuardian,
+  previewCouponForGuardian,
   listTiersForGuardian,
   getOrderById,
   getOrderByRazorpayId,
