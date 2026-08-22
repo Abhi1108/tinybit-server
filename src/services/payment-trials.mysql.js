@@ -4,14 +4,11 @@ const { query, execute, withTransaction } = require('../config/mysql');
 function badRequest(message, code) { const err = new Error(message); err.status = 400; err.code = code; return err; }
 function toIso(value) { return value instanceof Date ? value.toISOString() : value; }
 
-async function getEligibleOffer(countryCode) {
+async function getEligibleOffer() {
   const rows = await query(
     `SELECT * FROM payment_trial_offers
-     WHERE is_active = 1 AND (country_code IS NULL OR country_code = ?)
-       AND (starts_at IS NULL OR starts_at <= UTC_TIMESTAMP(3))
-       AND (ends_at IS NULL OR ends_at > UTC_TIMESTAMP(3))
-     ORDER BY country_code IS NULL ASC, created_at DESC LIMIT 1`,
-    [countryCode || '*'],
+     WHERE is_active = 1
+     ORDER BY created_at DESC LIMIT 1`
   );
   return rows[0] || null;
 }
@@ -23,15 +20,15 @@ async function getClaim(guardianId) {
   return claim;
 }
 
-async function startTrial({ guardianId, countryCode, elderCount, tier }) {
-  const offer = await getEligibleOffer(countryCode);
+async function startTrial({ guardianId, elderCount, tier }) {
+  const offer = await getEligibleOffer();
   if (!offer) throw badRequest('No trial is currently available for this plan.', 'TRIAL_UNAVAILABLE');
   const existing = await getClaim(guardianId);
   if (existing) throw badRequest('This account has already used its free trial.', 'TRIAL_ALREADY_USED');
 
   const id = randomUUID();
   const expiresAt = new Date(Date.now() + Number(offer.duration_days) * 86400000);
-  const snapshot = { name: offer.name, duration_days: Number(offer.duration_days), country_code: offer.country_code, tier_id: tier?.id || null };
+  const snapshot = { name: offer.name, duration_days: Number(offer.duration_days), tier_id: tier?.id || null };
   try {
     await withTransaction(async (conn) => {
       const [claims] = await conn.execute('SELECT id FROM payment_trial_claims WHERE guardian_id = ? FOR UPDATE', [guardianId]);

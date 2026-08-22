@@ -114,15 +114,25 @@ async function startTrialForGuardian(guardianId) {
   const profile = await requireGuardianProfile(guardianId);
   const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
-  return trialsService.startTrial({ guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), elderCount, tier });
+  return trialsService.startTrial({ guardianId, elderCount, tier });
 }
 
 async function previewCouponForGuardian(guardianId, code) {
   const profile = await requireGuardianProfile(guardianId);
   const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
-  const result = await couponsService.validateCoupon({ code, guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), tier, grossAmount: tier.amount });
-  return { tier, coupon: result && { code: result.code, name: result.coupon.name, discount_amount: result.discount_amount, gross_amount: result.gross_amount, final_amount: result.final_amount } };
+  const result = await couponsService.validateCoupon({ code, grossAmount: tier.amount });
+  return {
+    tier,
+    coupon: result && {
+      code: result.code,
+      name: result.coupon.name,
+      discount_percent: result.discount_percent,
+      discount_amount: result.discount_amount,
+      gross_amount: result.gross_amount,
+      final_amount: result.final_amount,
+    },
+  };
 }
 
 /** All selectable pricing tiers for the guardian's country — mobile Plan Selection screen. */
@@ -167,7 +177,7 @@ async function insertOrder({
     [
       id, guardianId, rzpOrder.id, kind, tier.id, elderCount,
       coupon ? coupon.gross_amount : chargeAmount, coupon ? coupon.discount_amount : 0,
-      coupon ? coupon.coupon.id : null, coupon ? coupon.code : null, coupon ? JSON.stringify({ discount_type: coupon.coupon.discount_type, discount_value: Number(coupon.coupon.discount_value) }) : null,
+      coupon ? coupon.coupon.id : null, coupon ? coupon.code : null, coupon ? JSON.stringify({ discount_percent: Number(coupon.coupon.discount_percent) }) : null,
       chargeAmount, tier.amount, tier.interval_days, tier.currency,
       previousTierAmount, previousElderCount, receipt,
     ],
@@ -186,7 +196,7 @@ async function createRenewalOrder(guardianId, couponCode) {
   const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
   const coupon = couponCode ? await couponsService.validateCoupon({
-    code: couponCode, guardianId, countryCode: pricingService.normalizeCountryCode(profile.country_code), tier, grossAmount: tier.amount,
+    code: couponCode, grossAmount: tier.amount,
   }) : null;
   const reservationId = coupon ? await couponsService.reserveCoupon({ coupon: coupon.coupon, guardianId, discountAmount: coupon.discount_amount }) : null;
   if (coupon?.final_amount <= 0) {
