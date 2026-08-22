@@ -92,14 +92,18 @@ async function getPricingSummaryForGuardian(guardianId) {
 
   const trialClaim = await trialsService.getClaim(guardianId);
   const trialOffer = trialClaim ? null : await trialsService.getEligibleOffer(pricingService.normalizeCountryCode(profile.country_code));
+  const expiresAt = profile.plan_expires_at ? new Date(profile.plan_expires_at) : null;
+  const isExpired = expiresAt && expiresAt.getTime() <= Date.now();
+  const effectivePlanStatus = isExpired ? 'expired' : profile.plan_status;
+
   return {
     country_code:     pricingService.normalizeCountryCode(profile.country_code),
     elder_count:      elderCount,
     current_tier:     currentTier,
     next_tier:        nextTier,
-    plan_status:      profile.plan_status,
+    plan_status:      effectivePlanStatus,
     plan_expires_at:  toIso(profile.plan_expires_at),
-    plan_elder_count: profile.plan_elder_count,
+    plan_elder_count: isExpired ? 0 : profile.plan_elder_count,
     plan_amount:      profile.plan_amount == null ? null : Number(profile.plan_amount),
     plan_currency:    profile.plan_currency,
     trial: {
