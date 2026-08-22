@@ -5,6 +5,7 @@ const auditService = require('../services/admin-audit.mysql');
 const promotionsService = require('../services/payment-promotions-admin.mysql');
 
 function handleError(res, err) {
+  console.error('[admin-payments]', err);
   return res.status(err.status || 500).json({ success: false, error: err.message });
 }
 

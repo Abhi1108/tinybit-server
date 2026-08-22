@@ -20,7 +20,14 @@ async function saveTrialOffer(body, id) {
   }
   return (await query('SELECT * FROM payment_trial_offers WHERE id=?', [id]))[0];
 }
-async function listCoupons() { return query(`SELECT c.*, COUNT(r.id) AS redemption_count FROM payment_coupons c LEFT JOIN payment_coupon_redemptions r ON r.coupon_id=c.id AND r.status='redeemed' GROUP BY c.id ORDER BY c.created_at DESC`); }
+async function listCoupons() {
+  return query(
+    `SELECT c.*,
+            (SELECT COUNT(*) FROM payment_coupon_redemptions r WHERE r.coupon_id = c.id AND r.status = 'redeemed') AS redemption_count
+     FROM payment_coupons c
+     ORDER BY c.created_at DESC`
+  );
+}
 async function saveCoupon(body, id) {
   const code = normalizeCode(body.code);
   const percent = Number(body.discount_percent ?? body.discount_value);
