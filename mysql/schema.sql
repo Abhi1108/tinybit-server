@@ -1015,15 +1015,12 @@ CREATE TABLE IF NOT EXISTS payment_trial_offers (
   id              CHAR(36)      NOT NULL DEFAULT (UUID()),
   name            VARCHAR(128)  NOT NULL,
   duration_days   INT           NOT NULL DEFAULT 7,
-  country_code    VARCHAR(4)    NULL,
   is_active       TINYINT(1)    NOT NULL DEFAULT 1,
-  starts_at       DATETIME(3)   NULL,
-  ends_at         DATETIME(3)   NULL,
   display_message VARCHAR(255)  NULL,
   created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
-  KEY idx_trial_offer_active (is_active, starts_at, ends_at),
+  KEY idx_trial_offer_active (is_active),
   CONSTRAINT chk_trial_offer_duration CHECK (duration_days >= 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -1047,38 +1044,18 @@ CREATE TABLE IF NOT EXISTS payment_trial_claims (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS payment_coupons (
-  id                       CHAR(36)      NOT NULL DEFAULT (UUID()),
-  code                     VARCHAR(64)   NOT NULL,
-  name                     VARCHAR(128)  NOT NULL,
-  discount_type            VARCHAR(16)   NOT NULL,
-  discount_value           DECIMAL(12,2) NOT NULL,
-  maximum_discount_amount  DECIMAL(12,2) NULL,
-  currency                 VARCHAR(8)    NULL,
-  minimum_order_amount     DECIMAL(12,2) NULL,
-  country_code             VARCHAR(4)    NULL,
-  first_paid_purchase_only TINYINT(1)    NOT NULL DEFAULT 0,
-  total_redemption_limit   INT           NULL,
-  per_guardian_limit       INT           NOT NULL DEFAULT 1,
-  starts_at                DATETIME(3)   NULL,
-  ends_at                  DATETIME(3)   NULL,
-  is_active                TINYINT(1)    NOT NULL DEFAULT 1,
-  notes                    TEXT          NULL,
-  created_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  updated_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  id               CHAR(36)     NOT NULL DEFAULT (UUID()),
+  code             VARCHAR(64)  NOT NULL,
+  name             VARCHAR(128) NOT NULL,
+  discount_percent INT          NOT NULL,
+  is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+  notes            TEXT         NULL,
+  created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uq_payment_coupon_code (code),
-  KEY idx_coupon_active_dates (is_active, starts_at, ends_at),
-  CONSTRAINT chk_coupon_type CHECK (discount_type IN ('percent', 'fixed')),
-  CONSTRAINT chk_coupon_value CHECK (discount_value > 0),
-  CONSTRAINT chk_coupon_limits CHECK (per_guardian_limit >= 1)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS payment_coupon_tiers (
-  coupon_id       CHAR(36) NOT NULL,
-  pricing_tier_id CHAR(36) NOT NULL,
-  PRIMARY KEY (coupon_id, pricing_tier_id),
-  CONSTRAINT fk_coupon_tiers_coupon FOREIGN KEY (coupon_id) REFERENCES payment_coupons (id) ON DELETE CASCADE,
-  CONSTRAINT fk_coupon_tiers_tier FOREIGN KEY (pricing_tier_id) REFERENCES payment_pricing_tiers (id) ON DELETE CASCADE
+  KEY idx_coupon_active (is_active),
+  CONSTRAINT chk_coupon_percent CHECK (discount_percent > 0 AND discount_percent <= 100)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS payment_coupon_redemptions (
