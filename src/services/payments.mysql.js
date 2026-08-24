@@ -96,6 +96,13 @@ async function getPricingSummaryForGuardian(guardianId) {
   const isExpired = expiresAt && expiresAt.getTime() <= Date.now();
   const effectivePlanStatus = isExpired ? 'expired' : profile.plan_status;
 
+  const paidOrders = await query(
+    "SELECT id FROM payment_orders WHERE guardian_id = ? AND status = 'paid' LIMIT 1",
+    [guardianId],
+  );
+  const hasEverPaid = paidOrders.length > 0;
+  const isTrialEligible = !trialClaim && !hasEverPaid && effectivePlanStatus !== 'active' && !!trialOffer;
+
   return {
     country_code:     pricingService.normalizeCountryCode(profile.country_code),
     elder_count:      elderCount,
@@ -107,15 +114,25 @@ async function getPricingSummaryForGuardian(guardianId) {
     plan_amount:      profile.plan_amount == null ? null : Number(profile.plan_amount),
     plan_currency:    profile.plan_currency,
     trial: {
-      eligible: !trialClaim && !!trialOffer,
+      eligible: isTrialEligible,
       claim: trialClaim,
-      offer: trialOffer ? { id: trialOffer.id, name: trialOffer.name, duration_days: Number(trialOffer.duration_days), display_message: trialOffer.display_message } : null,
+      offer: isTrialEligible ? { id: trialOffer.id, name: trialOffer.name, duration_days: Number(trialOffer.duration_days), display_message: trialOffer.display_message } : null,
     },
   };
 }
 
 async function startTrialForGuardian(guardianId) {
   const profile = await requireGuardianProfile(guardianId);
+  const paidOrders = await query(
+    "SELECT id FROM payment_orders WHERE guardian_id = ? AND status = 'paid' LIMIT 1",
+    [guardianId],
+  );
+  if (paidOrders.length > 0) {
+    const err = new Error('Accounts that have already purchased a plan are not eligible for a free trial.');
+    err.status = 400;
+    err.code = 'TRIAL_INELIGIBLE';
+    throw err;
+  }
   const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
   return trialsService.startTrial({ guardianId, elderCount, tier });
