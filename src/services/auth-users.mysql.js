@@ -261,7 +261,7 @@ async function upsertSocialProfile({ id, email }) {
   await execute(
     `INSERT INTO profiles (
        id, email, role, plan_type, plan_status, plan_currency, streak
-     ) VALUES (?, ?, 'elder', 'free', 'active', 'INR', 0)
+     ) VALUES (?, ?, 'elder', 'free', 'inactive', 'INR', 0)
      ON DUPLICATE KEY UPDATE
        email = VALUES(email)`,
     [id, email],
