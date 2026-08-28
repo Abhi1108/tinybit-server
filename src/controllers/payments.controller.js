@@ -29,7 +29,8 @@ async function listPricingTiers(req, res) {
 /** POST /api/payments/orders — always a renewal order (first payment or post-expiry renewal). */
 async function createOrder(req, res) {
   try {
-    const order = await paymentsService.createRenewalOrder(req.auth.userId, req.body?.coupon_code);
+    const elderCount = req.body?.elder_count ? Number(req.body.elder_count) : null;
+    const order = await paymentsService.createRenewalOrder(req.auth.userId, req.body?.coupon_code, elderCount);
     return res.status(201).json({
       success: true,
       order,
@@ -49,7 +50,8 @@ async function startTrial(req, res) {
 
 async function validateCoupon(req, res) {
   try {
-    const result = await paymentsService.previewCouponForGuardian(req.auth.userId, req.body?.coupon_code);
+    const elderCount = req.body?.elder_count ? Number(req.body.elder_count) : null;
+    const result = await paymentsService.previewCouponForGuardian(req.auth.userId, req.body?.coupon_code, elderCount);
     return res.json({ success: true, ...result });
   } catch (err) { return handleError(res, err, 'Could not validate coupon.'); }
 }

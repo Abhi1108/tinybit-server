@@ -138,9 +138,12 @@ async function startTrialForGuardian(guardianId) {
   return trialsService.startTrial({ guardianId, elderCount, tier });
 }
 
-async function previewCouponForGuardian(guardianId, code) {
+async function previewCouponForGuardian(guardianId, code, selectedElderCount) {
   const profile = await requireGuardianProfile(guardianId);
-  const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
+  const currentCount = await getElderCountForGuardian(guardianId);
+  const elderCount = selectedElderCount && Number.isInteger(Number(selectedElderCount)) && Number(selectedElderCount) >= 1
+    ? Number(selectedElderCount)
+    : Math.max(currentCount, 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
   const result = await couponsService.validateCoupon({ code, grossAmount: tier.amount });
   return {
@@ -212,28 +215,37 @@ async function insertOrder({
  * guardian with zero linked elders can still make their first payment). Used for both a
  * brand-new guardian's first-ever payment and a normal post-expiry renewal.
  */
-async function createRenewalOrder(guardianId, couponCode) {
+async function createRenewalOrder(guardianId, couponCode, selectedElderCount) {
   const profile = await requireGuardianProfile(guardianId);
-  const elderCount = Math.max(await getElderCountForGuardian(guardianId), 1);
+  const currentCount = await getElderCountForGuardian(guardianId);
+  const elderCount = selectedElderCount && Number.isInteger(Number(selectedElderCount)) && Number(selectedElderCount) >= 1
+    ? Number(selectedElderCount)
+    : Math.max(currentCount, 1);
   const tier = await pricingService.getTierForCountryAndElderCount(profile.country_code, elderCount);
   const coupon = couponCode ? await couponsService.validateCoupon({
     code: couponCode, grossAmount: tier.amount,
   }) : null;
   const reservationId = coupon ? await couponsService.reserveCoupon({ coupon: coupon.coupon, guardianId, discountAmount: coupon.discount_amount }) : null;
-  if (coupon?.final_amount <= 0) {
+  if (coupon && coupon.final_amount <= 0) {
     await applyPlanUpdate(guardianId, { planAmount: tier.amount, planCurrency: tier.currency, planElderCount: elderCount, extendExpiry: true, intervalDays: tier.interval_days });
-    await query(`UPDATE payment_coupon_redemptions SET status = 'redeemed', redeemed_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'reserved'`, [reservationId]);
-    return { id: null, status: 'paid', payment_provider: 'internal_coupon', gross_amount: coupon.gross_amount, discount_amount: coupon.discount_amount, amount: 0, coupon_code: coupon.code };
+    if (reservationId) {
+      await query(`UPDATE payment_coupon_redemptions SET status = 'redeemed', redeemed_at = CURRENT_TIMESTAMP(3) WHERE id = ? AND status = 'reserved'`, [reservationId]);
+    }
+    return { id: null, status: 'paid', payment_provider: 'internal_coupon', gross_amount: coupon.gross_amount, discount_amount: coupon.discount_amount, amount: 0, coupon_code: coupon.code, tier_amount: tier.amount, elder_count_at_purchase: elderCount };
   }
   try {
     const order = await insertOrder({
       guardianId, kind: 'renewal', tier, chargeAmount: coupon ? coupon.final_amount : tier.amount, elderCount,
       previousTierAmount: null, previousElderCount: null, coupon,
     });
-    await couponsService.attachReservation(reservationId, order.id);
+    if (reservationId) {
+      await couponsService.attachReservation(reservationId, order.id);
+    }
     return order;
   } catch (err) {
-    await couponsService.releaseReservation(reservationId);
+    if (reservationId) {
+      await couponsService.releaseReservation(reservationId);
+    }
     throw err;
   }
 }
