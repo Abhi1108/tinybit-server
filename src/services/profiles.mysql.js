@@ -265,7 +265,10 @@ async function touchLastActive(userId) {
     'INSERT IGNORE INTO streak_activity_log (id, user_id, activity_date) VALUES (UUID(), ?, ?)',
     [userId, todayStr],
   );
-  if (claim.affectedRows === 0) return;
+  if (claim.affectedRows === 0) {
+    await execute('UPDATE profiles SET last_active = CURRENT_TIMESTAMP(3) WHERE id = ?', [userId]);
+    return;
+  }
 
   await execute(
     'UPDATE profiles SET streak = ?, best_streak = ?, last_active = CURRENT_TIMESTAMP(3) WHERE id = ?',

@@ -103,8 +103,10 @@ async function countRows(table, whereSql = '', params = []) {
 }
 
 async function getDashboardStats() {
+  const fiveMinAgo = new Date(Date.now() - 5 * 60_000);
   const yesterday = new Date(Date.now() - 86_400_000);
   const weekAgo = new Date(Date.now() - 7 * 86_400_000);
+  const monthAgo = new Date(Date.now() - 30 * 86_400_000);
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
@@ -113,6 +115,7 @@ async function getDashboardStats() {
     elders, guardians, active_connections, pending_invitations, new_this_week,
     active_medicines, check_ins_today, moods_this_week, ai_messages_today,
     sos_today, active_subscriptions, active_ai_users,
+    dauSummaryRows, activeOnlineCount, activeWauCount, activeMauCount,
   ] = await Promise.all([
     countRows('profiles', 'role = ? AND deleted_at IS NULL', ['elder']),
     countRows('profiles', 'role = ? AND deleted_at IS NULL', ['guardian']),
@@ -129,6 +132,18 @@ async function getDashboardStats() {
       `SELECT COUNT(DISTINCT user_id) AS cnt FROM ai_conversations WHERE created_at >= ?`,
       [yesterday],
     ).then((rows) => Number(rows[0]?.cnt ?? 0)),
+    query(
+      `SELECT
+         COUNT(*) AS dau_total,
+         SUM(CASE WHEN role = 'elder' THEN 1 ELSE 0 END) AS dau_elders,
+         SUM(CASE WHEN role = 'guardian' THEN 1 ELSE 0 END) AS dau_guardians
+       FROM profiles
+       WHERE deleted_at IS NULL AND last_active >= ?`,
+      [yesterday],
+    ),
+    countRows('profiles', 'deleted_at IS NULL AND last_active >= ?', [fiveMinAgo]),
+    countRows('profiles', 'deleted_at IS NULL AND last_active >= ?', [weekAgo]),
+    countRows('profiles', 'deleted_at IS NULL AND last_active >= ?', [monthAgo]),
   ]);
 
   const [monthRevenueRow] = await query(
@@ -138,6 +153,16 @@ async function getDashboardStats() {
        AND COALESCE(captured_at, created_at) >= ?`,
     [monthStart],
   );
+
+  const dauRow = dauSummaryRows?.[0] || {};
+  const active_users = {
+    online: Number(activeOnlineCount) || 0,
+    dau: Number(dauRow.dau_total) || 0,
+    dau_elders: Number(dauRow.dau_elders) || 0,
+    dau_guardians: Number(dauRow.dau_guardians) || 0,
+    wau: Number(activeWauCount) || 0,
+    mau: Number(activeMauCount) || 0,
+  };
 
   return {
     elders,
@@ -152,6 +177,7 @@ async function getDashboardStats() {
     sos_today,
     active_subscriptions,
     active_ai_users,
+    active_users,
     month_revenue: Number(monthRevenueRow?.total) || 0,
   };
 }
