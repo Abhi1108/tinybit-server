@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS profiles (
   KEY idx_profiles_is_banned (is_banned),
   KEY idx_profiles_created_at (created_at),
   KEY idx_profiles_deleted_at (deleted_at),
+  KEY idx_profiles_last_active (last_active),
   CONSTRAINT chk_profiles_role
     CHECK (role IN ('elder', 'guardian', 'caregiver', 'admin')),
   CONSTRAINT fk_profiles_app_user
