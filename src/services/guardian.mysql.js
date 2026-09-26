@@ -58,12 +58,91 @@ async function ensureGuardianProfile(guardianId, guardianName, email) {
   }
 }
 
-async function findProfileByEmail(elderEmail) {
-  const rows = await query(
-    'SELECT id FROM profiles WHERE email = ? LIMIT 1',
-    [elderEmail],
-  );
-  return rows[0] ?? null;
+async function findProfileByEmail(elderEmail, elderPhone = null, elderPhoneCountry = null) {
+  const candidates = [];
+  if (elderEmail && typeof elderEmail === 'string' && elderEmail.trim()) {
+    candidates.push(elderEmail.trim().toLowerCase());
+  }
+
+  // 1. Direct email lookup against profiles and app_users
+  if (candidates.length > 0) {
+    const byProfileEmail = await query(
+      'SELECT id FROM profiles WHERE LOWER(email) = ? LIMIT 1',
+      [candidates[0]],
+    );
+    if (byProfileEmail[0]?.id) return byProfileEmail[0];
+
+    const byAppUserEmail = await query(
+      'SELECT id FROM app_users WHERE LOWER(email) = ? LIMIT 1',
+      [candidates[0]],
+    );
+    if (byAppUserEmail[0]?.id) return byAppUserEmail[0];
+  }
+
+  // 2. Extract potential phone number variants
+  const phoneCandidates = new Set();
+
+  const phoneMatch = /^(\d+)@phone\.tinybit\.app$/i.exec(elderEmail?.trim() ?? '');
+  if (phoneMatch) {
+    const rawDigits = phoneMatch[1];
+    phoneCandidates.add(`+${rawDigits}`);
+    phoneCandidates.add(rawDigits);
+    if (rawDigits.length === 12 && rawDigits.startsWith('91')) {
+      phoneCandidates.add(rawDigits.slice(2)); // local 10 digits
+      phoneCandidates.add(`+91${rawDigits.slice(2)}`);
+    } else if (rawDigits.length === 10) {
+      phoneCandidates.add(`+91${rawDigits}`);
+      phoneCandidates.add(`91${rawDigits}`);
+    }
+  }
+
+  if (elderPhone) {
+    const digits = String(elderPhone).replace(/\D/g, '');
+    const dial = String(elderPhoneCountry ?? '+91').replace(/\D/g, '');
+    if (digits) {
+      phoneCandidates.add(digits);
+      phoneCandidates.add(`+${digits}`);
+      if (dial) {
+        phoneCandidates.add(`+${dial}${digits}`);
+        phoneCandidates.add(`${dial}${digits}`);
+      }
+    }
+  }
+
+  if (phoneCandidates.size > 0) {
+    const phoneList = [...phoneCandidates];
+    const { sql: inSql, params: inParams } = inClause(phoneList);
+
+    // Check app_users by phone_e164
+    const byAppUserPhone = await query(
+      `SELECT id FROM app_users WHERE phone_e164 IN (${inSql}) LIMIT 1`,
+      inParams,
+    );
+    if (byAppUserPhone[0]?.id) return byAppUserPhone[0];
+
+    // Check profiles by mobile
+    const byProfileMobile = await query(
+      `SELECT id FROM profiles WHERE mobile IN (${inSql}) LIMIT 1`,
+      inParams,
+    );
+    if (byProfileMobile[0]?.id) return byProfileMobile[0];
+
+    // Check stripped mobile in profiles
+    for (const p of phoneList) {
+      const cleanDigits = p.replace(/\D/g, '');
+      if (cleanDigits.length >= 10) {
+        const byLike = await query(
+          `SELECT id FROM profiles
+           WHERE REPLACE(REPLACE(REPLACE(REPLACE(mobile, ' ', ''), '-', ''), '(', ''), ')', '') LIKE ?
+           LIMIT 1`,
+          [`%${cleanDigits.slice(-10)}`],
+        );
+        if (byLike[0]?.id) return byLike[0];
+      }
+    }
+  }
+
+  return null;
 }
 
 async function hasPendingInvite(guardianId, elderEmail) {
@@ -244,9 +323,23 @@ async function respondToInvitation(linkId, action, elderId) {
 
 /** `elderEmails` — every identifier this elder is known by (login email, profile email,
  *  phone-derived synthetic email) — see getPendingInvitations in guardian.controller.js. */
-async function getPendingInvitations(elderEmails) {
-  const emails = Array.isArray(elderEmails) ? elderEmails : [elderEmails];
-  const { sql: inSql, params: inParams } = inClause(emails);
+async function getPendingInvitations(elderEmails, elderId = null) {
+  const emails = Array.isArray(elderEmails) ? elderEmails.filter(Boolean) : [elderEmails].filter(Boolean);
+  const whereClauses = [];
+  const params = [];
+
+  if (emails.length > 0) {
+    const { sql: inSql, params: inParams } = inClause(emails);
+    whereClauses.push(`l.elder_email IN (${inSql})`);
+    params.push(...inParams);
+  }
+
+  if (elderId) {
+    whereClauses.push('l.elder_id = ?');
+    params.push(elderId);
+  }
+
+  if (whereClauses.length === 0) return [];
 
   return query(
     `SELECT
@@ -258,10 +351,61 @@ async function getPendingInvitations(elderEmails) {
        COALESCE(p.full_name, 'Unknown') AS guardian_name
      FROM guardian_elder_links l
      LEFT JOIN profiles p ON p.id = l.guardian_id
-     WHERE l.elder_email IN (${inSql}) AND l.status = 'pending'
+     WHERE (${whereClauses.join(' OR ')}) AND l.status = 'pending'
      ORDER BY l.created_at DESC`,
+    params,
+  );
+}
+
+/** Links any pending invitations matching the elder's identifiers to their elder_id,
+ * and ensures an in-app notification exists so they see it in their inbox. */
+async function linkPendingInvitationsToElder(elderId, elderEmails) {
+  const emails = Array.isArray(elderEmails) ? elderEmails.filter(Boolean) : [elderEmails].filter(Boolean);
+  if (emails.length === 0 || !elderId) return 0;
+
+  const { sql: inSql, params: inParams } = inClause(emails);
+  const unlinked = await query(
+    `SELECT id, guardian_id, parent_name, relation
+     FROM guardian_elder_links
+     WHERE elder_email IN (${inSql}) AND status = 'pending' AND elder_id IS NULL`,
     inParams,
   );
+
+  if (unlinked.length === 0) return 0;
+
+  await execute(
+    `UPDATE guardian_elder_links
+     SET elder_id = ?, updated_at = CURRENT_TIMESTAMP(3)
+     WHERE elder_email IN (${inSql}) AND status = 'pending' AND elder_id IS NULL`,
+    [elderId, ...inParams],
+  );
+
+  for (const inv of unlinked) {
+    try {
+      const guardianProfile = await query('SELECT full_name FROM profiles WHERE id = ? LIMIT 1', [inv.guardian_id]);
+      const guardianName = guardianProfile[0]?.full_name || 'A family member';
+      const existingNotif = await query(
+        `SELECT id FROM notifications
+         WHERE user_id = ? AND sender_id = ? AND type = 'guardian_invite' LIMIT 1`,
+        [elderId, inv.guardian_id],
+      );
+      if (existingNotif.length === 0) {
+        const notifService = require('./notifications.service');
+        await notifService.createNotification({
+          userId: elderId,
+          senderId: inv.guardian_id,
+          type: 'guardian_invite',
+          title: 'Guardian Connection Request',
+          body: `${guardianName} wants to be your Guardian (as your ${inv.relation}). Open TinyBit to accept.`,
+          data: { type: 'guardian_invite', guardianId: inv.guardian_id, relation: inv.relation },
+        });
+      }
+    } catch (e) {
+      console.warn('[guardian] failed to create notification for unlinked invite:', e.message);
+    }
+  }
+
+  return unlinked.length;
 }
 
 /**
@@ -1476,4 +1620,5 @@ module.exports = {
   updateElderRelation,
   isEmailTakenByOther,
   isPhoneTakenByOther,
+  linkPendingInvitationsToElder,
 };

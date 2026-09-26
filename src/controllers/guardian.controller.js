@@ -69,14 +69,14 @@ const STATIC_SAFE_ZONES = [
 
 // POST /api/guardian/invite
 const inviteParent = async (req, res) => {
-  const { guardian_name, parent_name, relation, elder_email } = req.body;
+  const { guardian_name, parent_name, relation, elder_email, elder_phone, elder_phone_country } = req.body;
   const guardian_id = req.auth?.userId;
 
   if (!guardian_id) {
     return res.status(401).json({ success: false, message: 'Unauthorized' });
   }
 
-  if (!parent_name || !relation || !elder_email) {
+  if (!parent_name || !relation || (!elder_email && !elder_phone)) {
     return res.status(400).json({ success: false, message: 'Missing required fields' });
   }
 
@@ -87,7 +87,11 @@ const inviteParent = async (req, res) => {
       req.auth?.email,
     );
 
-    const elderProfile = await guardianService.findProfileByEmail(elder_email);
+    const elderProfile = await guardianService.findProfileByEmail(
+      elder_email,
+      elder_phone,
+      elder_phone_country,
+    );
     const elder_id = elderProfile?.id ?? null;
 
     if (await guardianService.hasPendingInvite(guardian_id, elder_email)) {
@@ -130,10 +134,11 @@ const inviteParent = async (req, res) => {
     // invitation); this closes the same gap at the notification layer.
     if (elder_id && await shouldSendActionNotification(elder_id, 'guardian_invite', guardian_id)) {
       await notifyElder(elder_id, {
+        senderId: guardian_id,
         type: 'guardian_invite',
         title: 'Guardian Connection Request',
         body: `${guardian_name} wants to be your Guardian (as your ${relation}). Open TinyBit to accept.`,
-        data: { type: 'guardian_invite' },
+        data: { type: 'guardian_invite', guardianId: guardian_id, relation },
       });
     }
 
@@ -345,7 +350,8 @@ const respondToInvitation = async (req, res) => {
 // GET /api/guardian/pending-invitations
 const getPendingInvitations = async (req, res) => {
   const authEmail = req.auth?.email;
-  if (!authEmail) return res.status(401).json({ success: false, message: 'Unauthorized' });
+  const userId = req.auth?.userId;
+  if (!authEmail || !userId) return res.status(401).json({ success: false, message: 'Unauthorized' });
 
   try {
     // A guardian may invite an elder by email OR by phone (see resolveInviteElderEmail on
@@ -357,14 +363,31 @@ const getPendingInvitations = async (req, res) => {
     // and the synthetic phone-email derived from their profile's real mobile number.
     const candidateEmails = new Set([authEmail.trim().toLowerCase()]);
 
-    const profile = await profilesService.getProfileById(req.auth.userId);
+    const profile = await profilesService.getProfileById(userId);
     if (profile?.email) candidateEmails.add(String(profile.email).trim().toLowerCase());
     if (profile?.mobile) {
       const digits = String(profile.mobile).replace(/\D/g, '');
-      if (digits) candidateEmails.add(`${digits}@phone.tinybit.app`);
+      if (digits) {
+        candidateEmails.add(`${digits}@phone.tinybit.app`);
+        if (digits.length === 10) candidateEmails.add(`91${digits}@phone.tinybit.app`);
+        if (digits.length === 12 && digits.startsWith('91')) candidateEmails.add(`${digits.slice(2)}@phone.tinybit.app`);
+      }
     }
 
-    const invitations = await guardianService.getPendingInvitations([...candidateEmails]);
+    const appUser = await authUsersService.findAppUserById(userId);
+    if (appUser?.phone_e164) {
+      const uDigits = String(appUser.phone_e164).replace(/\D/g, '');
+      if (uDigits) {
+        candidateEmails.add(`${uDigits}@phone.tinybit.app`);
+        if (uDigits.length === 10) candidateEmails.add(`91${uDigits}@phone.tinybit.app`);
+        if (uDigits.length === 12 && uDigits.startsWith('91')) candidateEmails.add(`${uDigits.slice(2)}@phone.tinybit.app`);
+      }
+    }
+
+    // Auto-link any pending invitations matching these identifiers to this elder
+    await guardianService.linkPendingInvitationsToElder(userId, [...candidateEmails]);
+
+    const invitations = await guardianService.getPendingInvitations([...candidateEmails], userId);
     return res.json({ success: true, invitations });
   } catch (err) {
     console.error('getPendingInvitations error:', err);

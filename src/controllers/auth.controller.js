@@ -607,6 +607,22 @@ async function updateProfile(req, res) {
       return res.status(500).json({ success: false, message: 'Could not save profile' });
     }
 
+    try {
+      const guardianService = require('../services/guardian.service');
+      const candidateEmails = [email, data?.email].filter(Boolean).map((e) => e.trim().toLowerCase());
+      if (data?.mobile) {
+        const digits = String(data.mobile).replace(/\D/g, '');
+        if (digits) {
+          candidateEmails.push(`${digits}@phone.tinybit.app`);
+          if (digits.length === 10) candidateEmails.push(`91${digits}@phone.tinybit.app`);
+          if (digits.length === 12 && digits.startsWith('91')) candidateEmails.push(`${digits.slice(2)}@phone.tinybit.app`);
+        }
+      }
+      await guardianService.linkPendingInvitationsToElder(userId, candidateEmails);
+    } catch (linkErr) {
+      console.warn('[auth/profile] linkPendingInvitationsToElder error:', linkErr.message);
+    }
+
     return res.json({ success: true, profile: data });
   } catch (err) {
     console.error('[auth/profile]', err);
