@@ -11,6 +11,10 @@ const {
   getHistory,
   requireDevPaymentsEnabled,
   devComplete,
+  createSubscription,
+  verifySubscription,
+  cancelSubscription,
+  getCurrentSubscription,
 } = require('../controllers/payments.controller');
 const { handleWebhook } = require('../controllers/payment-webhooks.controller');
 
@@ -27,6 +31,12 @@ router.post('/coupons/validate',    requireJwtAuth, validateCoupon);
 router.post('/orders',              requireJwtAuth, createOrder);
 router.post('/orders/:id/verify',   requireJwtAuth, verifyOrder);
 router.get('/history',              requireJwtAuth, getHistory);
+
+// Recurring subscriptions with 1-month trial + automatic card renewal & self-serve cancellation
+router.post('/subscriptions/create',  requireJwtAuth, createSubscription);
+router.post('/subscriptions/verify',  requireJwtAuth, verifySubscription);
+router.post('/subscriptions/cancel',  requireJwtAuth, cancelSubscription);
+router.get('/subscriptions/current',  requireJwtAuth, getCurrentSubscription);
 
 // DEV ONLY — see docs/adr/0005-dev-mode-payment-bypass.md. requireDevPaymentsEnabled runs
 // BEFORE requireJwtAuth and 404s (not 403) when ALLOW_DEV_PAYMENTS isn't 'true', so the

@@ -2,6 +2,7 @@ const bcrypt = require('bcrypt');
 const { randomUUID } = require('crypto');
 const { query, execute } = require('../config/mysql');
 const { signAccessToken, generateRefreshToken, hashRefreshToken, accessExpiresAtUnix, ACCESS_TTL_SECONDS } = require('./jwt.service');
+const { SUPPORT_EMAIL } = require('../config/support');
 
 const REFRESH_TTL_DAYS = parseInt(process.env.JWT_REFRESH_TTL_DAYS || '30', 10);
 const BCRYPT_ROUNDS = 12;
@@ -212,8 +213,9 @@ async function refreshSessionFromToken(refreshToken) {
   }
 
   if (await isProfileDeleted(validated.user.id)) {
-    const err = new Error('This account has been deactivated.');
+    const err = new Error(`Account is deactivated. If you want to activate, please contact ${SUPPORT_EMAIL}`);
     err.status = 403;
+    err.code = 'ACCOUNT_DEACTIVATED';
     throw err;
   }
 

@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const { runNotificationChecks } = require('./notification-checks');
 const { checkPushReceipts } = require('../services/notifications.service');
+const { purgeExpiredSoftDeletedUsers } = require('./purge-retention');
 
 /**
  * In-process scheduler (plan Section 6) — runs inside the same `tinybit-api` PM2 process as
@@ -18,6 +19,11 @@ function startCronJobs() {
   cron.schedule('*/15 * * * *', () => {
     runNotificationChecks().catch((err) => console.error('[cron] runNotificationChecks failed:', err));
     checkPushReceipts().catch((err) => console.error('[cron] checkPushReceipts failed:', err));
+  });
+
+  // Daily at 02:00 UTC — purge soft-deleted users whose 30-day grace period has expired
+  cron.schedule('0 2 * * *', () => {
+    purgeExpiredSoftDeletedUsers().catch((err) => console.error('[cron] purgeExpiredSoftDeletedUsers failed:', err));
   });
 }
 

@@ -126,6 +126,79 @@ async function createRefund({ paymentId, amount, currency, speed, notes, idempot
   });
 }
 
+/**
+ * Create a Razorpay Plan for recurring billing.
+ * `period`: 'daily' | 'weekly' | 'monthly' | 'yearly'
+ * `interval`: number of periods (e.g. 1 month)
+ */
+async function createPlan({ name, amount, currency, period = 'monthly', interval = 1, description }) {
+  const rzp = getClient();
+  return rzp.plans.create({
+    period,
+    interval,
+    item: {
+      name,
+      amount: toMinorUnits(amount, currency),
+      currency: String(currency || '').toUpperCase(),
+      description: description || undefined,
+    },
+  });
+}
+
+/**
+ * Create a Razorpay Subscription.
+ * `planId`: Razorpay plan id (`plan_xxx`)
+ * `totalCount`: Number of billing cycles (e.g. 120 for 10 years recurring)
+ * `startAt`: Epoch timestamp in seconds when the 1st billing cycle starts. If in future,
+ *            acts as the trial period!
+ */
+async function createSubscription({ planId, totalCount = 120, startAt, notes, customerNotify = 1 }) {
+  const rzp = getClient();
+  const payload = {
+    plan_id: planId,
+    total_count: totalCount,
+    customer_notify: customerNotify,
+    notes: notes || undefined,
+  };
+  if (startAt) {
+    payload.start_at = startAt;
+  }
+  return rzp.subscriptions.create(payload);
+}
+
+/**
+ * Verify checkout signature for a subscription authentication:
+ * HMAC_SHA256(subscription_id + "|" + payment_id, key_secret)
+ */
+function verifySubscriptionSignature({ subscriptionId, paymentId, signature }) {
+  assertRazorpayConfigured();
+  if (!subscriptionId || !paymentId || !signature) return false;
+
+  const expected = crypto
+    .createHmac('sha256', KEY_SECRET)
+    .update(`${subscriptionId}|${paymentId}`)
+    .digest('hex');
+
+  return timingSafeEqualHex(expected, signature);
+}
+
+/**
+ * Cancel a recurring subscription.
+ * `cancelAtCycleEnd`: true means user retains access till current cycle / trial ends, no renewal.
+ */
+async function cancelSubscription({ subscriptionId, cancelAtCycleEnd = true }) {
+  const rzp = getClient();
+  return rzp.subscriptions.cancel(subscriptionId, {
+    cancel_at_cycle_end: cancelAtCycleEnd ? 1 : 0,
+  });
+}
+
+/** Fetch subscription details from Razorpay */
+async function getSubscription(subscriptionId) {
+  const rzp = getClient();
+  return rzp.subscriptions.fetch(subscriptionId);
+}
+
 module.exports = {
   isRazorpayConfigured,
   razorpayNotConfiguredError,
@@ -136,4 +209,10 @@ module.exports = {
   verifyPaymentSignature,
   verifyWebhookSignature,
   createRefund,
+  createPlan,
+  createSubscription,
+  verifySubscriptionSignature,
+  cancelSubscription,
+  getSubscription,
 };
+

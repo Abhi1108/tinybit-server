@@ -113,6 +113,9 @@ async function getPricingSummaryForGuardian(guardianId) {
     plan_elder_count: isExpired ? 0 : profile.plan_elder_count,
     plan_amount:      profile.plan_amount == null ? null : Number(profile.plan_amount),
     plan_currency:    profile.plan_currency,
+    auto_renew:       Boolean(profile.auto_renew),
+    cancel_scheduled: Boolean(profile.cancel_scheduled),
+    active_subscription_id: profile.active_subscription_id || null,
     trial: {
       eligible: isTrialEligible,
       claim: trialClaim,

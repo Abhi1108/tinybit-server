@@ -75,6 +75,8 @@ async function handleRefundProcessed(entity) {
   }
 }
 
+const subscriptionsService = require('./payment-subscriptions.mysql');
+
 /** Dispatch a verified webhook payload. `body` is the parsed JSON (already signature-verified by the caller). */
 async function handleWebhookEvent({ eventId, eventType, body }) {
   const isNew = await recordEventOnce({ eventId, eventType, payload: body });
@@ -90,6 +92,18 @@ async function handleWebhookEvent({ eventId, eventType, body }) {
         break;
       case 'refund.processed':
         await handleRefundProcessed(body.payload.refund.entity);
+        break;
+      case 'subscription.authenticated':
+        await subscriptionsService.handleSubscriptionAuthenticated(body.payload.subscription.entity);
+        break;
+      case 'subscription.charged':
+        await subscriptionsService.handleSubscriptionCharged({
+          subscription: body.payload.subscription?.entity,
+          payment: body.payload.payment?.entity,
+        });
+        break;
+      case 'subscription.cancelled':
+        await subscriptionsService.handleSubscriptionCancelled(body.payload.subscription.entity);
         break;
       default:
         // Unhandled event type — acknowledged and stored, no action needed.

@@ -14,7 +14,7 @@ const {
   updateRole,
   deleteRole,
   serveDashboard,
-  getStats, getAnalytics,
+  getStats, getAnalytics, getUserGrowthAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
   banUser, deleteUser, restoreUser, purgeUser,
   getConnections, updateConnection, deleteConnection,
@@ -116,6 +116,7 @@ router.delete('/api/admins/:id', sessionAuth, requireSuperAdmin, deleteAdminAcco
 
 router.get('/api/stats', sessionAuth, requirePermission('Dashboard', 'Dashboard (Read)'), getStats);
 router.get('/api/analytics', sessionAuth, requirePermission('Dashboard', 'Dashboard (Read)'), getAnalytics);
+router.get('/api/analytics/user-growth', sessionAuth, requirePermission('Dashboard', 'Dashboard (Read)'), getUserGrowthAnalytics);
 
 router.get('/api/users/export', sessionAuth, requirePermission('User Management'), exportUsers);
 router.get('/api/users/incomplete', sessionAuth, requirePermission('User Management', 'Users (Read)'), getIncompleteUsers);

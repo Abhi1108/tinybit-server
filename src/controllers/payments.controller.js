@@ -117,6 +117,70 @@ async function getHistory(req, res) {
   }
 }
 
+const subscriptionsService = require('../services/payment-subscriptions.mysql');
+
+/** POST /api/payments/subscriptions/create */
+async function createSubscription(req, res) {
+  try {
+    const elderCount = req.body?.elder_count ? Number(req.body.elder_count) : null;
+    const result = await subscriptionsService.createSubscriptionWithTrial(req.auth.userId, elderCount);
+    return res.status(201).json({
+      success: true,
+      ...result,
+    });
+  } catch (err) {
+    return handleError(res, err, 'Could not create subscription.');
+  }
+}
+
+/** POST /api/payments/subscriptions/verify */
+async function verifySubscription(req, res) {
+  try {
+    const {
+      razorpay_payment_id: razorpayPaymentId,
+      razorpay_subscription_id: razorpaySubscriptionId,
+      razorpay_signature: razorpaySignature,
+    } = req.body ?? {};
+
+    if (!razorpayPaymentId || !razorpaySubscriptionId || !razorpaySignature) {
+      return res.status(400).json({
+        success: false,
+        message: 'razorpay_payment_id, razorpay_subscription_id, and razorpay_signature are required.',
+      });
+    }
+
+    const result = await subscriptionsService.verifySubscriptionAuth(req.auth.userId, {
+      razorpayPaymentId,
+      razorpaySubscriptionId,
+      razorpaySignature,
+    });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return handleError(res, err, 'Could not verify subscription.');
+  }
+}
+
+/** POST /api/payments/subscriptions/cancel */
+async function cancelSubscription(req, res) {
+  try {
+    const cancelImmediately = Boolean(req.body?.cancel_immediately);
+    const result = await subscriptionsService.cancelSubscriptionForGuardian(req.auth.userId, { cancelImmediately });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return handleError(res, err, 'Could not cancel subscription.');
+  }
+}
+
+/** GET /api/payments/subscriptions/current */
+async function getCurrentSubscription(req, res) {
+  try {
+    const subscription = await subscriptionsService.getCurrentSubscriptionForGuardian(req.auth.userId);
+    return res.json({ success: true, subscription });
+  } catch (err) {
+    return handleError(res, err, 'Could not get subscription.');
+  }
+}
+
 module.exports = {
   getPricing,
   startTrial,
@@ -127,4 +191,8 @@ module.exports = {
   getHistory,
   requireDevPaymentsEnabled,
   devComplete,
+  createSubscription,
+  verifySubscription,
+  cancelSubscription,
+  getCurrentSubscription,
 };

@@ -35,6 +35,7 @@ function mapTier(row) {
     amount:        Number(row.amount),
     elder_count:   Number(row.elder_count),
     interval_days: Number(row.interval_days),
+    razorpay_plan_id: row.razorpay_plan_id || null,
     is_active:     !!row.is_active,
     created_at:    toIso(row.created_at),
     updated_at:    toIso(row.updated_at),

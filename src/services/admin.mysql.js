@@ -182,11 +182,164 @@ async function getDashboardStats() {
   };
 }
 
-async function getAnalytics() {
+async function getUserGrowth(options = {}) {
+  const { range = '30d', from, to, interval: requestedInterval } = options;
+
+  const now = new Date();
+  let startDate;
+  let endDate = new Date(now);
+
+  if (range === 'custom' && from) {
+    startDate = new Date(from);
+    if (isNaN(startDate.getTime())) {
+      startDate = new Date(now.getTime() - 30 * 86_400_000);
+    }
+    if (to) {
+      endDate = new Date(to);
+      if (isNaN(endDate.getTime())) {
+        endDate = new Date(now);
+      } else if (typeof to === 'string' && to.length === 10) {
+        endDate.setUTCHours(23, 59, 59, 999);
+      }
+    }
+    if (startDate > endDate) {
+      const temp = startDate;
+      startDate = endDate;
+      endDate = temp;
+    }
+  } else if (range === '90d' || range === '3m') {
+    startDate = new Date(now.getTime() - 90 * 86_400_000);
+  } else if (range === '180d' || range === '6m') {
+    startDate = new Date(now.getTime() - 180 * 86_400_000);
+  } else if (range === '365d' || range === '1y') {
+    startDate = new Date(now.getTime() - 365 * 86_400_000);
+  } else if (range === 'all') {
+    const [minRow] = await query('SELECT MIN(created_at) AS min_date FROM profiles');
+    startDate = minRow?.min_date ? new Date(minRow.min_date) : new Date(now.getTime() - 730 * 86_400_000);
+  } else {
+    // Default 30d
+    startDate = new Date(now.getTime() - 30 * 86_400_000);
+  }
+
+  const spanDays = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / 86_400_000));
+
+  let interval = requestedInterval;
+  if (!['day', 'week', 'month'].includes(interval)) {
+    if (spanDays <= 31) interval = 'day';
+    else if (spanDays <= 90) interval = 'day';
+    else if (spanDays <= 180) interval = 'week';
+    else interval = 'month';
+  }
+
+  if (interval === 'day' && spanDays > 730) {
+    interval = 'month';
+  }
+
+  const rows = await query(
+    'SELECT created_at, role FROM profiles WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC',
+    [startDate, endDate],
+  );
+
+  const buckets = {};
+  const elderBuckets = {};
+  const guardianBuckets = {};
+
+  if (interval === 'month') {
+    const cur = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), 1));
+    const endMonth = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), 1));
+    while (cur <= endMonth) {
+      const key = `${cur.getUTCFullYear()}-${String(cur.getUTCMonth() + 1).padStart(2, '0')}`;
+      buckets[key] = 0;
+      elderBuckets[key] = 0;
+      guardianBuckets[key] = 0;
+      cur.setUTCMonth(cur.getUTCMonth() + 1);
+    }
+    rows.forEach((r) => {
+      const d = new Date(r.created_at);
+      const k = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+      if (k in buckets) {
+        buckets[k]++;
+        if (r.role === 'elder') elderBuckets[k]++;
+        else if (r.role === 'guardian') guardianBuckets[k]++;
+      }
+    });
+  } else if (interval === 'week') {
+    const cur = new Date(startDate);
+    while (cur <= endDate) {
+      const key = cur.toISOString().slice(0, 10);
+      buckets[key] = 0;
+      elderBuckets[key] = 0;
+      guardianBuckets[key] = 0;
+      cur.setUTCDate(cur.getUTCDate() + 7);
+    }
+    const bucketKeys = Object.keys(buckets);
+    rows.forEach((r) => {
+      const t = new Date(r.created_at).getTime();
+      const diffDays = Math.floor((t - startDate.getTime()) / (7 * 86_400_000));
+      const idx = Math.min(Math.max(0, diffDays), bucketKeys.length - 1);
+      const k = bucketKeys[idx];
+      if (k) {
+        buckets[k]++;
+        if (r.role === 'elder') elderBuckets[k]++;
+        else if (r.role === 'guardian') guardianBuckets[k]++;
+      }
+    });
+  } else {
+    // interval === 'day'
+    if (range === '30d' && !from) {
+      for (let i = 29; i >= 0; i--) {
+        const key = new Date(now.getTime() - i * 86_400_000).toISOString().slice(0, 10);
+        buckets[key] = 0;
+        elderBuckets[key] = 0;
+        guardianBuckets[key] = 0;
+      }
+    } else {
+      const cur = new Date(startDate);
+      while (cur <= endDate) {
+        const key = cur.toISOString().slice(0, 10);
+        buckets[key] = 0;
+        elderBuckets[key] = 0;
+        guardianBuckets[key] = 0;
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    }
+    rows.forEach((r) => {
+      const k = toIso(r.created_at).slice(0, 10);
+      if (k in buckets) {
+        buckets[k]++;
+        if (r.role === 'elder') elderBuckets[k]++;
+        else if (r.role === 'guardian') guardianBuckets[k]++;
+      }
+    });
+  }
+
+  let totalElders = 0;
+  let totalGuardians = 0;
+  rows.forEach((r) => {
+    if (r.role === 'elder') totalElders++;
+    else if (r.role === 'guardian') totalGuardians++;
+  });
+
+  return {
+    labels: Object.keys(buckets),
+    data: Object.values(buckets),
+    elders: Object.values(elderBuckets),
+    guardians: Object.values(guardianBuckets),
+    total: rows.length,
+    total_elders: totalElders,
+    total_guardians: totalGuardians,
+    range,
+    interval,
+    from: startDate.toISOString(),
+    to: endDate.toISOString(),
+  };
+}
+
+async function getAnalytics(options = {}) {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000);
 
-  const [users, moods, checkIns, meds, ai, care, games, sos] = await Promise.all([
-    query('SELECT created_at FROM profiles WHERE created_at >= ?', [thirtyDaysAgo]),
+  const [userGrowth, moods, checkIns, meds, ai, care, games, sos] = await Promise.all([
+    getUserGrowth(options),
     query('SELECT mood_score, created_at FROM mood_entries WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT created_at FROM daily_checkins WHERE created_at >= ?', [thirtyDaysAgo]),
     query('SELECT category FROM medicines'),
@@ -201,15 +354,6 @@ async function getAnalytics() {
       [new Date(Date.now() - 7 * 86_400_000)],
     ),
   ]);
-
-  const growth = {};
-  for (let i = 29; i >= 0; i--) {
-    growth[new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10)] = 0;
-  }
-  users.forEach((u) => {
-    const k = toIso(u.created_at).slice(0, 10);
-    if (k in growth) growth[k]++;
-  });
 
   const moodDist = { Great: 0, Good: 0, Okay: 0, Low: 0, Unwell: 0 };
   moods.forEach((m) => {
@@ -275,7 +419,7 @@ async function getAnalytics() {
   });
 
   return {
-    user_growth: { labels: Object.keys(growth), data: Object.values(growth) },
+    user_growth: userGrowth,
     mood_dist: { labels: Object.keys(moodDist), data: Object.values(moodDist) },
     check_in_dow: { labels: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], data: dowCounts },
     med_category: { labels: Object.keys(medCat), data: Object.values(medCat) },
@@ -1542,6 +1686,7 @@ module.exports = {
   attachConnectionCounts,
   getDashboardStats,
   getAnalytics,
+  getUserGrowth,
   getUsers,
   getIncompleteUsers,
   exportUsers,

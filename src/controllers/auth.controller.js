@@ -16,8 +16,10 @@ const {
   isProfileDeleted,
 } = require('../services/auth-users.service');
 const { getOrCreateMonitorUser } = require('../services/monitor-user.service');
+const { SUPPORT_EMAIL } = require('../config/support');
+const subscriptionsService = require('../services/payment-subscriptions.mysql');
 
-const DEACTIVATED_MESSAGE = 'This account has been deactivated.';
+const DEACTIVATED_MESSAGE = `Account is deactivated. If you want to activate, please contact ${SUPPORT_EMAIL}`;
 const {
   upsertProfile,
   getProfileById,
@@ -68,7 +70,12 @@ async function login(req, res) {
     }
 
     if (await isProfileDeleted(user.id)) {
-      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+      return res.status(403).json({
+        success: false,
+        message: DEACTIVATED_MESSAGE,
+        code: 'ACCOUNT_DEACTIVATED',
+        supportEmail: SUPPORT_EMAIL,
+      });
     }
 
     const session = await issueSession(user);
@@ -245,6 +252,15 @@ async function deleteAccount(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
+    // Cancel any active recurring subscription immediately so user is not billed while deactivated
+    try {
+      await subscriptionsService.cancelSubscriptionForGuardian(userId, { cancelImmediately: true });
+    } catch (subErr) {
+      if (subErr.status !== 404) {
+        console.warn(`[auth/delete-account] subscription cancellation note for user ${userId}:`, subErr.message);
+      }
+    }
+
     await softDeleteProfile(userId, 'self');
     await execute('DELETE FROM push_tokens WHERE user_id = ?', [userId]);
 
@@ -340,7 +356,12 @@ async function googleAuth(req, res) {
     });
 
     if (await isProfileDeleted(user.id)) {
-      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+      return res.status(403).json({
+        success: false,
+        message: DEACTIVATED_MESSAGE,
+        code: 'ACCOUNT_DEACTIVATED',
+        supportEmail: SUPPORT_EMAIL,
+      });
     }
 
     const session = await issueSession(user);
@@ -421,7 +442,12 @@ async function appleAuth(req, res) {
     });
 
     if (await isProfileDeleted(user.id)) {
-      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+      return res.status(403).json({
+        success: false,
+        message: DEACTIVATED_MESSAGE,
+        code: 'ACCOUNT_DEACTIVATED',
+        supportEmail: SUPPORT_EMAIL,
+      });
     }
 
     const session = await issueSession(user);
@@ -512,7 +538,12 @@ async function phoneAuth(req, res) {
     }
 
     if (await isProfileDeleted(user.id)) {
-      return res.status(403).json({ success: false, message: DEACTIVATED_MESSAGE });
+      return res.status(403).json({
+        success: false,
+        message: DEACTIVATED_MESSAGE,
+        code: 'ACCOUNT_DEACTIVATED',
+        supportEmail: SUPPORT_EMAIL,
+      });
     }
 
     const session = await issueSession(user);

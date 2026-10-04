@@ -369,8 +369,17 @@ const getStats = async (req, res) => {
 
 const getAnalytics = async (req, res) => {
   try {
-    const analytics = await adminService.getAnalytics();
+    const analytics = await adminService.getAnalytics(req.query);
     return res.json(analytics);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const getUserGrowthAnalytics = async (req, res) => {
+  try {
+    const userGrowth = await adminService.getUserGrowth(req.query);
+    return res.json({ user_growth: userGrowth });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -1079,7 +1088,7 @@ module.exports = {
   updateRole,
   deleteRole,
   serveDashboard,
-  getStats, getAnalytics,
+  getStats, getAnalytics, getUserGrowthAnalytics,
   getUsers, getIncompleteUsers, exportUsers, getUserById, createUser, updateUser,
   banUser, deleteUser, restoreUser, purgeUser,
   getConnections, updateConnection, deleteConnection,
