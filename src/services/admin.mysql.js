@@ -1583,20 +1583,35 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
   const clauses = ['p.deleted_at IS NULL', "p.role = 'guardian'"];
   const params = [];
   if (status) {
-    clauses.push('p.plan_status = ?');
-    params.push(status);
+    if (status === 'trial') {
+      clauses.push("(p.plan_status = 'trial' OR (ps.trial_ends_at IS NOT NULL AND ps.trial_ends_at > UTC_TIMESTAMP()))");
+    } else {
+      clauses.push('p.plan_status = ?');
+      params.push(status);
+    }
   }
   if (search) {
-    clauses.push('(p.full_name LIKE ? OR p.plan_type LIKE ? OR p.email LIKE ?)');
+    clauses.push('(p.full_name LIKE ? OR p.plan_type LIKE ? OR p.email LIKE ? OR ps.razorpay_subscription_id LIKE ?)');
     const q = `%${search}%`;
-    params.push(q, q, q);
+    params.push(q, q, q, q);
   }
   const where = `WHERE ${clauses.join(' AND ')}`;
 
   const rows = await query(
     `SELECT p.id, p.full_name, p.role, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
-            p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at
+            p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at,
+            ps.razorpay_subscription_id, ps.status AS sub_status, ps.cancel_at_cycle_end,
+            ps.trial_ends_at
      FROM profiles p
+     LEFT JOIN (
+       SELECT ps1.guardian_id, ps1.razorpay_subscription_id, ps1.status, ps1.cancel_at_cycle_end, ps1.trial_ends_at
+       FROM payment_subscriptions ps1
+       INNER JOIN (
+         SELECT guardian_id, MAX(created_at) AS max_created
+         FROM payment_subscriptions
+         GROUP BY guardian_id
+       ) ps2 ON ps1.guardian_id = ps2.guardian_id AND ps1.created_at = ps2.max_created
+     ) ps ON ps.guardian_id = p.id
      ${where}
      ORDER BY p.plan_expires_at DESC, p.created_at DESC
      LIMIT ${limitNum} OFFSET ${offset}`,
@@ -1611,18 +1626,26 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
       ? rawType
       : ((r.plan_status === 'active' && amount > 0) ? 'guardian' : (rawType || 'free'));
 
+    const autoRenew = Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 0 && (r.sub_status === 'active' || r.sub_status === 'authenticated'));
+    const cancelScheduled = Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 1);
+    const isTrial = r.plan_status === 'trial' || Boolean(r.trial_ends_at && new Date(r.trial_ends_at).getTime() > Date.now());
+
     return {
       id: r.id,
       user_name: r.full_name || '—',
       user_type: r.role === 'elder' ? 'Elder' : 'Guardian',
       plan,
-      status: r.plan_status || 'inactive',
+      status: isTrial ? 'trial' : (r.plan_status || 'inactive'),
       start_date: toIso(r.plan_started_at),
       renewal_date: toIso(r.plan_expires_at),
       amount,
       currency: r.plan_currency || 'INR',
       elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
       interval: r.plan_interval,
+      auto_renew: autoRenew,
+      cancel_scheduled: cancelScheduled,
+      razorpay_subscription_id: r.razorpay_subscription_id || null,
+      trial_ends_at: toIso(r.trial_ends_at),
     };
   });
 }

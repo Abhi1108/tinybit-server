@@ -180,6 +180,11 @@ function validateTierInput(body, { partial = false } = {}) {
     out.is_active = body.is_active ? 1 : 0;
   }
 
+  if (body.razorpay_plan_id !== undefined) {
+    const rzpPlan = String(body.razorpay_plan_id || '').trim();
+    out.razorpay_plan_id = rzpPlan || null;
+  }
+
   return out;
 }
 
@@ -190,15 +195,16 @@ async function createPricingTier(body) {
   try {
     await execute(
       `INSERT INTO payment_pricing_tiers
-         (id, country_code, elder_count, amount, currency, interval_days, is_active)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (id, country_code, elder_count, amount, currency, interval_days, razorpay_plan_id, is_active)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         input.country_code,
         input.elder_count,
         input.amount,
         input.currency,
-        input.interval_days ?? 365,
+        input.interval_days ?? 30,
+        input.razorpay_plan_id ?? null,
         input.is_active ?? 1,
       ],
     );
@@ -219,6 +225,18 @@ async function updatePricingTier(id, body) {
   if (!existing) throw notFound(id);
 
   const input = validateTierInput(body, { partial: true });
+
+  // If amount, currency, or interval changed and no explicit razorpay_plan_id was provided,
+  // reset razorpay_plan_id to NULL so Razorpay generates a fresh plan for the new terms.
+  const priceChanged =
+    (input.amount !== undefined && input.amount !== existing.amount) ||
+    (input.currency !== undefined && input.currency !== existing.currency) ||
+    (input.interval_days !== undefined && input.interval_days !== existing.interval_days);
+
+  if (priceChanged && input.razorpay_plan_id === undefined) {
+    input.razorpay_plan_id = null;
+  }
+
   const fields = Object.keys(input);
   if (!fields.length) return existing;
 

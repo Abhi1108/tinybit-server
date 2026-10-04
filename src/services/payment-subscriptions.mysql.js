@@ -3,6 +3,7 @@ const { query, execute, withTransaction } = require('../config/mysql');
 const razorpayService = require('./razorpay.service');
 const pricingService = require('./payment-pricing.mysql');
 const profilesService = require('./profiles.service');
+const trialsService = require('./payment-trials.mysql');
 
 function badRequest(message, code) {
   const err = new Error(message);
@@ -116,8 +117,12 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
     [guardianId],
   );
 
-  const isTrialEligible = !existingClaims.length && !existingPaidSubs.length && !existingPaidOrders.length;
-  const TRIAL_DAYS = isTrialEligible ? 30 : 0;
+  // Check active trial offer configured by admin in payment_trial_offers
+  const activeOffer = await trialsService.getEligibleOffer();
+  const trialDaysConfigured = (activeOffer && Number(activeOffer.duration_days) > 0) ? Number(activeOffer.duration_days) : 0;
+
+  const isTrialEligible = !existingClaims.length && !existingPaidSubs.length && !existingPaidOrders.length && Boolean(activeOffer && trialDaysConfigured > 0);
+  const TRIAL_DAYS = isTrialEligible ? trialDaysConfigured : 0;
   const startAtEpoch = isTrialEligible ? Math.floor(Date.now() / 1000) + (TRIAL_DAYS * 86400) : null;
   const trialEndsAt = startAtEpoch ? new Date(startAtEpoch * 1000) : null;
 
@@ -132,6 +137,7 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
       tier_id: tier.id,
       trial_days: String(TRIAL_DAYS),
       is_trial: String(isTrialEligible),
+      trial_offer_id: activeOffer?.id || '',
     },
     customerNotify: 1,
   });
