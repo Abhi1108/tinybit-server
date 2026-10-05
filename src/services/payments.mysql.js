@@ -5,6 +5,7 @@ const pricingService = require('./payment-pricing.mysql');
 const razorpayService = require('./razorpay.service');
 const trialsService = require('./payment-trials.mysql');
 const couponsService = require('./payment-coupons.mysql');
+const planEntitlementsService = require('./plan-entitlements.service');
 
 function toIso(val) {
   if (!val) return val;
@@ -103,6 +104,9 @@ async function getPricingSummaryForGuardian(guardianId) {
   const hasEverPaid = paidOrders.length > 0;
   const isTrialEligible = !trialClaim && !hasEverPaid && effectivePlanStatus !== 'active' && !!trialOffer;
 
+  const isPremium = planEntitlementsService.isProfilePremium(profile);
+  const scanUsage = await planEntitlementsService.getScanUsageThisMonth(guardianId, isPremium);
+
   return {
     country_code:     pricingService.normalizeCountryCode(profile.country_code),
     elder_count:      elderCount,
@@ -116,6 +120,26 @@ async function getPricingSummaryForGuardian(guardianId) {
     auto_renew:       Boolean(profile.auto_renew),
     cancel_scheduled: Boolean(profile.cancel_scheduled),
     active_subscription_id: profile.active_subscription_id || null,
+    entitlements: {
+      is_premium: isPremium,
+      features: {
+        notifications: true,
+        medicine_management: true,
+        report_scan: true,
+        location_tracking: isPremium,
+        health_forecasting: isPremium,
+        daily_checkin: isPremium,
+        voice_messages: isPremium,
+        activity_log: isPremium,
+        report_analytics: isPremium,
+      },
+      scan_quota: {
+        used: scanUsage.used,
+        limit: isPremium ? null : 1,
+        remaining: scanUsage.remaining,
+        resets_at: scanUsage.resets_at,
+      },
+    },
     trial: {
       eligible: isTrialEligible,
       claim: trialClaim,
