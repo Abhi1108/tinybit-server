@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS profiles (
   plan_currency        VARCHAR(8)    NOT NULL DEFAULT 'INR',
   plan_interval        VARCHAR(16)   NULL,
   plan_elder_count     INT           NULL,
+  active_subscription_id CHAR(36)    NULL,
+  auto_renew           TINYINT(1)    NOT NULL DEFAULT 0,
+  cancel_scheduled     TINYINT(1)    NOT NULL DEFAULT 0,
   streak               INT           NOT NULL DEFAULT 0,
   best_streak          INT           NOT NULL DEFAULT 0,
   is_banned            TINYINT(1)    NOT NULL DEFAULT 0,
@@ -1002,6 +1005,7 @@ CREATE TABLE IF NOT EXISTS payment_pricing_tiers (
   amount          DECIMAL(12,2) NOT NULL,
   currency        VARCHAR(8)    NOT NULL,
   interval_days   INT           NOT NULL DEFAULT 365,
+  razorpay_plan_id VARCHAR(64)  NULL,
   is_active       TINYINT(1)    NOT NULL DEFAULT 1,
   created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
@@ -1170,6 +1174,52 @@ CREATE TABLE IF NOT EXISTS payment_webhook_events (
   created_at         DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   PRIMARY KEY (id),
   UNIQUE KEY uq_webhook_events_event_id (razorpay_event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- One row per Razorpay recurring subscription. Backs the 1-month free trial + card authorization
+-- and subsequent monthly automated billing.
+CREATE TABLE IF NOT EXISTS payment_subscriptions (
+  id                       CHAR(36)      NOT NULL DEFAULT (UUID()),
+  guardian_id              CHAR(36)      NOT NULL,
+  razorpay_subscription_id VARCHAR(64)   NOT NULL,
+  razorpay_plan_id         VARCHAR(64)   NOT NULL,
+  pricing_tier_id          CHAR(36)      NULL,
+  elder_count              INT           NOT NULL,
+  amount                   DECIMAL(12,2) NOT NULL,
+  currency                 VARCHAR(8)    NOT NULL,
+  `interval`               VARCHAR(16)   NOT NULL DEFAULT 'monthly',
+  status                   VARCHAR(32)   NOT NULL DEFAULT 'created',
+  trial_ends_at            DATETIME(3)   NULL,
+  current_cycle_start      DATETIME(3)   NULL,
+  current_cycle_end        DATETIME(3)   NULL,
+  cancel_at_cycle_end      TINYINT(1)    NOT NULL DEFAULT 1,
+  cancelled_at             DATETIME(3)   NULL,
+  ended_at                 DATETIME(3)   NULL,
+  notes                    JSON          NULL,
+  created_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at               DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_subscriptions_razorpay_id (razorpay_subscription_id),
+  KEY idx_subscriptions_guardian (guardian_id),
+  KEY idx_subscriptions_status (status),
+  CONSTRAINT fk_subscriptions_guardian
+    FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE,
+  CONSTRAINT fk_subscriptions_tier
+    FOREIGN KEY (pricing_tier_id) REFERENCES payment_pricing_tiers (id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS report_scan_usage (
+  id          CHAR(36)     NOT NULL DEFAULT (UUID()),
+  guardian_id CHAR(36)     NOT NULL,
+  elder_id    CHAR(36)     NOT NULL,
+  `year_month` VARCHAR(7)  NOT NULL,
+  file_name   VARCHAR(255) NULL,
+  created_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (id),
+  KEY idx_scan_usage_month (guardian_id, `year_month`),
+  KEY idx_scan_usage_elder_month (elder_id, `year_month`),
+  CONSTRAINT fk_scan_usage_guardian FOREIGN KEY (guardian_id) REFERENCES profiles (id) ON DELETE CASCADE,
+  CONSTRAINT fk_scan_usage_elder FOREIGN KEY (elder_id) REFERENCES profiles (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

@@ -25,7 +25,7 @@ function isProfilePremium(profile) {
 async function getScanUsageThisMonth(guardianId, isPremium = false) {
   const yearMonth = getUtcYearMonth();
   const rows = await query(
-    'SELECT COUNT(*) AS cnt FROM report_scan_usage WHERE guardian_id = ? AND year_month = ?',
+    'SELECT COUNT(*) AS cnt FROM report_scan_usage WHERE guardian_id = ? AND `year_month` = ?',
     [guardianId, yearMonth],
   );
   const used = Number(rows[0]?.cnt || 0);
@@ -73,7 +73,7 @@ async function recordReportScanUsage(guardianId, elderId, fileName = null) {
   const id = randomUUID();
   const yearMonth = getUtcYearMonth();
   await execute(
-    `INSERT INTO report_scan_usage (id, guardian_id, elder_id, year_month, file_name, created_at)
+    `INSERT INTO report_scan_usage (id, guardian_id, elder_id, \`year_month\`, file_name, created_at)
      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP(3))`,
     [id, guardianId, elderId, yearMonth, fileName || null],
   );
