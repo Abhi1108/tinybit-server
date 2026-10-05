@@ -4,6 +4,7 @@ const healthInsightsService = require('../services/health-insights.service');
 const storageService = require('../services/storage.service');
 const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
+const { recordReportScanUsage } = require('../services/plan-entitlements.service');
 
 function isTableMissing(error) {
   return (
@@ -125,6 +126,14 @@ async function createRecord(req, res) {
     }
 
     const record = await healthRecordsService.create(userId, payload);
+
+    if (req.auth?.profile?.role === 'guardian') {
+      try {
+        await recordReportScanUsage(userId, userId, payload.title || payload.uri);
+      } catch (scanErr) {
+        console.warn('[health-vault/create] scan usage record failed:', scanErr.message);
+      }
+    }
 
     try {
       // Debounced (plan Section 17.3) — a retried/double-tapped upload would otherwise notify

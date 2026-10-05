@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { requireJwtAuth } = require('../middleware/jwtAuth.middleware');
+const { requireFeature } = require('../middleware/planEntitlement.middleware');
 const {
   listRecords,
   createRecord,
@@ -17,9 +18,10 @@ router.get('/records', requireJwtAuth, listRecords);
 router.post('/records', requireJwtAuth, createRecord);
 router.patch('/records/:id', requireJwtAuth, updateRecord);
 router.delete('/records/:id', requireJwtAuth, deleteRecord);
-router.post('/records/:id/insights', requireJwtAuth, getInsights);
 
-router.post('/compare', requireJwtAuth, compareRecords);
+// Analytics of all reports: Premium only
+router.post('/records/:id/insights', requireJwtAuth, requireFeature('report_analytics'), getInsights);
+router.post('/compare',              requireJwtAuth, requireFeature('report_analytics'), compareRecords);
 
 router.get('/doctors', requireJwtAuth, listDoctors);
 router.post('/doctors', requireJwtAuth, createDoctor);

@@ -1,4 +1,5 @@
 const storageService = require('../services/storage.service');
+const { canUploadReportScan } = require('../services/plan-entitlements.service');
 
 function readBody(req) {
   return req.body ?? {};
@@ -36,6 +37,18 @@ async function presignUpload(req, res) {
 
     if (!filename || !String(filename).trim()) {
       return res.status(400).json({ success: false, message: 'filename is required.' });
+    }
+
+    if ((purpose === 'health-vault' || purpose === 'health-record') && req.auth?.profile?.role === 'guardian') {
+      const scanCheck = await canUploadReportScan(userId, req.auth?.profile);
+      if (!scanCheck.allowed) {
+        return res.status(403).json({
+          success: false,
+          code: 'SCAN_LIMIT_EXCEEDED',
+          message: scanCheck.message || 'Free plan includes 1 report scan per month.',
+          quota: scanCheck,
+        });
+      }
     }
 
     const result = await storageService.createPresignedUpload({

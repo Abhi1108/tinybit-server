@@ -13,6 +13,7 @@ const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
 const authUsersService = require('../services/auth-users.service');
+const planEntitlementsService = require('../services/plan-entitlements.service');
 const { toE164 } = require('../utils/phone');
 
 const MEDICINE_CHANGE_COPY = {
@@ -996,6 +997,14 @@ const createElderHealthRecord = async (req, res) => {
     }
 
     const record = await healthRecordsService.create(elderId, payload);
+
+    // Record scan usage in persistent report_scan_usage table (remains even if record is deleted)
+    try {
+      await planEntitlementsService.recordReportScanUsage(req.auth.userId, elderId, payload.title);
+    } catch (logErr) {
+      console.error('[createElderHealthRecord] Failed to record report_scan_usage:', logErr.message);
+    }
+
     return res.json({ success: true, record });
   } catch (err) {
     console.error('createElderHealthRecord error:', err);
@@ -1015,13 +1024,30 @@ const presignElderUpload = async (req, res) => {
     const body = req.body ?? {};
     const filename = body.filename ?? body.file_name ?? body.fileName;
     const contentType = body.content_type ?? body.contentType ?? body.mime_type ?? body.mimeType;
+    const purpose = body.purpose || 'health-record';
 
     if (!filename || !String(filename).trim()) {
       return res.status(400).json({ success: false, message: 'filename is required.' });
     }
 
+    // Check monthly scan limit for health-record purpose
+    if (purpose === 'health-record') {
+      const guardianProfile = await profilesService.getProfileById(req.auth.userId);
+      const canUpload = await planEntitlementsService.canUploadReportScan(req.auth.userId, guardianProfile);
+      if (!canUpload.allowed) {
+        return res.status(403).json({
+          success: false,
+          code: canUpload.code,
+          message: canUpload.message,
+          used: canUpload.used,
+          limit: canUpload.limit,
+          resets_at: canUpload.resets_at,
+        });
+      }
+    }
+
     const result = await storageService.createPresignedUpload({
-      purpose: body.purpose,
+      purpose,
       userId: elderId,
       filename: String(filename).trim(),
       contentType,
