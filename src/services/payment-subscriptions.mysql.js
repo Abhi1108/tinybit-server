@@ -104,15 +104,15 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
   const planId = await ensureRazorpayPlanForTier(tier);
 
   // Check if guardian has previously claimed a trial or completed a payment
-  const [existingClaims] = await query(
+  const existingClaims = await query(
     'SELECT id FROM payment_trial_claims WHERE guardian_id = ? LIMIT 1',
     [guardianId],
   );
-  const [existingPaidSubs] = await query(
+  const existingPaidSubs = await query(
     "SELECT id FROM payment_subscriptions WHERE guardian_id = ? AND status IN ('active', 'authenticated') LIMIT 1",
     [guardianId],
   );
-  const [existingPaidOrders] = await query(
+  const existingPaidOrders = await query(
     "SELECT id FROM payment_orders WHERE guardian_id = ? AND status = 'paid' LIMIT 1",
     [guardianId],
   );
@@ -121,7 +121,10 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
   const activeOffer = await trialsService.getEligibleOffer();
   const trialDaysConfigured = (activeOffer && Number(activeOffer.duration_days) > 0) ? Number(activeOffer.duration_days) : 0;
 
-  const isTrialEligible = !existingClaims.length && !existingPaidSubs.length && !existingPaidOrders.length && Boolean(activeOffer && trialDaysConfigured > 0);
+  const isTrialEligible = (!existingClaims || existingClaims.length === 0)
+    && (!existingPaidSubs || existingPaidSubs.length === 0)
+    && (!existingPaidOrders || existingPaidOrders.length === 0)
+    && Boolean(activeOffer && trialDaysConfigured > 0);
   const TRIAL_DAYS = isTrialEligible ? trialDaysConfigured : 0;
   const startAtEpoch = isTrialEligible ? Math.floor(Date.now() / 1000) + (TRIAL_DAYS * 86400) : null;
   const trialEndsAt = startAtEpoch ? new Date(startAtEpoch * 1000) : null;
@@ -191,7 +194,7 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
     throw badRequest('Invalid payment signature.', 'INVALID_SIGNATURE');
   }
 
-  const [subRows] = await query(
+  const subRows = await query(
     'SELECT * FROM payment_subscriptions WHERE razorpay_subscription_id = ? AND guardian_id = ? LIMIT 1',
     [razorpaySubscriptionId, guardianId],
   );
@@ -269,7 +272,7 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
  * current_cycle_end / trial_ends_at, but will NOT be billed thereafter.
  */
 async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = false } = {}) {
-  const [rows] = await query(
+  const rows = await query(
     `SELECT * FROM payment_subscriptions
      WHERE guardian_id = ? AND status IN ('created', 'active', 'authenticated')
      ORDER BY (status = 'active') DESC, created_at DESC LIMIT 1`,
@@ -341,7 +344,7 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
 
 /** Get active subscription info for guardian, prioritizing active status over abandoned created rows */
 async function getCurrentSubscriptionForGuardian(guardianId) {
-  const [rows] = await query(
+  const rows = await query(
     `SELECT ps.*, pt.amount AS tier_amount
      FROM payment_subscriptions ps
      LEFT JOIN payment_pricing_tiers pt ON ps.pricing_tier_id = pt.id
@@ -369,7 +372,7 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
   const rzpSubId = subEntity?.id || subEntity?.subscription_id;
   if (!rzpSubId) return;
 
-  const [rows] = await query(
+  const rows = await query(
     'SELECT * FROM payment_subscriptions WHERE razorpay_subscription_id = ? LIMIT 1',
     [rzpSubId],
   );
