@@ -300,12 +300,15 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
 
   // Call Razorpay API to cancel recurring mandate
   try {
-    await razorpayService.cancelSubscription({
-      subscriptionId: sub.razorpay_subscription_id,
-      cancelAtCycleEnd: !cancelImmediately,
-    });
+    if (sub.status === 'active' || sub.status === 'authenticated') {
+      await razorpayService.cancelSubscription({
+        subscriptionId: sub.razorpay_subscription_id,
+        cancelAtCycleEnd: !cancelImmediately,
+      });
+    }
   } catch (err) {
-    console.error('[subscriptions] Razorpay cancel failed:', err.message);
+    const errMsg = err?.error?.description || err?.message || JSON.stringify(err);
+    console.error('[subscriptions] Razorpay cancel failed:', errMsg);
   }
 
   const cancelAtCycleEnd = !cancelImmediately;

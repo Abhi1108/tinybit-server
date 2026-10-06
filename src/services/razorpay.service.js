@@ -199,9 +199,7 @@ function verifySubscriptionSignature({ subscriptionId, paymentId, signature }) {
  */
 async function cancelSubscription({ subscriptionId, cancelAtCycleEnd = true }) {
   const rzp = getClient();
-  return rzp.subscriptions.cancel(subscriptionId, {
-    cancel_at_cycle_end: cancelAtCycleEnd ? 1 : 0,
-  });
+  return rzp.subscriptions.cancel(subscriptionId, Boolean(cancelAtCycleEnd));
 }
 
 /** Fetch subscription details from Razorpay */
