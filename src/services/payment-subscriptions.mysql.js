@@ -301,10 +301,23 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
   // Call Razorpay API to cancel recurring mandate
   try {
     if (sub.status === 'active' || sub.status === 'authenticated') {
-      await razorpayService.cancelSubscription({
-        subscriptionId: sub.razorpay_subscription_id,
-        cancelAtCycleEnd: !cancelImmediately,
-      });
+      try {
+        await razorpayService.cancelSubscription({
+          subscriptionId: sub.razorpay_subscription_id,
+          cancelAtCycleEnd: !cancelImmediately,
+        });
+      } catch (cancelErr) {
+        // When a subscription is in a trial (or before 1st invoice), Razorpay rejects cancel_at_cycle_end with:
+        // "Subscription cannot be cancelled since no billing cycle is going on".
+        // In that scenario, cancel immediately on Razorpay so the UPI mandate is revoked and no charge occurs.
+        const firstErr = cancelErr?.error?.description || cancelErr?.message || '';
+        console.warn(`[subscriptions] Cycle-end cancel failed (${firstErr}). Retrying immediate cancel on Razorpay...`);
+        await razorpayService.cancelSubscription({
+          subscriptionId: sub.razorpay_subscription_id,
+          cancelAtCycleEnd: false,
+        });
+        console.info('[subscriptions] Successfully cancelled subscription immediately on Razorpay.');
+      }
     }
   } catch (err) {
     const errMsg = err?.error?.description || err?.message || JSON.stringify(err);
