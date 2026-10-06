@@ -2,7 +2,11 @@ const paymentsService = require('../services/payments.mysql');
 
 function handleError(res, err, fallback) {
   const status = err.status || 500;
-  if (status === 500) console.error('[payments]', err);
+  if (status === 500) {
+    console.error('[payments]', err);
+  } else {
+    console.warn(`[payments] ${status} ${err.code || 'ERROR'}: ${err.message || fallback}`);
+  }
   return res.status(status).json({ success: false, message: err.message || fallback, code: err.code });
 }
 

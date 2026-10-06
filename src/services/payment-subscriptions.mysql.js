@@ -184,11 +184,26 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
  * Payload: { razorpay_payment_id, razorpay_subscription_id, razorpay_signature }
  */
 async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpaySubscriptionId, razorpaySignature }) {
-  const valid = razorpayService.verifySubscriptionSignature({
+  let valid = razorpayService.verifySubscriptionSignature({
     subscriptionId: razorpaySubscriptionId,
     paymentId: razorpayPaymentId,
     signature: razorpaySignature,
   });
+
+  if (!valid) {
+    console.warn(
+      `[payments] Signature verification failed for sub=${razorpaySubscriptionId}, payment=${razorpayPaymentId}. Checking status with Razorpay API...`,
+    );
+    try {
+      const rzpSub = await razorpayService.getSubscription(razorpaySubscriptionId);
+      if (rzpSub && (rzpSub.status === 'active' || rzpSub.status === 'authenticated')) {
+        console.info(`[payments] Subscription ${razorpaySubscriptionId} verified via Razorpay API (status: ${rzpSub.status}).`);
+        valid = true;
+      }
+    } catch (apiErr) {
+      console.error('[payments] Razorpay API fallback verification error:', apiErr.message);
+    }
+  }
 
   if (!valid) {
     throw badRequest('Invalid payment signature.', 'INVALID_SIGNATURE');

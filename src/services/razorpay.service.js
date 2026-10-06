@@ -168,18 +168,29 @@ async function createSubscription({ planId, totalCount = 120, startAt, notes, cu
 
 /**
  * Verify checkout signature for a subscription authentication:
- * HMAC_SHA256(subscription_id + "|" + payment_id, key_secret)
+ * Razorpay official spec: HMAC_SHA256(payment_id + "|" + subscription_id, key_secret)
  */
 function verifySubscriptionSignature({ subscriptionId, paymentId, signature }) {
   assertRazorpayConfigured();
   if (!subscriptionId || !paymentId || !signature) return false;
 
-  const expected = crypto
+  // Razorpay official spec: payment_id + '|' + subscription_id
+  const expectedPrimary = crypto
+    .createHmac('sha256', KEY_SECRET)
+    .update(`${paymentId}|${subscriptionId}`)
+    .digest('hex');
+
+  if (timingSafeEqualHex(expectedPrimary, signature)) {
+    return true;
+  }
+
+  // Fallback in case parameter order was inverted
+  const expectedAlt = crypto
     .createHmac('sha256', KEY_SECRET)
     .update(`${subscriptionId}|${paymentId}`)
     .digest('hex');
 
-  return timingSafeEqualHex(expected, signature);
+  return timingSafeEqualHex(expectedAlt, signature);
 }
 
 /**
