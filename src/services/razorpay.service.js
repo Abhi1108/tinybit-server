@@ -208,6 +208,12 @@ async function getSubscription(subscriptionId) {
   return rzp.subscriptions.fetch(subscriptionId);
 }
 
+/** Fetch all payment attempts for a Razorpay order */
+async function fetchOrderPayments(orderId) {
+  const rzp = getClient();
+  return rzp.orders.fetchPayments(orderId);
+}
+
 module.exports = {
   isRazorpayConfigured,
   razorpayNotConfiguredError,
@@ -223,5 +229,6 @@ module.exports = {
   verifySubscriptionSignature,
   cancelSubscription,
   getSubscription,
+  fetchOrderPayments,
 };
 

@@ -84,7 +84,14 @@ async function requireGuardianProfile(guardianId) {
 
 /** Pricing + current entitlement summary for the mobile "what do I pay" screen. */
 async function getPricingSummaryForGuardian(guardianId) {
-  const profile = await requireGuardianProfile(guardianId);
+  let profile = await requireGuardianProfile(guardianId);
+  if (profile.plan_status !== 'active' && profile.plan_status !== 'trial') {
+    const subscriptionsService = require('./payment-subscriptions.mysql');
+    const synced = await subscriptionsService.syncPendingSubscriptionForGuardian(guardianId);
+    if (synced) {
+      profile = await requireGuardianProfile(guardianId);
+    }
+  }
   const elderCount = await getElderCountForGuardian(guardianId);
   const effectiveCount = Math.max(elderCount, 1);
 

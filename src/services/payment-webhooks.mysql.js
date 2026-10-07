@@ -105,6 +105,9 @@ async function handleWebhookEvent({ eventId, eventType, body }) {
       case 'subscription.cancelled':
         await subscriptionsService.handleSubscriptionCancelled(body.payload.subscription.entity);
         break;
+      case 'subscription.halted':
+        await subscriptionsService.handleSubscriptionHalted(body.payload.subscription.entity);
+        break;
       default:
         // Unhandled event type — acknowledged and stored, no action needed.
         break;

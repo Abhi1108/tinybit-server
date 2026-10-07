@@ -216,6 +216,21 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
   const sub = subRows[0];
   if (!sub) throw notFound('Subscription not found for this account.');
 
+  const activated = await activateSubscriptionAndProfile(sub);
+
+  return {
+    success: true,
+    subscription_id: razorpaySubscriptionId,
+    status: 'active',
+    plan_status: activated.planStatus,
+    trial_ends_at: activated.trialEndsAt.toISOString(),
+  };
+}
+
+/**
+ * Fully activates a subscription (used by verifySubscriptionAuth, webhooks, and self-healing sync).
+ */
+async function activateSubscriptionAndProfile(sub) {
   const isTrial = Boolean(sub.trial_ends_at && new Date(sub.trial_ends_at).getTime() > Date.now());
   const trialEndsAt = sub.trial_ends_at ? new Date(sub.trial_ends_at) : new Date(Date.now() + 30 * 86400000);
 
@@ -236,7 +251,7 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
          ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP(3), ?, 'active', ?)`,
         [
           randomUUID(),
-          guardianId,
+          sub.guardian_id,
           sub.elder_count,
           sub.pricing_tier_id,
           trialEndsAt,
@@ -267,18 +282,12 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
         sub.currency,
         sub.elder_count,
         sub.id,
-        guardianId,
+        sub.guardian_id,
       ],
     );
   });
 
-  return {
-    success: true,
-    subscription_id: razorpaySubscriptionId,
-    status: 'active',
-    plan_status: isTrial ? 'trial' : 'active',
-    trial_ends_at: trialEndsAt.toISOString(),
-  };
+  return { planStatus: isTrial ? 'trial' : 'active', trialEndsAt };
 }
 
 /**
@@ -298,6 +307,8 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
     throw notFound('No active subscription found to cancel.');
   }
 
+  let cancelAtCycleEnd = !cancelImmediately;
+
   // Call Razorpay API to cancel recurring mandate
   try {
     if (sub.status === 'active' || sub.status === 'authenticated') {
@@ -316,6 +327,7 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
           subscriptionId: sub.razorpay_subscription_id,
           cancelAtCycleEnd: false,
         });
+        cancelAtCycleEnd = false; // Synchronize local state with Razorpay's immediate cancellation
         console.info('[subscriptions] Successfully cancelled subscription immediately on Razorpay.');
       }
     }
@@ -324,7 +336,6 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
     console.error('[subscriptions] Razorpay cancel failed:', errMsg);
   }
 
-  const cancelAtCycleEnd = !cancelImmediately;
   const now = new Date();
 
   await withTransaction(async (conn) => {
@@ -344,21 +355,21 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
       ],
     );
 
-    if (cancelAtCycleEnd) {
-      // User keeps access until trial_ends_at / plan_expires_at
-      await conn.execute(
-        `UPDATE profiles
-         SET auto_renew = 0, cancel_scheduled = 1
-         WHERE id = ?`,
-        [guardianId],
-      );
-    } else {
-      // Immediate cancellation
+    if (cancelImmediately) {
+      // Immediate cancellation requested: cut access right away
       await conn.execute(
         `UPDATE profiles
          SET plan_status = 'cancelled',
              auto_renew = 0,
              cancel_scheduled = 0
+         WHERE id = ?`,
+        [guardianId],
+      );
+    } else {
+      // User retains access until trial_ends_at / plan_expires_at, but will not auto-renew
+      await conn.execute(
+        `UPDATE profiles
+         SET auto_renew = 0, cancel_scheduled = 1
          WHERE id = ?`,
         [guardianId],
       );
@@ -389,13 +400,45 @@ async function getCurrentSubscriptionForGuardian(guardianId) {
 
 /** Webhook: Update subscription when authenticated by Razorpay */
 async function handleSubscriptionAuthenticated(entity) {
-  const subId = entity.id; // 'sub_xxxx'
-  await execute(
-    `UPDATE payment_subscriptions
-     SET status = 'active', updated_at = CURRENT_TIMESTAMP(3)
-     WHERE razorpay_subscription_id = ?`,
-    [subId],
+  const rzpSubId = entity.id; // 'sub_xxxx'
+  const rows = await query(
+    'SELECT * FROM payment_subscriptions WHERE razorpay_subscription_id = ? LIMIT 1',
+    [rzpSubId],
   );
+  const sub = rows[0];
+  if (!sub) return;
+
+  await activateSubscriptionAndProfile(sub);
+  console.info(`[payment-webhooks] Subscription ${rzpSubId} successfully activated for guardian ${sub.guardian_id}`);
+}
+
+/**
+ * Self-healing sync: If guardian has an unconfirmed subscription (status 'created' or 'authenticated')
+ * created in the last 24 hours, check Razorpay API directly in case the mobile app was closed during checkout.
+ */
+async function syncPendingSubscriptionForGuardian(guardianId) {
+  try {
+    const rows = await query(
+      `SELECT * FROM payment_subscriptions
+       WHERE guardian_id = ? AND status IN ('created', 'authenticated')
+         AND created_at >= NOW() - INTERVAL 24 HOUR
+       ORDER BY created_at DESC LIMIT 1`,
+      [guardianId],
+    );
+    const sub = rows[0];
+    if (!sub) return null;
+
+    const rzpSub = await razorpayService.getSubscription(sub.razorpay_subscription_id);
+    if (rzpSub && (rzpSub.status === 'active' || rzpSub.status === 'authenticated')) {
+      console.info(`[subscriptions] Self-healing sync: Found verified sub ${sub.razorpay_subscription_id} on Razorpay. Activating...`);
+      await activateSubscriptionAndProfile(sub);
+      return sub;
+    }
+  } catch (err) {
+    // Non-fatal sync error; log and continue
+    console.warn('[subscriptions] Failed to sync pending subscription with Razorpay:', err.message);
+  }
+  return null;
 }
 
 /** Webhook: Update subscription when monthly charge succeeds and record in payment_orders / payments ledger */
@@ -479,9 +522,15 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
   });
 }
 
-/** Webhook: Handle subscription cancelled */
+/** Webhook: Handle subscription cancelled (from Razorpay Dashboard or bank mandate revocation) */
 async function handleSubscriptionCancelled(entity) {
-  const subId = entity.id;
+  const rzpSubId = entity.id;
+  const rows = await query(
+    'SELECT * FROM payment_subscriptions WHERE razorpay_subscription_id = ? LIMIT 1',
+    [rzpSubId],
+  );
+  const sub = rows[0];
+
   await execute(
     `UPDATE payment_subscriptions
      SET status = 'cancelled',
@@ -489,16 +538,66 @@ async function handleSubscriptionCancelled(entity) {
          ended_at = CURRENT_TIMESTAMP(3),
          updated_at = CURRENT_TIMESTAMP(3)
      WHERE razorpay_subscription_id = ?`,
-    [subId],
+    [rzpSubId],
   );
+
+  if (sub?.guardian_id) {
+    await execute(
+      `UPDATE profiles
+       SET auto_renew = 0,
+           cancel_scheduled = 0,
+           plan_status = CASE
+             WHEN plan_expires_at IS NOT NULL AND plan_expires_at <= CURRENT_TIMESTAMP(3) THEN 'expired'
+             ELSE plan_status
+           END
+       WHERE id = ?`,
+      [sub.guardian_id],
+    );
+    console.info(`[payment-webhooks] Subscription ${rzpSubId} cancelled for guardian ${sub.guardian_id}.`);
+  }
+}
+
+/** Webhook: Handle subscription halted (recurring charge attempts exhausted/failed) */
+async function handleSubscriptionHalted(entity) {
+  const rzpSubId = entity.id;
+  const rows = await query(
+    'SELECT * FROM payment_subscriptions WHERE razorpay_subscription_id = ? LIMIT 1',
+    [rzpSubId],
+  );
+  const sub = rows[0];
+
+  await execute(
+    `UPDATE payment_subscriptions
+     SET status = 'halted',
+         updated_at = CURRENT_TIMESTAMP(3)
+     WHERE razorpay_subscription_id = ?`,
+    [rzpSubId],
+  );
+
+  if (sub?.guardian_id) {
+    await execute(
+      `UPDATE profiles
+       SET auto_renew = 0,
+           plan_status = CASE
+             WHEN plan_expires_at IS NOT NULL AND plan_expires_at <= CURRENT_TIMESTAMP(3) THEN 'expired'
+             ELSE plan_status
+           END
+       WHERE id = ?`,
+      [sub.guardian_id],
+    );
+    console.warn(`[payment-webhooks] Subscription ${rzpSubId} halted for guardian ${sub.guardian_id}. Payment retries exhausted.`);
+  }
 }
 
 module.exports = {
   createSubscriptionWithTrial,
   verifySubscriptionAuth,
+  activateSubscriptionAndProfile,
   cancelSubscriptionForGuardian,
   getCurrentSubscriptionForGuardian,
+  syncPendingSubscriptionForGuardian,
   handleSubscriptionAuthenticated,
   handleSubscriptionCharged,
   handleSubscriptionCancelled,
+  handleSubscriptionHalted,
 };

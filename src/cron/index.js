@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { runNotificationChecks } = require('./notification-checks');
 const { checkPushReceipts } = require('../services/notifications.service');
 const { purgeExpiredSoftDeletedUsers } = require('./purge-retention');
+const { reconcilePendingPayments } = require('./payment-reconciliation');
 
 /**
  * In-process scheduler (plan Section 6) — runs inside the same `tinybit-api` PM2 process as
@@ -16,6 +17,11 @@ const { purgeExpiredSoftDeletedUsers } = require('./purge-retention');
  * sooner than that anyway; no reason for a second schedule.
  */
 function startCronJobs() {
+  // Every 2 minutes — auto-reconcile in-flight payments & UPI mandates that were stuck or closed during checkout
+  cron.schedule('*/2 * * * *', () => {
+    reconcilePendingPayments().catch((err) => console.error('[cron:payments] reconcilePendingPayments failed:', err));
+  });
+
   cron.schedule('*/15 * * * *', () => {
     runNotificationChecks().catch((err) => console.error('[cron] runNotificationChecks failed:', err));
     checkPushReceipts().catch((err) => console.error('[cron] checkPushReceipts failed:', err));
