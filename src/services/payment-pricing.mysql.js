@@ -157,7 +157,8 @@ function validateTierInput(body, { partial = false } = {}) {
   }
 
   if (!partial || body.currency !== undefined) {
-    const currency = String(body.currency || '').trim().toUpperCase();
+    const rawCurrency = String(body.currency || '').trim().toUpperCase();
+    const currency = rawCurrency.replace(/[^A-Z]/g, '');
     if (!/^[A-Z]{3}$/.test(currency)) {
       const err = new Error('currency must be a 3-letter ISO 4217 code, e.g. INR, USD');
       err.status = 400;

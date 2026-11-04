@@ -1,13 +1,20 @@
 const paymentsService = require('../services/payments.mysql');
 
 function handleError(res, err, fallback) {
-  const status = err.status || 500;
-  if (status === 500) {
+  const status = err?.status || err?.statusCode || (err?.error?.code === 'BAD_REQUEST_ERROR' ? 400 : 500);
+  let message = err?.error?.description || err?.message || fallback;
+  const code = err?.error?.code || err?.code;
+
+  if (err?.error?.description === 'Currency provided is not supported' || err?.error?.field === 'currency') {
+    message = 'Currency provided is not supported by the payment gateway. If international payments (USD/multi-currency) are not enabled on your Razorpay account, use INR or enable International Payments in the Razorpay Dashboard.';
+  }
+
+  if (status >= 500) {
     console.error('[payments]', err);
   } else {
-    console.warn(`[payments] ${status} ${err.code || 'ERROR'}: ${err.message || fallback}`);
+    console.warn(`[payments] ${status} ${code || 'ERROR'}: ${message}`);
   }
-  return res.status(status).json({ success: false, message: err.message || fallback, code: err.code });
+  return res.status(status).json({ success: false, message, code });
 }
 
 /** GET /api/payments/pricing */

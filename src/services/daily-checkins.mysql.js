@@ -124,8 +124,34 @@ async function insertMoodEntry(userId, { mood, moodScore, note }) {
   );
 }
 
+async function findLatestCheckIn(userId) {
+  const rows = await query(
+    `SELECT *
+     FROM daily_checkins
+     WHERE user_id = ?
+     ORDER BY check_in_date DESC
+     LIMIT 1`,
+    [userId],
+  );
+  return mapDailyCheckInRow(rows[0] ?? null);
+}
+
+async function findLatestMoodEntry(userId) {
+  const rows = await query(
+    `SELECT *
+     FROM mood_entries
+     WHERE user_id = ?
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [userId],
+  );
+  return rows[0] ?? null;
+}
+
 module.exports = {
   findCheckInByUserAndDate,
+  findLatestCheckIn,
+  findLatestMoodEntry,
   upsertDailyCheckIn,
   insertMoodEntry,
 };
