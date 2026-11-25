@@ -1,6 +1,7 @@
 const pricingService = require('../services/payment-pricing.mysql');
 const paymentsService = require('../services/payments.mysql');
 const refundsService = require('../services/payment-refunds.mysql');
+const subscriptionsService = require('../services/payment-subscriptions.mysql');
 const auditService = require('../services/admin-audit.mysql');
 const promotionsService = require('../services/payment-promotions-admin.mysql');
 
@@ -135,6 +136,37 @@ const refundPayment = async (req, res) => {
   }
 };
 
+// POST /admin/api/user-subscriptions/:guardianId/cancel
+const cancelUserSubscription = async (req, res) => {
+  try {
+    const cancelImmediately = Boolean(req.body?.cancel_immediately);
+    const result = await subscriptionsService.cancelSubscriptionForGuardian(req.params.guardianId, {
+      cancelImmediately,
+    });
+    await audit(req, 'subscription.cancel', 'profile', req.params.guardianId, {
+      subscription_id: result.subscription_id,
+      cancel_at_cycle_end: result.cancel_at_cycle_end,
+      cancel_immediately: cancelImmediately,
+    });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
+// POST /admin/api/user-subscriptions/:guardianId/sync
+const syncUserSubscription = async (req, res) => {
+  try {
+    const synced = await subscriptionsService.syncSubscriptionStateForGuardian(req.params.guardianId);
+    await audit(req, 'subscription.sync', 'profile', req.params.guardianId, {
+      synced: Boolean(synced),
+    });
+    return res.json({ success: true, synced: Boolean(synced) });
+  } catch (err) {
+    return handleError(res, err);
+  }
+};
+
 module.exports = {
   getPricingTiers,
   getPricingTier,
@@ -146,4 +178,6 @@ module.exports = {
   getOrders,
   getOrder,
   refundPayment,
+  cancelUserSubscription,
+  syncUserSubscription,
 };

@@ -1600,6 +1600,7 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
   const rows = await query(
     `SELECT p.id, p.full_name, p.role, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
             p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at,
+            p.auto_renew AS profile_auto_renew, p.cancel_scheduled AS profile_cancel_scheduled,
             ps.razorpay_subscription_id, ps.status AS sub_status, ps.cancel_at_cycle_end,
             ps.trial_ends_at
      FROM profiles p
@@ -1626,8 +1627,11 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
       ? rawType
       : ((r.plan_status === 'active' && amount > 0) ? 'guardian' : (rawType || 'free'));
 
-    const autoRenew = Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 0 && (r.sub_status === 'active' || r.sub_status === 'authenticated'));
-    const cancelScheduled = Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 1);
+    const autoRenew = r.profile_auto_renew != null
+      ? Boolean(r.profile_auto_renew)
+      : Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 0 && (r.sub_status === 'active' || r.sub_status === 'authenticated'));
+    const cancelScheduled = Boolean(r.profile_cancel_scheduled) ||
+      Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 1 && r.sub_status === 'active');
     const isTrial = r.plan_status === 'trial' || Boolean(r.trial_ends_at && new Date(r.trial_ends_at).getTime() > Date.now());
 
     return {

@@ -309,31 +309,46 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
 
   let cancelAtCycleEnd = !cancelImmediately;
 
-  // Call Razorpay API to cancel recurring mandate
-  try {
-    if (sub.status === 'active' || sub.status === 'authenticated') {
-      try {
-        await razorpayService.cancelSubscription({
-          subscriptionId: sub.razorpay_subscription_id,
-          cancelAtCycleEnd: !cancelImmediately,
-        });
-      } catch (cancelErr) {
-        // When a subscription is in a trial (or before 1st invoice), Razorpay rejects cancel_at_cycle_end with:
-        // "Subscription cannot be cancelled since no billing cycle is going on".
-        // In that scenario, cancel immediately on Razorpay so the UPI mandate is revoked and no charge occurs.
-        const firstErr = cancelErr?.error?.description || cancelErr?.message || '';
+  // Call Razorpay API to cancel recurring mandate — never silently swallow failures when live
+  // on Razorpay unless Razorpay already shows it as cancelled/completed/expired.
+  if (sub.status === 'active' || sub.status === 'authenticated') {
+    try {
+      await razorpayService.cancelSubscription({
+        subscriptionId: sub.razorpay_subscription_id,
+        cancelAtCycleEnd: !cancelImmediately,
+      });
+    } catch (cancelErr) {
+      const firstErr = cancelErr?.error?.description || cancelErr?.message || '';
+      if (!cancelImmediately) {
         console.warn(`[subscriptions] Cycle-end cancel failed (${firstErr}). Retrying immediate cancel on Razorpay...`);
-        await razorpayService.cancelSubscription({
-          subscriptionId: sub.razorpay_subscription_id,
-          cancelAtCycleEnd: false,
-        });
-        cancelAtCycleEnd = false; // Synchronize local state with Razorpay's immediate cancellation
-        console.info('[subscriptions] Successfully cancelled subscription immediately on Razorpay.');
+        try {
+          await razorpayService.cancelSubscription({
+            subscriptionId: sub.razorpay_subscription_id,
+            cancelAtCycleEnd: false,
+          });
+          cancelAtCycleEnd = false; // Synchronize local state with Razorpay's immediate cancellation
+          console.info('[subscriptions] Successfully cancelled subscription immediately on Razorpay.');
+        } catch (secondErr) {
+          const rzpSub = await razorpayService.getSubscription(sub.razorpay_subscription_id).catch(() => null);
+          const alreadyEnded = rzpSub && ['cancelled', 'completed', 'expired', 'halted'].includes(rzpSub.status);
+          if (!alreadyEnded) {
+            const errMsg = secondErr?.error?.description || secondErr?.message || 'Razorpay cancellation failed.';
+            const wrapped = new Error(`Could not cancel subscription with payment gateway: ${errMsg}`);
+            wrapped.status = secondErr?.statusCode || 502;
+            throw wrapped;
+          }
+          cancelAtCycleEnd = false;
+        }
+      } else {
+        const rzpSub = await razorpayService.getSubscription(sub.razorpay_subscription_id).catch(() => null);
+        const alreadyEnded = rzpSub && ['cancelled', 'completed', 'expired', 'halted'].includes(rzpSub.status);
+        if (!alreadyEnded) {
+          const wrapped = new Error(`Could not cancel subscription with payment gateway: ${firstErr || 'Razorpay error'}`);
+          wrapped.status = cancelErr?.statusCode || 502;
+          throw wrapped;
+        }
       }
     }
-  } catch (err) {
-    const errMsg = err?.error?.description || err?.message || JSON.stringify(err);
-    console.error('[subscriptions] Razorpay cancel failed:', errMsg);
   }
 
   const now = new Date();
@@ -441,6 +456,36 @@ async function syncPendingSubscriptionForGuardian(guardianId) {
   return null;
 }
 
+/**
+ * Full admin sync for a guardian's latest subscription against Razorpay (activates pending auths
+ * OR marks locally cancelled/expired if cancelled/expired directly in the Razorpay Dashboard).
+ */
+async function syncSubscriptionStateForGuardian(guardianId) {
+  const rows = await query(
+    `SELECT * FROM payment_subscriptions
+     WHERE guardian_id = ?
+     ORDER BY created_at DESC LIMIT 1`,
+    [guardianId],
+  );
+  const sub = rows[0];
+  if (!sub || !sub.razorpay_subscription_id) return false;
+
+  const rzpSub = await razorpayService.getSubscription(sub.razorpay_subscription_id);
+  if (!rzpSub) return false;
+
+  if ((rzpSub.status === 'active' || rzpSub.status === 'authenticated') && sub.status !== 'active') {
+    await activateSubscriptionAndProfile(sub);
+    return true;
+  }
+
+  if ((rzpSub.status === 'cancelled' || rzpSub.status === 'expired' || rzpSub.status === 'completed') && sub.status !== 'cancelled') {
+    await handleSubscriptionCancelled(rzpSub);
+    return true;
+  }
+
+  return false;
+}
+
 /** Webhook: Update subscription when monthly charge succeeds and record in payment_orders / payments ledger */
 async function handleSubscriptionCharged({ subscription: subEntity, payment: payEntity } = {}) {
   const rzpSubId = subEntity?.id || subEntity?.subscription_id;
@@ -542,10 +587,16 @@ async function handleSubscriptionCancelled(entity) {
   );
 
   if (sub?.guardian_id) {
+    // Preserve `cancel_scheduled = 1` while the paid/trial period hasn't expired yet so the
+    // UI keeps showing "Cancels Soon / Cancelled (will not renew)" rather than reverting to
+    // misleading "Auto-renews monthly" text after Razorpay emits `subscription.cancelled`.
     await execute(
       `UPDATE profiles
        SET auto_renew = 0,
-           cancel_scheduled = 0,
+           cancel_scheduled = CASE
+             WHEN plan_expires_at IS NOT NULL AND plan_expires_at > CURRENT_TIMESTAMP(3) THEN 1
+             ELSE 0
+           END,
            plan_status = CASE
              WHEN plan_expires_at IS NOT NULL AND plan_expires_at <= CURRENT_TIMESTAMP(3) THEN 'expired'
              ELSE plan_status
@@ -596,6 +647,7 @@ module.exports = {
   cancelSubscriptionForGuardian,
   getCurrentSubscriptionForGuardian,
   syncPendingSubscriptionForGuardian,
+  syncSubscriptionStateForGuardian,
   handleSubscriptionAuthenticated,
   handleSubscriptionCharged,
   handleSubscriptionCancelled,

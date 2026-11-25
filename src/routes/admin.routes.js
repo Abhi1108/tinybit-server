@@ -89,6 +89,8 @@ const {
   getOrders,
   getOrder,
   refundPayment,
+  cancelUserSubscription,
+  syncUserSubscription,
 } = require('../controllers/admin-payments.controller');
 const {
   sessionAuth,
@@ -163,6 +165,8 @@ router.get('/api/notifications', sessionAuth, requirePermission('Notifications',
 router.post('/api/broadcast', sessionAuth, requirePermission('Notifications'), broadcast);
 
 router.get('/api/user-subscriptions', sessionAuth, requirePermission('Billing'), getUserSubscriptions);
+router.post('/api/user-subscriptions/:guardianId/cancel', sessionAuth, requirePermission('Billing'), cancelUserSubscription);
+router.post('/api/user-subscriptions/:guardianId/sync', sessionAuth, requirePermission('Billing'), syncUserSubscription);
 router.get('/api/revenue', sessionAuth, requirePermission('Billing'), getRevenueSummary);
 
 router.get('/api/audit-log/export', sessionAuth, requirePermission('Admin Management', 'Settings'), exportAuditLogs);
