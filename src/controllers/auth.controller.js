@@ -1,4 +1,4 @@
-const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164 } = require('../utils/phone');
+const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164, isSyntheticPhoneEmail } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
 const crypto = require('crypto');
 const { execute } = require('../config/mysql');
@@ -532,7 +532,7 @@ async function phoneAuth(req, res) {
     if (isNewUser) {
       await upsertProfile({
         id: user.id,
-        email: user.email,
+        email: null,
         mobile: phoneE164,
       });
     }
@@ -571,6 +571,7 @@ async function updateProfile(req, res) {
       'first_name',
       'last_name',
       'full_name',
+      'email',
       'mobile',
       'location',
       'country',
@@ -600,6 +601,15 @@ async function updateProfile(req, res) {
       if (body[key] !== undefined) patch[key] = body[key];
     }
 
+    if (patch.email !== undefined) {
+      const normalized = patch.email === null ? null : String(patch.email).trim().toLowerCase();
+      if (!normalized || isSyntheticPhoneEmail(normalized)) {
+        delete patch.email;
+      } else {
+        patch.email = normalized;
+      }
+    }
+
     // `location` is the name from the same country-picker selection as `country_code`
     // (see your-name.tsx) — fall back to mirroring it into `country` only if the client
     // didn't already send an explicit value for it.
@@ -625,7 +635,10 @@ async function updateProfile(req, res) {
 
     let data;
     try {
-      data = await saveProfile(userId, email, patch);
+      const profileEmail = patch.email !== undefined
+        ? patch.email
+        : (isSyntheticPhoneEmail(email) ? undefined : email);
+      data = await saveProfile(userId, profileEmail, patch);
     } catch (error) {
       console.error('[auth/profile] upsert error:', error.message);
       if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.errno === 1452) {

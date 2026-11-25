@@ -38,6 +38,10 @@ function authEmailFromE164(e164) {
   return `${String(e164).replace(/\D/g, '')}@phone.tinybit.app`;
 }
 
+function isSyntheticPhoneEmail(email) {
+  return /^\d+@phone\.tinybit\.app$/i.test(String(email ?? '').trim());
+}
+
 /** Stable synthetic account email derived from raw phone input (canonicalizes first). */
 function phoneToAuthEmail(phone, countryCode = '+91') {
   return authEmailFromE164(canonicalizeE164(phone, countryCode));
@@ -47,4 +51,4 @@ function formatMobile(phone, countryCode = '+91') {
   return canonicalizeE164(phone, countryCode);
 }
 
-module.exports = { canonicalizeE164, toE164, authEmailFromE164, phoneToAuthEmail, formatMobile };
+module.exports = { canonicalizeE164, toE164, authEmailFromE164, isSyntheticPhoneEmail, phoneToAuthEmail, formatMobile };
