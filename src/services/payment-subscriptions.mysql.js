@@ -63,15 +63,16 @@ async function ensureRazorpayPlanForTier(tier) {
     return tier.razorpay_plan_id;
   }
 
-  // Create monthly recurring plan on Razorpay
+  const intervalDays = Number(tier.interval_days) || 30;
+  const period = intervalDays >= 300 ? 'yearly' : 'monthly';
   const planName = `TinyBit Guardian Plan (${tier.elder_count} member${tier.elder_count > 1 ? 's' : ''})`;
   const rzpPlan = await razorpayService.createPlan({
     name: planName,
     amount: tier.amount,
     currency: tier.currency,
-    period: 'monthly',
+    period,
     interval: 1,
-    description: `Auto-renewing monthly subscription for ${tier.elder_count} elder(s)`,
+    description: `Auto-renewing ${period} subscription for ${tier.elder_count} elder(s)`,
   });
 
   const planId = rzpPlan.id;
@@ -145,13 +146,15 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
     customerNotify: 1,
   });
 
+  const intervalDays = Number(tier.interval_days) || 30;
+  const intervalLabel = intervalDays >= 300 ? 'yearly' : 'monthly';
   const subId = randomUUID();
   await execute(
     `INSERT INTO payment_subscriptions (
       id, guardian_id, razorpay_subscription_id, razorpay_plan_id, pricing_tier_id,
       elder_count, amount, currency, \`interval\`, status, trial_ends_at, current_cycle_start,
       current_cycle_end, cancel_at_cycle_end, notes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'monthly', 'created', ?, CURRENT_TIMESTAMP(3), ?, 1, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, CURRENT_TIMESTAMP(3), ?, 0, ?)`,
     [
       subId,
       guardianId,
@@ -161,8 +164,9 @@ async function createSubscriptionWithTrial(guardianId, elderCountInput) {
       elderCount,
       tier.amount,
       tier.currency,
+      intervalLabel,
       trialEndsAt,
-      trialEndsAt || new Date(Date.now() + 30 * 86400000),
+      trialEndsAt || new Date(Date.now() + intervalDays * 86400000),
       JSON.stringify({ razorpay_raw: rzpSub }),
     ],
   );
@@ -232,13 +236,22 @@ async function verifySubscriptionAuth(guardianId, { razorpayPaymentId, razorpayS
  */
 async function activateSubscriptionAndProfile(sub) {
   const isTrial = Boolean(sub.trial_ends_at && new Date(sub.trial_ends_at).getTime() > Date.now());
-  const trialEndsAt = sub.trial_ends_at ? new Date(sub.trial_ends_at) : new Date(Date.now() + 30 * 86400000);
+  const parsedNotes = typeof sub.notes === 'string' ? safeJsonParse(sub.notes) : sub.notes;
+  const noteTrialDays = Number(parsedNotes?.razorpay_raw?.notes?.trial_days);
+  const fallbackDays = sub.interval === 'yearly' ? 365 : 30;
+  const trialEndsAt = sub.trial_ends_at
+    ? new Date(sub.trial_ends_at)
+    : new Date(Date.now() + fallbackDays * 86400000);
+  const recordedTrialDays = Number.isFinite(noteTrialDays) && noteTrialDays > 0
+    ? noteTrialDays
+    : Math.max(1, Math.round((trialEndsAt.getTime() - Date.now()) / 86400000));
+  const profileInterval = sub.interval === 'yearly' ? 'year' : 'month';
 
   await withTransaction(async (conn) => {
-    // 1. Update subscription status
+    // 1. Update subscription status and ensure cancel_at_cycle_end is cleared for newly active subs
     await conn.execute(
       `UPDATE payment_subscriptions
-       SET status = 'active', updated_at = CURRENT_TIMESTAMP(3)
+       SET status = 'active', cancel_at_cycle_end = 0, updated_at = CURRENT_TIMESTAMP(3)
        WHERE id = ?`,
       [sub.id],
     );
@@ -255,7 +268,7 @@ async function activateSubscriptionAndProfile(sub) {
           sub.elder_count,
           sub.pricing_tier_id,
           trialEndsAt,
-          JSON.stringify({ subscription_id: sub.razorpay_subscription_id, duration_days: 30 }),
+          JSON.stringify({ subscription_id: sub.razorpay_subscription_id, duration_days: recordedTrialDays }),
         ],
       );
     }
@@ -270,7 +283,7 @@ async function activateSubscriptionAndProfile(sub) {
            plan_amount = ?,
            plan_currency = ?,
            plan_elder_count = ?,
-           plan_interval = 'month',
+           plan_interval = ?,
            active_subscription_id = ?,
            auto_renew = 1,
            cancel_scheduled = 0
@@ -281,6 +294,7 @@ async function activateSubscriptionAndProfile(sub) {
         sub.amount,
         sub.currency,
         sub.elder_count,
+        profileInterval,
         sub.id,
         sub.guardian_id,
       ],
@@ -308,10 +322,22 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
   }
 
   let cancelAtCycleEnd = !cancelImmediately;
+  let effectiveStatus = sub.status;
+
+  // For locally 'created' subscriptions, check Razorpay first in case the user completed
+  // authorization and the webhook hasn't updated local status yet.
+  if (effectiveStatus === 'created' && sub.razorpay_subscription_id) {
+    const rzpSub = await razorpayService.getSubscription(sub.razorpay_subscription_id).catch(() => null);
+    if (rzpSub?.status === 'active' || rzpSub?.status === 'authenticated') {
+      effectiveStatus = rzpSub.status;
+    } else if (rzpSub?.status === 'cancelled' || rzpSub?.status === 'completed' || rzpSub?.status === 'expired' || rzpSub?.status === 'halted') {
+      cancelAtCycleEnd = false;
+    }
+  }
 
   // Call Razorpay API to cancel recurring mandate — never silently swallow failures when live
   // on Razorpay unless Razorpay already shows it as cancelled/completed/expired.
-  if (sub.status === 'active' || sub.status === 'authenticated') {
+  if (effectiveStatus === 'active' || effectiveStatus === 'authenticated') {
     try {
       await razorpayService.cancelSubscription({
         subscriptionId: sub.razorpay_subscription_id,
@@ -349,9 +375,13 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
         }
       }
     }
+  } else {
+    // Unauthenticated/abandoned local 'created' row must end as 'cancelled', never be promoted to 'active'.
+    cancelAtCycleEnd = false;
   }
 
   const now = new Date();
+  const nextSubStatus = cancelAtCycleEnd ? effectiveStatus : 'cancelled';
 
   await withTransaction(async (conn) => {
     await conn.execute(
@@ -363,7 +393,7 @@ async function cancelSubscriptionForGuardian(guardianId, { cancelImmediately = f
            updated_at = CURRENT_TIMESTAMP(3)
        WHERE id = ?`,
       [
-        cancelAtCycleEnd ? 'active' : 'cancelled',
+        nextSubStatus,
         cancelAtCycleEnd ? 1 : 0,
         cancelAtCycleEnd ? null : now,
         sub.id,
@@ -498,7 +528,11 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
   const sub = rows[0];
   if (!sub) return;
 
-  const nextMonth = new Date(Date.now() + 30 * 86400000);
+  const tierRows = sub.pricing_tier_id
+    ? await query('SELECT interval_days FROM payment_pricing_tiers WHERE id = ? LIMIT 1', [sub.pricing_tier_id])
+    : [];
+  const intervalDays = Number(tierRows[0]?.interval_days) || (sub.interval === 'yearly' ? 365 : 30);
+  const nextCycleEnd = new Date(Date.now() + intervalDays * 86400000);
   const chargeAmount = payEntity?.amount != null ? Number(payEntity.amount) / 100 : Number(sub.amount);
   const currency = payEntity?.currency || sub.currency || 'INR';
   const payId = payEntity?.id || `sub_charge_${randomUUID()}`;
@@ -514,7 +548,7 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
            current_cycle_end = ?,
            updated_at = CURRENT_TIMESTAMP(3)
        WHERE id = ?`,
-      [nextMonth, sub.id],
+      [nextCycleEnd, sub.id],
     );
 
     // 2. Advance profile
@@ -524,7 +558,7 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
            plan_expires_at = ?,
            auto_renew = 1
        WHERE id = ?`,
-      [nextMonth, sub.guardian_id],
+      [nextCycleEnd, sub.guardian_id],
     );
 
     // 3. Write into payment_orders ledger so it appears in history & admin dashboards
@@ -533,7 +567,7 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
          id, guardian_id, razorpay_order_id, kind, pricing_tier_id,
          elder_count_at_purchase, gross_amount, discount_amount,
          amount, tier_amount, interval_days, currency, receipt, status, notes
-       ) VALUES (?, ?, ?, 'renewal', ?, ?, ?, 0, ?, ?, 30, ?, ?, 'paid', ?)`,
+       ) VALUES (?, ?, ?, 'renewal', ?, ?, ?, 0, ?, ?, ?, ?, ?, 'paid', ?)`,
       [
         orderId,
         sub.guardian_id,
@@ -543,6 +577,7 @@ async function handleSubscriptionCharged({ subscription: subEntity, payment: pay
         chargeAmount,
         chargeAmount,
         chargeAmount,
+        intervalDays,
         currency,
         `sub_${sub.id.slice(0, 8)}`,
         JSON.stringify({ subscription_id: rzpSubId, payment_id: payId }),

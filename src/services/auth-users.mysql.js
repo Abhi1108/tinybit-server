@@ -1,6 +1,6 @@
 const bcrypt = require('bcrypt');
 const { randomUUID } = require('crypto');
-const { query, execute } = require('../config/mysql');
+const { query, execute, withTransaction } = require('../config/mysql');
 const { signAccessToken, generateRefreshToken, hashRefreshToken, accessExpiresAtUnix, ACCESS_TTL_SECONDS } = require('./jwt.service');
 const { SUPPORT_EMAIL } = require('../config/support');
 
@@ -9,6 +9,16 @@ const BCRYPT_ROUNDS = 12;
 
 function isDuplicateKeyError(err) {
   return err?.code === 'ER_DUP_ENTRY' || err?.errno === 1062;
+}
+
+/** Parse MySQL DATETIME(3) values returned as Date instances or UTC strings into epoch ms. */
+function parseUtcDateMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === 'number') return value;
+  if (!value) return NaN;
+  const str = String(value).trim();
+  const hasZone = /([zZ]|[+\-]\d{2}:?\d{2})$/.test(str);
+  return new Date(hasZone ? str : `${str} UTC`).getTime();
 }
 
 async function findByPhone(phoneE164) {
@@ -99,20 +109,20 @@ async function findOrCreateByPhone(phoneE164, email) {
   }
 }
 
-async function storeRefreshToken(userId, refreshToken) {
+async function storeRefreshToken(userId, refreshToken, exec = execute) {
   const expiresAt = new Date(Date.now() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
   const expiresAtStr = expiresAt.toISOString().slice(0, 19).replace('T', ' ');
 
-  await execute(
+  await exec(
     `INSERT INTO refresh_tokens (user_id, token_hash, expires_at)
      VALUES (?, ?, ?)`,
     [userId, hashRefreshToken(refreshToken), expiresAtStr],
   );
 }
 
-async function issueSession(user) {
+async function issueSession(user, exec = execute) {
   const refresh_token = generateRefreshToken();
-  await storeRefreshToken(user.id, refresh_token);
+  await storeRefreshToken(user.id, refresh_token, exec);
 
   return {
     access_token: signAccessToken(user),
@@ -168,8 +178,12 @@ async function validateRefreshToken(refreshToken) {
     return null;
   }
 
-  const expiresAtMs = new Date(row.expires_at + ' UTC').getTime();
+  const expiresAtMs = parseUtcDateMs(row.expires_at);
   const now = Date.now();
+  if (!Number.isFinite(expiresAtMs)) {
+    console.warn('[validateRefreshToken] FAIL - invalid expires_at value for user_id:', row.user_id);
+    return null;
+  }
   console.log('[validateRefreshToken] token found - expires_at:', new Date(expiresAtMs).toISOString(), 'now:', new Date(now).toISOString());
 
   if (expiresAtMs < now) {
@@ -199,6 +213,15 @@ async function revokeRefreshToken(refreshToken) {
   );
 }
 
+async function revokeAllRefreshTokensForUser(userId, exec = execute) {
+  await exec(
+    `UPDATE refresh_tokens
+     SET revoked_at = CURRENT_TIMESTAMP(3)
+     WHERE user_id = ? AND revoked_at IS NULL`,
+    [userId],
+  );
+}
+
 async function isProfileDeleted(userId) {
   const rows = await query('SELECT deleted_at FROM profiles WHERE id = ? LIMIT 1', [userId]);
   return !!rows[0]?.deleted_at;
@@ -219,8 +242,22 @@ async function refreshSessionFromToken(refreshToken) {
     throw err;
   }
 
-  await revokeRefreshToken(refreshToken);
-  return issueSession(validated.user);
+  const token_hash = hashRefreshToken(refreshToken);
+  return withTransaction(async (conn) => {
+    const exec = (sql, params) => conn.execute(sql, params).then(([result]) => result);
+    const revokeResult = await exec(
+      `UPDATE refresh_tokens
+       SET revoked_at = CURRENT_TIMESTAMP(3)
+       WHERE token_hash = ? AND revoked_at IS NULL`,
+      [token_hash],
+    );
+    if (!revokeResult || revokeResult.affectedRows !== 1) {
+      const err = new Error('Session refresh failed');
+      err.status = 401;
+      throw err;
+    }
+    return issueSession(validated.user, exec);
+  });
 }
 
 async function deleteAppUser(userId) {
@@ -320,6 +357,7 @@ module.exports = {
   createUserWithPassword,
   issueSession,
   revokeRefreshToken,
+  revokeAllRefreshTokensForUser,
   refreshSessionFromToken,
   deleteAppUser,
   findAppUserById,

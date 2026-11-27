@@ -1,7 +1,7 @@
 const { toE164, phoneToAuthEmail, formatMobile, canonicalizeE164, authEmailFromE164, isSyntheticPhoneEmail } = require('../utils/phone');
 const { verifyVerificationToken } = require('../utils/verificationToken');
 const crypto = require('crypto');
-const { execute } = require('../config/mysql');
+const { execute, withTransaction } = require('../config/mysql');
 const { softDeleteProfile } = require('../services/admin.service');
 const {
   findOrCreateByPhone,
@@ -10,6 +10,7 @@ const {
   verifyPassword,
   issueSession,
   revokeRefreshToken,
+  revokeAllRefreshTokensForUser,
   refreshSessionFromToken,
   findOrCreateByGoogle,
   findOrCreateByApple,
@@ -252,17 +253,35 @@ async function deleteAccount(req, res) {
       return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
-    // Cancel any active recurring subscription immediately so user is not billed while deactivated
+    // Cancel any active recurring subscription immediately first — if payment gateway
+    // cancellation fails, abort account deletion so billing isn't left active.
     try {
       await subscriptionsService.cancelSubscriptionForGuardian(userId, { cancelImmediately: true });
     } catch (subErr) {
       if (subErr.status !== 404) {
-        console.warn(`[auth/delete-account] subscription cancellation note for user ${userId}:`, subErr.message);
+        console.error(`[auth/delete-account] subscription cancellation failed for user ${userId}:`, subErr.message);
+        return res.status(subErr.status || 502).json({
+          success: false,
+          message: subErr.message || 'Could not cancel active subscription. Account was not deleted.',
+        });
       }
     }
 
-    await softDeleteProfile(userId, 'self');
-    await execute('DELETE FROM push_tokens WHERE user_id = ?', [userId]);
+    await withTransaction(async (conn) => {
+      const exec = (sql, params) => conn.execute(sql, params).then(([result]) => result);
+      await revokeAllRefreshTokensForUser(userId, exec);
+      await exec('DELETE FROM push_tokens WHERE user_id = ?', [userId]);
+      const result = await exec(
+        `UPDATE profiles SET deleted_at = CURRENT_TIMESTAMP(3), deleted_by = ?
+         WHERE id = ? AND deleted_at IS NULL`,
+        ['self', userId],
+      );
+      if (result.affectedRows === 0) {
+        const err = new Error('User not found or already deleted');
+        err.status = 404;
+        throw err;
+      }
+    });
 
     return res.json({ success: true, message: 'Account deleted' });
   } catch (err) {
@@ -641,6 +660,12 @@ async function updateProfile(req, res) {
       data = await saveProfile(userId, profileEmail, patch);
     } catch (error) {
       console.error('[auth/profile] upsert error:', error.message);
+      if (error.code === 'ER_DUP_ENTRY' || error.errno === 1062) {
+        return res.status(409).json({
+          success: false,
+          message: 'This email or phone number is already associated with another account.',
+        });
+      }
       if (error.code === 'ER_NO_REFERENCED_ROW_2' || error.errno === 1452) {
         return res.status(500).json({
           success: false,

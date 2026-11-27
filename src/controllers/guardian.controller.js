@@ -1024,14 +1024,15 @@ const presignElderUpload = async (req, res) => {
     const body = req.body ?? {};
     const filename = body.filename ?? body.file_name ?? body.fileName;
     const contentType = body.content_type ?? body.contentType ?? body.mime_type ?? body.mimeType;
-    const purpose = body.purpose || 'health-record';
+    const rawPurpose = String(body.purpose || 'health-vault').trim();
+    const purpose = rawPurpose === 'health-record' ? 'health-vault' : rawPurpose;
 
     if (!filename || !String(filename).trim()) {
       return res.status(400).json({ success: false, message: 'filename is required.' });
     }
 
-    // Check monthly scan limit for health-record purpose
-    if (purpose === 'health-record') {
+    // Check monthly scan limit when uploading health records for an elder
+    if (purpose === 'health-vault') {
       const guardianProfile = await profilesService.getProfileById(req.auth.userId);
       const canUpload = await planEntitlementsService.canUploadReportScan(req.auth.userId, guardianProfile);
       if (!canUpload.allowed) {

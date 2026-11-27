@@ -33,6 +33,32 @@ Rules:
 - Recommendations must be simple and appropriate for elderly users (65+)
 - If unreadable or no metrics found, respond: {"reportType":"Unknown","summary":"Could not extract health data from this document.","alertLevel":"normal","metrics":[],"riskFactors":[],"recommendations":["Please share a clearer image of your report"],"followUp":"Consult your doctor for interpretation"}`;
 
+/** Resolve a Gemini-supported MIME type from explicit type, filename extension, or base64 signature. */
+function resolveSupportedMimeType({ mimeType, title, base64 }) {
+  const explicit = String(mimeType || '').trim().toLowerCase();
+  if (explicit && explicit !== 'application/octet-stream') {
+    if (explicit.startsWith('image/') || explicit === 'application/pdf') return explicit;
+    return null;
+  }
+
+  const head = typeof base64 === 'string' ? base64.slice(0, 16) : '';
+  if (head.startsWith('JVBERi')) return 'application/pdf';
+  if (head.startsWith('/9j/')) return 'image/jpeg';
+  if (head.startsWith('iVBORw')) return 'image/png';
+  if (head.startsWith('R0lGOD')) return 'image/gif';
+  if (head.startsWith('UklGR')) return 'image/webp';
+
+  const extMatch = /\.([a-z0-9]+)$/i.exec(String(title || '').trim());
+  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'heic' || ext === 'heif') return 'image/heic';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+
+  return explicit === '' ? 'image/jpeg' : null;
+}
+
 /** Single-document AI insights. Throws Error with .statusCode / .detail on failure. */
 async function runHealthForecast({ base64, mimeType, category, title }) {
   if (typeof base64 !== 'string' || base64.length < 100) {
@@ -41,12 +67,8 @@ async function runHealthForecast({ base64, mimeType, category, title }) {
     throw err;
   }
 
-  const safeMime = mimeType?.trim() || 'image/jpeg';
-  const isImage  = safeMime.startsWith('image/');
-  // Gemini supports both images and PDFs via inlineData
-  const geminiSupported = isImage || safeMime === 'application/pdf';
-
-  if (!geminiSupported) {
+  const safeMime = resolveSupportedMimeType({ mimeType, title, base64 });
+  if (!safeMime) {
     const err = new Error('Health forecast AI is currently unavailable.');
     err.statusCode = 502;
     throw err;
@@ -65,7 +87,11 @@ async function runHealthForecast({ base64, mimeType, category, title }) {
         { text: prompt },
       ],
     }],
-    generationConfig: { maxOutputTokens: 1200, temperature: 0.2 },
+    generationConfig: {
+      maxOutputTokens: 2048,
+      temperature: 0.2,
+      responseMimeType: 'application/json',
+    },
   }, 60_000);   // large PDFs need up to ~45 s
 
   if (!geminiResp.ok) {
@@ -128,7 +154,9 @@ async function runMultiHealthForecast(records) {
   const parts = [];
   for (const rec of records) {
     if (typeof rec.base64 !== 'string' || rec.base64.length < 100) continue;
-    parts.push({ inlineData: { mimeType: rec.mimeType || 'image/jpeg', data: rec.base64 } });
+    const safeMime = resolveSupportedMimeType({ mimeType: rec.mimeType, title: rec.title, base64: rec.base64 });
+    if (!safeMime) continue;
+    parts.push({ inlineData: { mimeType: safeMime, data: rec.base64 } });
     parts.push({ text: `[${rec.category || 'Document'}: "${rec.title || 'Record'}" — ${rec.date || 'Date unknown'}]` });
   }
 
@@ -142,7 +170,11 @@ async function runMultiHealthForecast(records) {
 
   const geminiResp = await geminiFetch(GEMINI_MODEL_VISION, {
     contents: [{ parts }],
-    generationConfig: { maxOutputTokens: 1500, temperature: 0.2 },
+    generationConfig: {
+      maxOutputTokens: 3072,
+      temperature: 0.2,
+      responseMimeType: 'application/json',
+    },
   }, 90_000);   // larger timeout — processing N documents takes longer
 
   if (!geminiResp.ok) {

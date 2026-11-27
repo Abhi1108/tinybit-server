@@ -12,6 +12,7 @@ const USER_OWNED_URL_SOURCES = [
   { table: 'journal', column: 'audio_uri', where: 'user_id = ?' },
   { table: 'meal_logs', column: 'image_url', where: 'user_id = ?' },
   { table: 'daily_checkins', column: 'voice_note_url', where: 'user_id = ?' },
+  { table: 'family_messages', column: 'audio_url', where: 'sender_id = ?' },
 ];
 
 async function sweepUserStorage(userId) {

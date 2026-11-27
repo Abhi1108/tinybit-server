@@ -351,6 +351,37 @@ async function applyPlanUpdate(guardianId, { planAmount, planCurrency, planElder
     : (days >= 300 ? 'annual' : 'monthly');
 
   if (extendExpiry) {
+    // Switching from a recurring trial/subscription to a one-time paid plan must end any live
+    // Razorpay subscription so the user isn't double-charged when the old cycle/trial starts.
+    const openSubs = await query(
+      `SELECT id, razorpay_subscription_id, status
+       FROM payment_subscriptions
+       WHERE guardian_id = ? AND status IN ('created', 'active', 'authenticated')`,
+      [guardianId],
+    );
+    for (const oldSub of openSubs) {
+      if (oldSub.razorpay_subscription_id && (oldSub.status === 'active' || oldSub.status === 'authenticated')) {
+        try {
+          await razorpayService.cancelSubscription({
+            subscriptionId: oldSub.razorpay_subscription_id,
+            cancelAtCycleEnd: false,
+          });
+        } catch (rzpErr) {
+          console.warn(`[payments] Could not cancel prior subscription ${oldSub.razorpay_subscription_id} on renewal:`, rzpErr?.message || rzpErr);
+        }
+      }
+      await execute(
+        `UPDATE payment_subscriptions
+         SET status = 'cancelled',
+             cancel_at_cycle_end = 0,
+             cancelled_at = COALESCE(cancelled_at, CURRENT_TIMESTAMP(3)),
+             ended_at = COALESCE(ended_at, CURRENT_TIMESTAMP(3)),
+             updated_at = CURRENT_TIMESTAMP(3)
+         WHERE id = ?`,
+        [oldSub.id],
+      );
+    }
+
     await execute(
       `UPDATE profiles
        SET plan_status = 'active',
@@ -360,7 +391,10 @@ async function applyPlanUpdate(guardianId, { planAmount, planCurrency, planElder
            plan_amount = ?,
            plan_currency = ?,
            plan_elder_count = ?,
-           plan_interval = COALESCE(?, plan_interval)
+           plan_interval = COALESCE(?, plan_interval),
+           active_subscription_id = NULL,
+           auto_renew = 0,
+           cancel_scheduled = 0
        WHERE id = ?`,
       [days, planAmount, planCurrency, planElderCount, planInterval, guardianId],
     );

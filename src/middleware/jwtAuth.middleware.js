@@ -1,4 +1,5 @@
 const { verifyAccessToken } = require('../services/jwt.service');
+const { isProfileDeleted } = require('../services/auth-users.service');
 const { touchLastActive } = require('../services/profiles.service');
 
 function touchLastActiveSafe(userId) {
@@ -8,7 +9,7 @@ function touchLastActiveSafe(userId) {
   });
 }
 
-function requireJwtAuth(req, res, next) {
+async function requireJwtAuth(req, res, next) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null;
 
@@ -21,8 +22,22 @@ function requireJwtAuth(req, res, next) {
     return res.status(500).json({ success: false, message: 'Server auth not configured' });
   }
 
+  let payload;
   try {
-    const payload = verifyAccessToken(token);
+    payload = verifyAccessToken(token);
+  } catch (_error) {
+    return res.status(401).json({ success: false, message: 'Token invalid or expired' });
+  }
+
+  try {
+    if (await isProfileDeleted(payload.sub)) {
+      return res.status(401).json({
+        success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Account has been deleted',
+      });
+    }
+
     const auth = {
       userId: payload.sub,
       email: payload.email,
@@ -30,8 +45,9 @@ function requireJwtAuth(req, res, next) {
     req.auth = auth;
     touchLastActiveSafe(auth.userId);
     return next();
-  } catch (_error) {
-    return res.status(401).json({ success: false, message: 'Token invalid or expired' });
+  } catch (err) {
+    console.error('[auth] account check error:', err.message);
+    return res.status(500).json({ success: false, message: 'Could not verify account status' });
   }
 }
 

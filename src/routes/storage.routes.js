@@ -67,23 +67,29 @@ router.put('/files/:purpose/:userId/*', async (req, res) => {
     req.on('error', (err) => {
       console.error('[storage] upload stream error:', err);
       writeStream.destroy();
-      res.status(500).json({ success: false, message: 'Upload failed' });
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Upload failed' });
+      }
     });
 
     // Handle successful upload
     writeStream.on('finish', () => {
       const fileUrl = storageFs.buildFileUrl(key);
-      res.json({
-        success: true,
-        key,
-        file_url: fileUrl
-      });
+      if (!res.headersSent) {
+        res.json({
+          success: true,
+          key,
+          file_url: fileUrl
+        });
+      }
     });
 
     // Handle write errors
     writeStream.on('error', (err) => {
       console.error('[storage] write error:', err);
-      res.status(500).json({ success: false, message: 'Upload failed' });
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, message: 'Upload failed' });
+      }
     });
 
     // Pipe request body to file

@@ -1,4 +1,5 @@
 const storageService = require('../services/storage.service');
+const profilesService = require('../services/profiles.service');
 const { canUploadReportScan } = require('../services/plan-entitlements.service');
 
 function readBody(req) {
@@ -31,7 +32,8 @@ async function presignUpload(req, res) {
     }
 
     const body = readBody(req);
-    const purpose = body.purpose;
+    const rawPurpose = String(body.purpose || '').trim();
+    const purpose = rawPurpose === 'health-record' ? 'health-vault' : rawPurpose;
     const filename = body.filename ?? body.file_name ?? body.fileName;
     const contentType = body.content_type ?? body.contentType ?? body.mime_type ?? body.mimeType;
 
@@ -39,15 +41,18 @@ async function presignUpload(req, res) {
       return res.status(400).json({ success: false, message: 'filename is required.' });
     }
 
-    if ((purpose === 'health-vault' || purpose === 'health-record') && req.auth?.profile?.role === 'guardian') {
-      const scanCheck = await canUploadReportScan(userId, req.auth?.profile);
-      if (!scanCheck.allowed) {
-        return res.status(403).json({
-          success: false,
-          code: 'SCAN_LIMIT_EXCEEDED',
-          message: scanCheck.message || 'Free plan includes 1 report scan per month.',
-          quota: scanCheck,
-        });
+    if (purpose === 'health-vault') {
+      const callerProfile = await profilesService.getProfileById(userId);
+      if (callerProfile?.role === 'guardian') {
+        const scanCheck = await canUploadReportScan(userId, callerProfile);
+        if (!scanCheck.allowed) {
+          return res.status(403).json({
+            success: false,
+            code: 'SCAN_LIMIT_EXCEEDED',
+            message: scanCheck.message || 'Free plan includes 1 report scan per month.',
+            quota: scanCheck,
+          });
+        }
       }
     }
 

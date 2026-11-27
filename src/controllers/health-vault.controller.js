@@ -2,6 +2,7 @@ const healthRecordsService = require('../services/health-records.service');
 const savedDoctorsService = require('../services/saved-doctors.service');
 const healthInsightsService = require('../services/health-insights.service');
 const storageService = require('../services/storage.service');
+const profilesService = require('../services/profiles.service');
 const { notifyGuardiansOfElder, shouldSendActionNotification } = require('../services/notifications.service');
 const { NOTIFICATION_TYPES } = require('../constants/notification-types');
 const { recordReportScanUsage } = require('../services/plan-entitlements.service');
@@ -127,7 +128,8 @@ async function createRecord(req, res) {
 
     const record = await healthRecordsService.create(userId, payload);
 
-    if (req.auth?.profile?.role === 'guardian') {
+    const callerProfile = await profilesService.getProfileById(userId);
+    if (callerProfile?.role === 'guardian') {
       try {
         await recordReportScanUsage(userId, userId, payload.title || payload.uri);
       } catch (scanErr) {

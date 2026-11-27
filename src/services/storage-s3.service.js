@@ -195,11 +195,24 @@ async function deleteObject(key, userId) {
   return { key: objectKey };
 }
 
-/** Extract the S3 object key from a stored virtual-host/CDN URL, or null if unparseable. */
+/** Extract the S3 object key from a virtual-host, path-style, or CDN URL, or null if unparseable. */
 function extractObjectKey(url) {
   try {
-    const key = new URL(String(url || '')).pathname.replace(/^\//, '');
-    return key ? decodeURIComponent(key) : null;
+    const rawPath = decodeURIComponent(new URL(String(url || '')).pathname.replace(/^\//, ''));
+    if (!rawPath) return null;
+
+    const bucket = getBucket();
+    if (bucket && rawPath.startsWith(`${bucket}/`)) {
+      return rawPath.slice(bucket.length + 1);
+    }
+
+    for (const purpose of VALID_PURPOSES) {
+      if (rawPath.startsWith(`${purpose}/`)) return rawPath;
+      const idx = rawPath.indexOf(`/${purpose}/`);
+      if (idx >= 0) return rawPath.slice(idx + 1);
+    }
+
+    return rawPath;
   } catch {
     return null;
   }

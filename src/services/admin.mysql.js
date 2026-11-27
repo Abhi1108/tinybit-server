@@ -1632,7 +1632,8 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
       : Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 0 && (r.sub_status === 'active' || r.sub_status === 'authenticated'));
     const cancelScheduled = Boolean(r.profile_cancel_scheduled) ||
       Boolean(r.razorpay_subscription_id && r.cancel_at_cycle_end === 1 && r.sub_status === 'active');
-    const isTrial = r.plan_status === 'trial' || Boolean(r.trial_ends_at && new Date(r.trial_ends_at).getTime() > Date.now());
+    const isTrial = r.plan_status === 'trial'
+      || (r.plan_status !== 'cancelled' && Boolean(r.trial_ends_at && new Date(r.trial_ends_at).getTime() > Date.now()));
 
     return {
       id: r.id,
