@@ -31,8 +31,7 @@ const SATHI_SYSTEM = `You are Sathi (meaning Companion), a warm, caring companio
 Your role is to help users manage their health, remember medicines, stay connected with family, and feel supported.
 
 CORE GUIDELINES:
-- LENGTH (strict): 1-3 short sentences per reply. One main point per turn. Never stack multiple
-  paragraphs, never list out several suggestions at once — pick the single most relevant thing.
+- LENGTH & CLARITY: Keep everyday replies warm and brief (1-3 short sentences, one main point). ONLY when the user explicitly asks for a health summary, report breakdown, trends, medicine list, vitals/nutrition overview, or brain-games summary, give a clear, scannable summary (using "- " bullets for key values/status/follow-up) grounded strictly in the LIVE USER CONTEXT — never pad or invent details.
 - TONE: Talk like a warm companion texting, not a clinical bot reciting a protocol. Skip formal
   transitions ("It is important to...", "Please try to..."). Contractions and simple, everyday words
   are welcome.
@@ -57,9 +56,7 @@ CORE GUIDELINES:
     have the elder-only tabs (medicines, journal, Sathi chat, daily check-in for themselves), so never
     suggest those tabs to a guardian — suggest monitoring-oriented actions instead.
   - If you are unsure whether a role can use a feature, do not suggest an ACTION tag for it.
-- The USER CONTEXT below is live data from the app (profile, today's medicines and whether each was
-  taken, health check-in and mood, health vault reports on file, mind games stats, next appointment, emergency contact). Reference it when asked about any
-  of these. When asked about health reports or medical files, reference the reports listed in USER CONTEXT. When asked about games, reference the game stats listed. If something isn't listed there, say you don't have that on file — never invent it.
+- The LIVE USER CONTEXT attached to the latest turn contains real-time data from the app (profile, age/conditions/allergies, wellness streak, today's medicines and taken status, latest daily check-in and 7-day trend, recorded vital readings, today's nutrition/calories, health vault reports & extracted metrics/risks/follow-up, brain games scores/recent games, next appointment, emergency contact, and for guardians: connected elders' status). Reference exact figures from there when asked. When asked about health reports or medical files, cite the actual report summary/metrics/abnormal flags listed; if a file says AI reading was disabled or extraction failed, say so honestly. If something isn't listed in LIVE USER CONTEXT, say you don't have that on file — never invent it.
 - The APP HELP FAQ below is the official, admin-maintained answer set for "how do I..." questions
   about using the app. When a user asks something matching one of these, answer from it directly
   rather than guessing at app behavior.
@@ -170,25 +167,32 @@ const chat = async (req, res) => {
       console.warn('[Sathi] FAQ fetch failed:', faqErr.message);
     }
 
-    // Stable prefix first (system + FAQ rarely change) so implicit context
-    // caching can hit on the largest contiguous block; the live per-user
-    // context trails at the end where it changes every turn.
-    const systemPrompt = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}\n\nUSER CONTEXT:\n${contextText}`;
+    // Keep stable instructions & FAQ in systemInstruction, and inject fresh LIVE USER CONTEXT
+    // onto the latest user turn so Sathi always reasons over current vitals/medicines/reports
+    // even across long multi-turn conversations (without persisting context blobs to DB).
+    const systemInstructionText = `${SATHI_SYSTEM}\n\nAPP HELP FAQ:\n${faqText}`;
+    const lastIdx = fullConversation.length - 1;
 
     let replyContent = '';
     let usage = { prompt_tokens: null, completion_tokens: null, total_tokens: null, cached_tokens: null };
     const provider = 'gemini';
 
     try {
-      // Build multi-turn contents; prepend system prompt to first user message
-      const contents = fullConversation.map((m, i) => ({
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: i === 0 ? `${systemPrompt}\n\n${m.content}` : String(m.content ?? '') }],
-      }));
+      const contents = fullConversation.map((m, i) => {
+        const rawText = String(m.content ?? '');
+        const text = i === lastIdx
+          ? `LIVE USER CONTEXT:\n${contextText}\n\nUSER MESSAGE:\n${rawText}`
+          : rawText;
+        return {
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text }],
+        };
+      });
 
       const geminiResp = await geminiFetch(GEMINI_MODEL_TEXT, {
+        systemInstruction: { parts: [{ text: systemInstructionText }] },
         contents,
-        generationConfig: { maxOutputTokens: 220, temperature: 0.85 },
+        generationConfig: { maxOutputTokens: 450, temperature: 0.65 },
       });
 
       if (geminiResp.ok) {

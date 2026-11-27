@@ -48,20 +48,15 @@ async function getUserStats(userId) {
   const timezone = await getUserTimezone(userId);
   const today = todayForTimezone(timezone);
 
-  const [recentRows, totalRows, rankRows] = await Promise.all([
+  const [userRows, rankRows] = await Promise.all([
     // Raw `created_at` (not MySQL's `CURDATE()`, which is the DB connection's session
     // timezone, not this user's) — the calendar day is derived in JS via
     // `dateOnlyForTimezone` instead, same pattern as `calculateMedicineStreak`.
     query(
-      `SELECT score, duration_seconds, created_at
+      `SELECT game_type, score, duration_seconds, created_at
        FROM mind_games_scores
-       WHERE user_id = ? AND created_at >= ?`,
-      [userId, new Date(Date.now() - LOOKBACK_MS)],
-    ),
-    query(
-      `SELECT score
-       FROM mind_games_scores
-       WHERE user_id = ?`,
+       WHERE user_id = ?
+       ORDER BY created_at DESC`,
       [userId],
     ),
     query(
@@ -72,16 +67,35 @@ async function getUserStats(userId) {
     ),
   ]);
 
-  const todayRows = recentRows.filter((row) => dateOnlyForTimezone(new Date(row.created_at), timezone) === today);
-  const todayScore = todayRows.reduce((sum, row) => sum + Number(row.score), 0);
-  const totalScore = totalRows.reduce((sum, row) => sum + Number(row.score), 0);
+  const todayRows = userRows.filter(
+    (row) => row.created_at && dateOnlyForTimezone(new Date(row.created_at), timezone) === today,
+  );
+  const todayScore = todayRows.reduce((sum, row) => sum + Number(row.score || 0), 0);
+  const totalScore = userRows.reduce((sum, row) => sum + Number(row.score || 0), 0);
   const todayDurationSeconds = todayRows.reduce((sum, row) => sum + Number(row.duration_seconds ?? 0), 0);
+  const totalDurationSeconds = userRows.reduce((sum, row) => sum + Number(row.duration_seconds ?? 0), 0);
   const playTime = Math.round(todayDurationSeconds / 60);
 
   const rankIdx = rankRows.findIndex((row) => row.user_id === userId);
   const rank = rankIdx >= 0 ? rankIdx + 1 : '—';
 
-  return { todayScore, totalScore, rank, playTime };
+  const recentGames = userRows.slice(0, 5).map((row) => ({
+    gameType: row.game_type,
+    score: Number(row.score || 0),
+    durationSeconds: Number(row.duration_seconds ?? 0),
+    createdAt: toIsoString(row.created_at),
+  }));
+
+  return {
+    todayScore,
+    totalScore,
+    rank,
+    playTime,
+    totalGames: userRows.length,
+    todayGames: todayRows.length,
+    totalDurationSeconds,
+    recentGames,
+  };
 }
 
 async function getLeaderboard(limit = 5) {

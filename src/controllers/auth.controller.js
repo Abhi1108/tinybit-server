@@ -19,6 +19,7 @@ const {
 const { getOrCreateMonitorUser } = require('../services/monitor-user.service');
 const { SUPPORT_EMAIL } = require('../config/support');
 const subscriptionsService = require('../services/payment-subscriptions.mysql');
+const { defaultCurrencyForCountry } = require('../services/payment-pricing.mysql');
 
 const DEACTIVATED_MESSAGE = `Account is deactivated. If you want to activate, please contact ${SUPPORT_EMAIL}`;
 const {
@@ -654,6 +655,13 @@ async function updateProfile(req, res) {
 
     let data;
     try {
+      if (patch.country_code !== undefined) {
+        const existing = await getProfileById(userId);
+        if (!existing || (existing.plan_status !== 'active' && existing.plan_status !== 'trial')) {
+          patch.plan_currency = defaultCurrencyForCountry(patch.country_code);
+        }
+      }
+
       const profileEmail = patch.email !== undefined
         ? patch.email
         : (isSyntheticPhoneEmail(email) ? undefined : email);

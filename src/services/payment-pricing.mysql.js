@@ -28,6 +28,11 @@ function normalizeCountryCode(countryCode) {
   return raw || DEFAULT_COUNTRY;
 }
 
+/** India uses INR; any country outside India defaults to USD. */
+function defaultCurrencyForCountry(countryCode) {
+  return normalizeCountryCode(countryCode) === 'IN' ? 'INR' : 'USD';
+}
+
 function mapTier(row) {
   if (!row) return null;
   return {
@@ -269,6 +274,7 @@ async function deletePricingTier(id) {
 module.exports = {
   DEFAULT_COUNTRY,
   normalizeCountryCode,
+  defaultCurrencyForCountry,
   getTierForCountryAndElderCount,
   getNextTier,
   listPricingTiers,

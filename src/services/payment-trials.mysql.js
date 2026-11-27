@@ -1,5 +1,6 @@
 const { randomUUID } = require('crypto');
 const { query, execute, withTransaction } = require('../config/mysql');
+const { defaultCurrencyForCountry } = require('./payment-pricing.mysql');
 
 function badRequest(message, code) { const err = new Error(message); err.status = 400; err.code = code; return err; }
 function toIso(value) { return value instanceof Date ? value.toISOString() : value; }
@@ -41,7 +42,7 @@ async function startTrial({ guardianId, elderCount, tier }) {
       await conn.execute(
         `UPDATE profiles SET plan_status = 'trial', plan_type = 'guardian', plan_started_at = CURRENT_TIMESTAMP(3),
          plan_expires_at = ?, plan_amount = ?, plan_currency = ?, plan_elder_count = ?, plan_interval = 'trial' WHERE id = ?`,
-        [expiresAt, tier?.amount || null, tier?.currency || 'INR', elderCount, guardianId],
+        [expiresAt, tier?.amount || null, tier?.currency || defaultCurrencyForCountry(tier?.country_code), elderCount, guardianId],
       );
     });
   } catch (err) {

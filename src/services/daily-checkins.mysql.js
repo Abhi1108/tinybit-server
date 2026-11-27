@@ -148,10 +148,41 @@ async function findLatestMoodEntry(userId) {
   return rows[0] ?? null;
 }
 
+async function listRecentCheckIns(userId, limit = 7) {
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 7, 1), 30);
+  const rows = await query(
+    `SELECT *
+     FROM daily_checkins
+     WHERE user_id = ?
+     ORDER BY check_in_date DESC
+     LIMIT ${limitNum}`,
+    [userId],
+  );
+  return rows.map(mapDailyCheckInRow);
+}
+
+async function listRecentMoodEntries(userId, limit = 10) {
+  const limitNum = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 30);
+  const rows = await query(
+    `SELECT id, user_id, mood, mood_score, note, created_at
+     FROM mood_entries
+     WHERE user_id = ?
+     ORDER BY created_at DESC
+     LIMIT ${limitNum}`,
+    [userId],
+  );
+  return rows.map((row) => ({
+    ...row,
+    created_at: toIsoString(row.created_at),
+  }));
+}
+
 module.exports = {
   findCheckInByUserAndDate,
   findLatestCheckIn,
   findLatestMoodEntry,
+  listRecentCheckIns,
+  listRecentMoodEntries,
   upsertDailyCheckIn,
   insertMoodEntry,
 };

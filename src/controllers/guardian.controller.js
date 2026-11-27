@@ -1007,6 +1007,7 @@ const createElderHealthRecord = async (req, res) => {
     }
 
     const record = await healthRecordsService.create(elderId, payload);
+    healthInsightsService.scheduleRecordInsightsExtraction(elderId, record);
 
     // Record scan usage in persistent report_scan_usage table (remains even if record is deleted)
     try {
@@ -1127,28 +1128,17 @@ const getElderHealthRecordInsights = async (req, res) => {
     }
 
     const forceRefresh = String(req.query?.refresh || '').toLowerCase() === 'true';
-    if (!forceRefresh && record.ai_insights) {
-      return res.json({ success: true, data: record.ai_insights, cached: true, computed_at: record.ai_insights_at });
-    }
+    const { insights, cached, computed_at } = await healthInsightsService.extractAndSaveRecordInsights(
+      elderId,
+      record,
+      { forceRefresh },
+    );
 
-    const base64 = await loadRecordBase64(record);
-    if (!base64) {
-      return res.status(400).json({ success: false, message: 'This record has no stored file to analyze.' });
-    }
-
-    const insights = await healthInsightsService.runHealthForecast({
-      base64,
-      mimeType: record.mime_type || 'image/jpeg',
-      category: record.category,
-      title: record.title,
-    });
-
-    const updated = await healthRecordsService.saveInsights(elderId, record.id, insights);
     return res.json({
       success: true,
       data: insights,
-      cached: false,
-      computed_at: updated?.ai_insights_at ?? null,
+      cached,
+      computed_at,
     });
   } catch (err) {
     console.error('getElderHealthRecordInsights error:', err);

@@ -1,4 +1,6 @@
 const { geminiFetch, geminiText, GEMINI_MODEL_VISION } = require('./gemini.service');
+const storageService = require('./storage.service');
+const healthRecordsService = require('./health-records.service');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // HEALTH FORECAST — extracts health metrics from a report image/PDF and returns
@@ -196,4 +198,67 @@ async function runMultiHealthForecast(records) {
   }
 }
 
-module.exports = { runHealthForecast, runMultiHealthForecast };
+/** Downloads a saved record's file from storage and returns it base64-encoded, or null if unavailable. */
+async function loadRecordBase64(record) {
+  if (!record?.uri) return null;
+  const key = storageService.extractObjectKey(record.uri);
+  if (!key) return null;
+  const { base64 } = await storageService.getObjectBase64(key);
+  return base64;
+}
+
+/**
+ * Loads cached `ai_insights` or extracts, persists, and returns them for a record.
+ * Throws Error with `.statusCode` when storage/AI fails or the record has no stored file.
+ */
+async function extractAndSaveRecordInsights(userId, record, { forceRefresh = false } = {}) {
+  if (!forceRefresh && record?.ai_insights) {
+    return {
+      insights: record.ai_insights,
+      cached: true,
+      computed_at: record.ai_insights_at ?? null,
+    };
+  }
+
+  const base64 = await loadRecordBase64(record);
+  if (!base64) {
+    const err = new Error('This record has no stored file to analyze.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const insights = await runHealthForecast({
+    base64,
+    mimeType: record.mime_type || 'image/jpeg',
+    category: record.category,
+    title: record.title,
+  });
+
+  const updated = await healthRecordsService.saveInsights(userId, record.id, insights);
+  return {
+    insights,
+    cached: false,
+    computed_at: updated?.ai_insights_at ?? null,
+  };
+}
+
+/**
+ * Fires best-effort non-blocking extraction right after an AI-readable report upload
+ * so `ai_insights` is cached in DB before the user even asks Sathi about the report.
+ */
+function scheduleRecordInsightsExtraction(userId, record) {
+  if (!userId || !record?.id || !record.ai_read || record.ai_insights || !record.uri) return;
+  setImmediate(() => {
+    extractAndSaveRecordInsights(userId, record).catch((err) => {
+      console.warn('[health-insights] background extraction skipped:', err.message);
+    });
+  });
+}
+
+module.exports = {
+  runHealthForecast,
+  runMultiHealthForecast,
+  loadRecordBase64,
+  extractAndSaveRecordInsights,
+  scheduleRecordInsightsExtraction,
+};

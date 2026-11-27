@@ -127,6 +127,7 @@ async function createRecord(req, res) {
     }
 
     const record = await healthRecordsService.create(userId, payload);
+    healthInsightsService.scheduleRecordInsightsExtraction(userId, record);
 
     const callerProfile = await profilesService.getProfileById(userId);
     if (callerProfile?.role === 'guardian') {
@@ -253,14 +254,7 @@ async function updateRecord(req, res) {
   }
 }
 
-/** Downloads a saved record's file from S3 and returns it base64-encoded, or null if unavailable. */
-async function loadRecordBase64(record) {
-  if (!record.uri) return null;
-  const key = storageService.extractObjectKey(record.uri);
-  if (!key) return null;
-  const { base64 } = await storageService.getObjectBase64(key);
-  return base64;
-}
+const { loadRecordBase64 } = healthInsightsService;
 
 /** POST /api/health-vault/records/:id/insights?refresh=true */
 async function getInsights(req, res) {
@@ -276,28 +270,17 @@ async function getInsights(req, res) {
     }
 
     const forceRefresh = String(req.query?.refresh || '').toLowerCase() === 'true';
-    if (!forceRefresh && record.ai_insights) {
-      return res.json({ success: true, data: record.ai_insights, cached: true, computed_at: record.ai_insights_at });
-    }
+    const { insights, cached, computed_at } = await healthInsightsService.extractAndSaveRecordInsights(
+      userId,
+      record,
+      { forceRefresh },
+    );
 
-    const base64 = await loadRecordBase64(record);
-    if (!base64) {
-      return res.status(400).json({ success: false, message: 'This record has no stored file to analyze.' });
-    }
-
-    const insights = await healthInsightsService.runHealthForecast({
-      base64,
-      mimeType: record.mime_type || 'image/jpeg',
-      category: record.category,
-      title: record.title,
-    });
-
-    const updated = await healthRecordsService.saveInsights(userId, record.id, insights);
     return res.json({
       success: true,
       data: insights,
-      cached: false,
-      computed_at: updated?.ai_insights_at ?? null,
+      cached,
+      computed_at,
     });
   } catch (err) {
     console.error('[health-vault] insights', err);

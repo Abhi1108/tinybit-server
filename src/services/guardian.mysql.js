@@ -1179,9 +1179,20 @@ async function getElderSummaryForGuardian(guardianId, elderId) {
   };
 }
 
+const GAME_TYPE_LABELS = {
+  number_memory: 'Number Memory',
+  word_match: 'Word Match',
+  color_recall: 'Colour Recall',
+  quiz: 'Story Quiz',
+  reaction: 'Reaction Time',
+  memory_tiles: 'Memory Tiles',
+  typing_speed: 'Typing Speed',
+  daily_quiz: 'Daily Quiz',
+};
+
 /** Builds the merged, real-data "Today's Activity" feed for the guardian home dashboard —
  *  no fabricated entries; anything with no rows today just contributes nothing. */
-function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameById, today }) {
+function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameById, mindGameLogs = [], today }) {
   const items = [];
 
   journalEntries
@@ -1222,6 +1233,16 @@ function buildActivityFeed({ journalEntries, moods, checkin, medLogs, medNameByI
       title:     'Confirmed medicine taken',
       subtitle:  medNameById[log.medicine_id] ?? '',
       timestamp: log.taken_at,
+    });
+  });
+
+  mindGameLogs.forEach((g) => {
+    const label = GAME_TYPE_LABELS[g.gameType] ?? 'Brain Game';
+    items.push({
+      type:      'mind_game',
+      title:     `Played ${label}`,
+      subtitle:  `Score: ${g.score ?? 0} pts`,
+      timestamp: g.createdAt,
     });
   });
 
@@ -1307,12 +1328,17 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
       : null,
   } : null;
 
+  const mindGameLogsToday = (mindStats.recentGames ?? []).filter(
+    (g) => g.createdAt && dateOnlyForTimezone(new Date(g.createdAt), elderTimezone) === today,
+  );
+
   const activity = buildActivityFeed({
     journalEntries: journalEntries.slice(0, 10),
     moods,
     checkin: checkinToday[0] ?? null,
     medLogs: medLogsToday,
     medNameById,
+    mindGameLogs: mindGameLogsToday,
     today,
   });
 
@@ -1343,6 +1369,8 @@ async function getElderDashboardForGuardian(guardianId, elderId) {
     adherencePercent,
     memoriesCount,
     mindGamesScore: mindStats.totalScore ?? 0,
+    mindGamesTodayScore: mindStats.todayScore ?? 0,
+    mindGamesPlayedToday: mindStats.todayGames ?? 0,
     checkedInToday: !!checkinToday[0],
     mood: checkinToday[0]?.mood ?? null,
     lastActiveAt: profile?.last_active
@@ -1603,6 +1631,7 @@ module.exports = {
   savePushToken,
   clearPushToken,
   getPushTokensForUser,
+  getConnectedLinksForGuardian,
   getGuardianEldersDashboard,
   getGuardianAlerts,
   getGuardianLocationElders,

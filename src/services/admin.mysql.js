@@ -1598,7 +1598,7 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
   const where = `WHERE ${clauses.join(' AND ')}`;
 
   const rows = await query(
-    `SELECT p.id, p.full_name, p.role, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
+    `SELECT p.id, p.full_name, p.role, p.country_code, p.plan_type, p.plan_status, p.plan_amount, p.plan_currency,
             p.plan_interval, p.plan_elder_count, p.plan_started_at, p.plan_expires_at,
             p.auto_renew AS profile_auto_renew, p.cancel_scheduled AS profile_cancel_scheduled,
             ps.razorpay_subscription_id, ps.status AS sub_status, ps.cancel_at_cycle_end,
@@ -1644,7 +1644,7 @@ async function getUserSubscriptions({ page, limit, status, search } = {}) {
       start_date: toIso(r.plan_started_at),
       renewal_date: toIso(r.plan_expires_at),
       amount,
-      currency: r.plan_currency || 'INR',
+      currency: r.plan_currency || (String(r.country_code || '').toUpperCase() === 'IN' ? 'INR' : 'USD'),
       elder_count: r.plan_elder_count == null ? null : Number(r.plan_elder_count),
       interval: r.plan_interval,
       auto_renew: autoRenew,
