@@ -1581,7 +1581,7 @@ async function listSentInvitations(guardianId) {
   const rows = await query(
     `SELECT id, guardian_id, elder_id, elder_email, parent_name, relation, status, created_at, updated_at
      FROM guardian_elder_links
-     WHERE guardian_id = ?
+     WHERE guardian_id = ? AND status = 'pending'
      ORDER BY created_at DESC`,
     [guardianId],
   );

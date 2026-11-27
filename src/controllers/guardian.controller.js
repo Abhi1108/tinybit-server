@@ -14,7 +14,7 @@ const paymentsService = require('../services/payments.mysql');
 const profilesService = require('../services/profiles.service');
 const authUsersService = require('../services/auth-users.service');
 const planEntitlementsService = require('../services/plan-entitlements.service');
-const { toE164 } = require('../utils/phone');
+const { toE164, phoneToAuthEmail } = require('../utils/phone');
 
 const MEDICINE_CHANGE_COPY = {
   added:   { title: 'New Medicine Added', body: 'A new medicine has been added to your schedule.', type: NOTIFICATION_TYPES.MEDICINE_ADDED },
@@ -95,8 +95,18 @@ const inviteParent = async (req, res) => {
     );
     const elder_id = elderProfile?.id ?? null;
 
-    if (await guardianService.hasPendingInvite(guardian_id, elder_email)) {
-      return res.status(409).json({ success: false, message: 'A pending invitation already exists for this email' });
+    // Resolve a stable non-empty identifier for guardian_elder_links.elder_email so multiple
+    // phone-only invites do not collide on ('guardian_id', '', 'pending') and still auto-link
+    // when the elder verifies their phone.
+    let resolvedElderEmail = String(elder_email || '').trim().toLowerCase();
+    if (!resolvedElderEmail && elder_phone) {
+      resolvedElderEmail = elderProfile?.email
+        ? String(elderProfile.email).trim().toLowerCase()
+        : phoneToAuthEmail(elder_phone, elder_phone_country || '+91');
+    }
+
+    if (await guardianService.hasPendingInvite(guardian_id, resolvedElderEmail)) {
+      return res.status(409).json({ success: false, message: 'A pending invitation already exists for this contact' });
     }
 
     // Mid-cycle tier upgrade gate (CONTEXT.md Q5/Q10, ADR 0003): elder_count counts
@@ -125,7 +135,7 @@ const inviteParent = async (req, res) => {
     await guardianService.createInvitation({
       guardian_id,
       elder_id,
-      elder_email,
+      elder_email: resolvedElderEmail,
       parent_name,
       relation,
     });
